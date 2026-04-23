@@ -16,6 +16,8 @@
     "build": "medusa build && node src/scripts/postBuild.js",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "seed:mbs": "medusa exec ./src/scripts/seed-mbs.ts",
+    "seed:us": "medusa exec ./src/scripts/seed-us.ts",
+    "seed:fix-prices": "medusa exec ./src/scripts/fix-prices.ts",
     "ib": "init-backend",
     "start": "init-backend && cd .medusa/server && medusa start --verbose",
     "dev": "medusa develop",

@@ -32,13 +32,15 @@ const SIZE_LABELS: Record<string, string> = {
   "box of 15": "box of 15",
 }
 
-// Placeholder wholesale prices in USD cents. Replace with real Price Lists later.
-const FLOWER_PRICES_USD_CENTS: Record<string, number> = {
-  qp:   20000,  // $200.00
-  half: 37500,  // $375.00
-  lb:   70000,  // $700.00
+// Placeholder wholesale prices in USD whole units (Medusa stores prices in
+// the currency's whole units, NOT cents — e.g. 200 = $200). Real Price
+// Lists scoped to the "approved" customer group will replace these later.
+const FLOWER_PRICES_USD: Record<string, number> = {
+  qp:   200,
+  half: 375,
+  lb:   700,
 }
-const PRE_ROLL_PRICE_USD_CENTS = 20000
+const PRE_ROLL_PRICE_USD = 200
 
 const CATEGORY_TREE: { parent: string; children: string[] }[] = [
   { parent: "Flower",    children: ["Classic", "Exotic", "Super", "Rapper", "Snowcaps"] },
@@ -54,9 +56,9 @@ function variantSku(slug: string, weight: string): string {
   return `${slug.toUpperCase()}-${weightPart}`
 }
 
-function priceCentsFor(p: MbsSeedProduct, weight: string): number {
-  if (p.category === "flower") return FLOWER_PRICES_USD_CENTS[weight] ?? 0
-  return PRE_ROLL_PRICE_USD_CENTS
+function priceFor(p: MbsSeedProduct, weight: string): number {
+  if (p.category === "flower") return FLOWER_PRICES_USD[weight] ?? 0
+  return PRE_ROLL_PRICE_USD
 }
 
 function childCategoryLabelFor(p: MbsSeedProduct): string {
@@ -124,7 +126,7 @@ export default async function seedMbsProducts({ container }: ExecArgs) {
           title: v,
           sku: variantSku(p.slug, w),
           options: { Size: v },
-          prices: [{ amount: priceCentsFor(p, w), currency_code: "usd" }],
+          prices: [{ amount: priceFor(p, w), currency_code: "usd" }],
           manage_inventory: false,
         }
       })
