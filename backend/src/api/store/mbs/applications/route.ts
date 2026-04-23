@@ -1,5 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { randomBytes } from "crypto"
 
 /**
  * Wholesale-application submission endpoint (public, gated by publishable
@@ -8,13 +9,14 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  * Flow:
  *   1. Validate required fields (text + 2 files)
  *   2. Upload EIN doc + Resale Certificate to Bucket via the file service
- *   3. Create a pending Customer in Medusa with metadata that includes
- *      everything reviewers need: business info, EIN, license, doc URLs,
- *      timestamps, lead source
- *   4. CONDITIONALLY send two emails via Resend (only if RESEND_API_KEY +
- *      RESEND_FROM_EMAIL env vars are set — gracefully no-ops otherwise so
- *      apps still flow through pre-launch). Notification → MBS team.
- *      Confirmation → applicant.
+ *   3. Register Medusa auth identity for the email with a secure random
+ *      password (never returned, never logged) — this lets the applicant
+ *      use Medusa's standard /auth/customer/emailpass/reset-password flow
+ *      later to set their actual password
+ *   4. POST /store/customers with the auth token → creates a Customer
+ *      record LINKED to that auth identity, with all our metadata
+ *   5. Conditionally send Resend emails (only if RESEND_API_KEY +
+ *      RESEND_FROM_EMAIL set — gracefully no-ops otherwise)
  *
  * Multer middleware in src/api/middlewares.ts parses the multipart payload
  * — files arrive on `req.files`, text fields on `req.body`.
@@ -38,7 +40,29 @@ function isEmail(v: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
 }
 
+/** Generate a high-entropy random password. The applicant never sees this —
+ *  it's only here so Medusa has SOMETHING to hash for the auth identity.
+ *  Approved applicants reset to their own password via /auth/forgot. */
+function generateRandomPassword(): string {
+  return randomBytes(32).toString("base64url")
+}
+
+/** Resolve the publicly-reachable URL of THIS server. The auth + customer
+ *  endpoints are HTTP — even when called from inside the same Medusa
+ *  process, going via HTTP is the simplest way to use the publishable-key
+ *  validated paths. Falls back to localhost in dev. */
+function backendBaseUrl(req: MedusaRequest): string {
+  const fromEnv = process.env.BACKEND_PUBLIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN_VALUE
+  if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`
+  // Derive from the incoming request as a last resort
+  const host = req.get?.("host") ?? "localhost:9000"
+  const proto = req.protocol ?? (host.includes("localhost") ? "http" : "https")
+  return `${proto}://${host}`
+}
+
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
+  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+
   // Multer fills req.files as { fieldname: File[] } when using .fields()
   const files = (req as unknown as { files?: Record<string, UploadedFile[]> }).files ?? {}
   const einDoc     = files.einDoc?.[0]
@@ -48,7 +72,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = req.body as Record<string, unknown>
   const businessName = pickStr(body.businessName)
   const contactName  = pickStr(body.contactName)
-  const email        = pickStr(body.email)
+  const email        = pickStr(body.email).toLowerCase()
   const phone        = pickStr(body.phone)
   const address1     = pickStr(body.address1)
   const address2     = pickStr(body.address2)
@@ -94,8 +118,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const uploadOne = async (f: UploadedFile, suffix: string) => {
     const ext = f.originalname.includes(".") ? f.originalname.split(".").pop() : "bin"
     const filename = `applications/${ts}-${safeBiz}-${suffix}.${ext}`
-    // Medusa file service createFiles signature: ({ filename, mimeType, content })
-    // content is base64-encoded string
     const [created] = await fileService.createFiles([{
       filename,
       mimeType: f.mimetype,
@@ -110,55 +132,98 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     einDocUrl     = await uploadOne(einDoc, "ein")
     licenseDocUrl = await uploadOne(licenseDoc, "license")
   } catch (e: any) {
-    req.scope.resolve(ContainerRegistrationKeys.LOGGER).error(`[/store/mbs/applications] file upload failed: ${e?.message}`)
+    logger.error(`[/store/mbs/applications] file upload failed: ${e?.message}`)
     return res.status(500).json({ ok: false, message: "File upload failed. Please try again or email " + NOTIFICATION_TO })
   }
 
-  // ─── Create pending Customer in Medusa ──────────────────────────────
-  const customerService: any = req.scope.resolve(Modules.CUSTOMER)
-  let customerId: string | undefined
+  // ─── Register Medusa auth identity (with secure random password) ────
+  const baseUrl = backendBaseUrl(req)
+  const publishableKey = req.get("x-publishable-api-key") || ""
+  const tempPassword = generateRandomPassword()
+
+  let authToken: string | undefined
+  let duplicateEmail = false
   try {
-    const [customer] = await customerService.createCustomers([{
-      email,
-      first_name: contactName.split(" ")[0] || contactName,
-      last_name:  contactName.split(" ").slice(1).join(" ") || null,
-      company_name: businessName,
-      phone,
-      metadata: {
-        application_status: "pending_review",
-        applied_at: new Date().toISOString(),
-        business_name: businessName,
-        ein,
-        license,
-        address_line1: address1,
-        address_line2: address2,
-        city,
-        state,
-        zip,
-        country,
-        website,
-        volume,
-        heard,
-        message,
-        ein_doc_url: einDocUrl,
-        license_doc_url: licenseDocUrl,
+    const registerRes = await fetch(`${baseUrl}/auth/customer/emailpass/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-publishable-api-key": publishableKey,
       },
-    }])
-    customerId = customer?.id
-  } catch (e: any) {
-    // Most common: email already in use (someone applied twice). We treat
-    // this as success at the API layer — the original record stays + reviewer
-    // can de-dupe — but we log so we can monitor.
-    const msg = String(e?.message ?? "")
-    if (msg.toLowerCase().includes("already exists") || msg.toLowerCase().includes("duplicate")) {
-      req.scope.resolve(ContainerRegistrationKeys.LOGGER).warn(`[/store/mbs/applications] duplicate email: ${email}`)
+      body: JSON.stringify({ email, password: tempPassword }),
+    })
+    if (registerRes.ok) {
+      const registerJson = await registerRes.json() as { token?: string }
+      authToken = registerJson.token
     } else {
-      req.scope.resolve(ContainerRegistrationKeys.LOGGER).error(`[/store/mbs/applications] customer create failed: ${msg}`)
+      const body = await registerRes.text().catch(() => "")
+      // Most common: email already in use → applicant has applied before
+      if (registerRes.status === 401 || registerRes.status === 400 || body.toLowerCase().includes("already")) {
+        duplicateEmail = true
+        logger.warn(`[/store/mbs/applications] duplicate email at auth register: ${email}`)
+      } else {
+        logger.error(`[/store/mbs/applications] auth register failed: ${registerRes.status} ${body.slice(0, 200)}`)
+        return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+      }
+    }
+  } catch (e: any) {
+    logger.error(`[/store/mbs/applications] auth register threw: ${e?.message}`)
+    return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+  }
+
+  // ─── Create the linked Customer (skips on duplicate — original record stands) ──
+  let customerId: string | undefined
+  if (authToken) {
+    try {
+      const customerRes = await fetch(`${baseUrl}/store/customers`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-publishable-api-key": publishableKey,
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          email,
+          first_name: contactName.split(" ")[0] || contactName,
+          last_name:  contactName.split(" ").slice(1).join(" ") || null,
+          company_name: businessName,
+          phone,
+          metadata: {
+            application_status: "pending_review",
+            applied_at: new Date().toISOString(),
+            business_name: businessName,
+            ein,
+            license,
+            address_line1: address1,
+            address_line2: address2,
+            city,
+            state,
+            zip,
+            country,
+            website,
+            volume,
+            heard,
+            message,
+            ein_doc_url: einDocUrl,
+            license_doc_url: licenseDocUrl,
+          },
+        }),
+      })
+      if (customerRes.ok) {
+        const customerJson = await customerRes.json() as { customer?: { id?: string } }
+        customerId = customerJson.customer?.id
+      } else {
+        const body = await customerRes.text().catch(() => "")
+        logger.error(`[/store/mbs/applications] customer create failed: ${customerRes.status} ${body.slice(0, 200)}`)
+        return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+      }
+    } catch (e: any) {
+      logger.error(`[/store/mbs/applications] customer create threw: ${e?.message}`)
       return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
     }
   }
 
-  // ─── Conditionally send emails ──────────────────────────────────────
+  // ─── Conditionally send Resend emails ──────────────────────────────
   const resendKey  = process.env.RESEND_API_KEY
   const resendFrom = process.env.RESEND_FROM_EMAIL
   const emailsEnabled = !!(resendKey && resendFrom)
@@ -166,8 +231,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (emailsEnabled) {
     try {
       const notificationService: any = req.scope.resolve(Modules.NOTIFICATION)
-
-      // Notification to MBS team
       await notificationService.createNotifications([{
         to: NOTIFICATION_TO,
         channel: "email",
@@ -182,8 +245,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           customerId,
         },
       }])
-
-      // Confirmation to applicant
       await notificationService.createNotifications([{
         to: email,
         channel: "email",
@@ -196,14 +257,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         },
       }])
     } catch (e: any) {
-      // Don't fail the request — application is saved either way
-      req.scope.resolve(ContainerRegistrationKeys.LOGGER).warn(`[/store/mbs/applications] email send failed (non-fatal): ${e?.message}`)
+      logger.warn(`[/store/mbs/applications] email send failed (non-fatal): ${e?.message}`)
     }
   } else {
-    req.scope.resolve(ContainerRegistrationKeys.LOGGER).info(
+    logger.info(
       `[/store/mbs/applications] emails skipped — RESEND_API_KEY/RESEND_FROM_EMAIL not set. New application from ${businessName} (${email}). Customer: ${customerId ?? "(duplicate)"}.`
     )
   }
 
-  return res.json({ ok: true, customerId })
+  return res.json({ ok: true, customerId, duplicate: duplicateEmail })
 }
