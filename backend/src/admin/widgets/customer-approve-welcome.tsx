@@ -1,13 +1,13 @@
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { DetailWidgetProps } from "@medusajs/framework/types"
 import { Button, Container, Heading, Text, toast } from "@medusajs/ui"
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 
 const APPROVED_GROUP_NAME = "approved" // matches APPROVED_GROUP_NAME env on backend
 
 type CustomerLite = {
   id: string
-  email: string
+  email?: string
   metadata?: Record<string, any> | null
   groups?: Array<{ id: string; name: string }>
 }
@@ -17,24 +17,45 @@ type CustomerLite = {
  *   - Not in "approved" group → "Approve & Send Welcome"
  *   - Already approved      → "Resend Welcome Email" (with last-sent timestamp)
  *
- * Either way, the click hits POST /admin/customers/:id/approve-and-welcome
- * which idempotently ensures group membership + triggers the welcome email
- * via Medusa's reset-password flow. Widget refreshes the page on success
- * so the rest of the admin UI (group list, metadata) reflects the change.
+ * The `data` prop the admin passes in doesn't reliably include the `groups`
+ * relation, so we fetch the customer fresh with groups + metadata expanded
+ * via /admin/customers/:id?fields=… on mount and after each successful
+ * action. This avoids a full page reload — the widget self-refreshes.
  */
 const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>) => {
+  const [customer, setCustomer] = useState<CustomerLite | null>(null)
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
 
-  const inApproved = (data?.groups ?? []).some(
+  const refresh = useCallback(async () => {
+    if (!data?.id) return
+    try {
+      const res = await fetch(`/admin/customers/${data.id}?fields=id,email,metadata,*groups`, {
+        credentials: "include",
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setCustomer(json?.customer ?? null)
+    } catch (e: any) {
+      // Fall back to whatever data the widget was given; the prop may not
+      // include groups so the resend variant won't show, but the button
+      // still works (idempotent on the backend).
+      setCustomer(data)
+    } finally {
+      setLoading(false)
+    }
+  }, [data])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const inApproved = (customer?.groups ?? []).some(
     (g) => String(g?.name ?? "").toLowerCase() === APPROVED_GROUP_NAME
   )
-  const welcomedAt = data?.metadata?.welcomed_at as string | undefined
+  const welcomedAt = customer?.metadata?.welcomed_at as string | undefined
   const welcomedAtDate = welcomedAt ? new Date(welcomedAt) : null
   const justSent = welcomedAtDate && (Date.now() - welcomedAtDate.getTime() < 60_000)
 
   const onClick = async () => {
-    // Confirm if last send was within 60s — guards accidental double-clicks
-    // but supports legit "customer didn't get it, send again" support flow.
     if (justSent) {
       const sec = Math.round((Date.now() - welcomedAtDate!.getTime()) / 1000)
       const ok = window.confirm(
@@ -60,13 +81,25 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
           ? `Approved · welcome email sent to ${json.email}`
           : `Welcome email re-sent to ${json.email}`
       )
-      // Refresh so groups + metadata in the admin UI reflect the change.
-      setTimeout(() => window.location.reload(), 800)
+      // Refresh widget state — picks up the group + new welcomed_at stamp
+      // without forcing a full-page reload.
+      await refresh()
     } catch (e: any) {
       toast.error(e?.message ?? "Network error")
     } finally {
       setBusy(false)
     }
+  }
+
+  if (loading && !customer) {
+    return (
+      <Container className="divide-y p-0">
+        <div className="px-6 py-4">
+          <Heading level="h2">Approval</Heading>
+          <Text size="small" className="text-ui-fg-subtle">Loading…</Text>
+        </div>
+      </Container>
+    )
   }
 
   const label = inApproved ? "Resend Welcome Email" : "Approve & Send Welcome"
