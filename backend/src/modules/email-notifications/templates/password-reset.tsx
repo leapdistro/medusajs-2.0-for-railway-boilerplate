@@ -1,16 +1,11 @@
-import { Button, Hr, Link, Section, Text } from '@react-email/components'
-import { Base } from './base'
+import { Hr, Link, Text } from '@react-email/components'
+import { Base, Headline, P, PrimaryButton } from './base'
 
-/** Template key — used by both the user-initiated /auth/forgot flow AND
- *  the approval-welcome flow (admin moves customer to "approved" group →
- *  reset is triggered server-side → this email lands with the link). */
+/** Used by both /auth/forgot AND welcome-on-approval flow. */
 export const PASSWORD_RESET = 'password-reset'
 
 export interface PasswordResetProps {
-  /** The full URL the customer clicks to set/reset their password. */
   resetUrl: string
-  /** True when this email is going out as the welcome-on-approval. Subtly
-   *  reframes the copy ("Welcome — set your password" vs "Reset"). */
   isWelcome?: boolean
   preview?: string
 }
@@ -19,8 +14,7 @@ export const isPasswordResetData = (data: any): data is PasswordResetProps =>
   typeof data?.resetUrl === 'string'
 
 /** One template, two contexts. The approval flow flips `isWelcome` so the
- *  copy reads as a welcome rather than a security-reset message. The
- *  underlying mechanism is the same Medusa reset token. */
+ *  copy reads as a welcome rather than a security-reset message. */
 export const PasswordResetEmail = ({
   resetUrl,
   isWelcome = false,
@@ -32,48 +26,57 @@ export const PasswordResetEmail = ({
   )
   return (
     <Base preview={previewLine}>
-      <Section className="mt-[16px]">
-        <Text className="text-black text-[20px] leading-[28px] font-bold m-0">
-          {isWelcome ? 'Welcome — you\'re approved.' : 'Reset your password'}
-        </Text>
-        <Text className="text-black text-[14px] leading-[22px] mt-[16px]">
-          {isWelcome
-            ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing.'
-            : 'Click the button below to set a new password for your Mind Body Spirit wholesale account. The link expires in about 15 minutes.'}
-        </Text>
-        <Section className="mt-[24px] mb-[24px] text-center">
-          <Button
-            className="bg-black text-white text-[13px] font-bold no-underline px-6 py-3 rounded-none"
-            href={resetUrl}
-          >
-            {isWelcome ? 'Set My Password' : 'Reset Password'}
-          </Button>
-        </Section>
-        <Text className="text-[#666666] text-[12px] leading-[18px] m-0">
-          Or copy and paste this URL into your browser:
-        </Text>
-        <Text style={{
+      {isWelcome ? (
+        <Headline>You&rsquo;re <span style={{ color: '#D93737' }}>approved.</span></Headline>
+      ) : (
+        <Headline>Reset your <span style={{ color: '#D93737' }}>password.</span></Headline>
+      )}
+
+      <P>
+        {isWelcome
+          ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing.'
+          : 'Click the button below to set a new password for your Mind Body Spirit wholesale account. The link expires in about 15 minutes.'}
+      </P>
+
+      <PrimaryButton href={resetUrl}>
+        {isWelcome ? 'Set My Password' : 'Reset Password'}
+      </PrimaryButton>
+
+      <Text
+        style={{
+          margin: '8px 0 6px',
+          fontFamily: 'Helvetica, Arial, sans-serif',
+          fontSize: '11px',
+          color: '#4A4A45',
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          fontWeight: 600,
+        }}
+      >
+        Or paste this URL into your browser
+      </Text>
+      <Text
+        style={{
+          margin: 0,
+          fontFamily: 'Helvetica, Arial, sans-serif',
           fontSize: '11px',
           maxWidth: '100%',
           wordBreak: 'break-all',
           overflowWrap: 'break-word',
-          margin: '6px 0 0 0',
-        }}>
-          <Link href={resetUrl} className="text-blue-600 no-underline">
-            {resetUrl}
-          </Link>
-        </Text>
+        }}
+      >
+        <Link href={resetUrl} style={{ color: '#1A1A1A', textDecoration: 'underline' }}>
+          {resetUrl}
+        </Link>
+      </Text>
 
-        <Hr className="border border-solid border-[#eaeaea] my-[24px] mx-0 w-full" />
-        <Text className="text-[#666666] text-[12px] leading-[18px] m-0">
-          {isWelcome
-            ? 'Questions? Reply to this email.'
-            : 'Didn\'t request this? Ignore this email — your password stays unchanged.'}
-        </Text>
-        <Text className="text-[#666666] text-[12px] leading-[18px] mt-[8px]">
-          — The Mind Body Spirit team
-        </Text>
-      </Section>
+      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '28px 0 16px' }} />
+
+      <P muted>
+        {isWelcome
+          ? 'Questions? Reply to this email — it goes straight to our wholesale team.'
+          : 'Didn\'t request this? Ignore this email — your password stays unchanged.'}
+      </P>
     </Base>
   )
 }

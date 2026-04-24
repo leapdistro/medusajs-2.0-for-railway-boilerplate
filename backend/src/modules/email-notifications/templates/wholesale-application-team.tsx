@@ -1,5 +1,5 @@
-import { Hr, Link, Section, Text } from '@react-email/components'
-import { Base } from './base'
+import { Hr, Link, Text } from '@react-email/components'
+import { Base, Headline, P } from './base'
 
 /** Template key — referenced by the /api/store/mbs/applications route. */
 export const WHOLESALE_APPLICATION_TEAM = 'wholesale-application-team'
@@ -53,68 +53,111 @@ export const WholesaleApplicationTeamEmail = ({
   const previewLine = preview ?? `New application from ${businessName} (${contactName})`
   return (
     <Base preview={previewLine}>
-      <Section className="mt-[16px]">
-        <Text className="text-black text-[18px] leading-[26px] font-bold m-0">
-          New wholesale application
-        </Text>
-        <Text className="text-[#666666] text-[12px] leading-[18px] mt-[4px]">
-          Review within one business day per the SLA we promise applicants.
-        </Text>
+      <Headline>New <span style={{ color: '#D93737' }}>application.</span></Headline>
+      <P muted>
+        Review within one business day per the SLA we promise applicants.
+      </P>
 
-        <Hr className="border border-solid border-[#eaeaea] my-[20px] mx-0 w-full" />
+      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
 
-        <FieldRow label="Business" value={businessName} />
-        <FieldRow label="Contact"  value={contactName} />
-        <FieldRow label="Email"    value={email} />
-        {phone   && <FieldRow label="Phone"   value={phone} />}
-        {website && <FieldRow label="Website" value={website} />}
-        <FieldRow label="Address"  value={address} />
-        <FieldRow label="EIN"      value={ein} />
-        <FieldRow label="License"  value={license} />
-        {volume  && <FieldRow label="Est. monthly volume" value={volume} />}
-        {heard   && <FieldRow label="Heard via"           value={heard} />}
-        {message && <FieldRow label="Message"             value={message} />}
+      <FieldRow label="Business" value={businessName} />
+      <FieldRow label="Contact"  value={contactName} />
+      <FieldRow label="Email"    value={email} />
+      {phone   && <FieldRow label="Phone"   value={phone} />}
+      {website && <FieldRow label="Website" value={website} />}
+      <FieldRow label="Address"  value={address} />
+      <FieldRow label="EIN"      value={ein} />
+      <FieldRow label="License"  value={license} />
+      {volume  && <FieldRow label="Est. monthly volume" value={volume} />}
+      {heard   && <FieldRow label="Heard via"           value={heard} />}
+      {message && <FieldRow label="Message"             value={message} />}
 
-        {(einDocUrl || licenseDocUrl) && (
-          <>
-            <Hr className="border border-solid border-[#eaeaea] my-[20px] mx-0 w-full" />
-            <Text className="text-black text-[13px] leading-[20px] font-bold m-0">Uploaded documents</Text>
-            {einDocUrl && (
-              <Text className="text-[13px] leading-[20px] m-0 mt-[6px]">
-                EIN: <Link href={einDocUrl} className="text-blue-600">Open</Link>
-              </Text>
-            )}
-            {licenseDocUrl && (
-              <Text className="text-[13px] leading-[20px] m-0 mt-[6px]">
-                License: <Link href={licenseDocUrl} className="text-blue-600">Open</Link>
-              </Text>
-            )}
-          </>
-        )}
-
-        {customerLink && (
-          <>
-            <Hr className="border border-solid border-[#eaeaea] my-[20px] mx-0 w-full" />
-            <Text className="text-[13px] leading-[20px] m-0">
-              <Link href={customerLink} className="text-blue-600 font-bold">
-                Open in Medusa admin →
-              </Link>
+      {(einDocUrl || licenseDocUrl) && (
+        <>
+          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Text
+            style={{
+              margin: 0,
+              fontFamily: 'Helvetica, Arial, sans-serif',
+              fontSize: '11px',
+              fontWeight: 700,
+              letterSpacing: '0.18em',
+              textTransform: 'uppercase',
+              color: '#0A0A0A',
+            }}
+          >
+            Uploaded Documents
+          </Text>
+          {einDocUrl && (
+            <Text style={{ margin: '8px 0 0', fontSize: '13px', fontFamily: 'Helvetica, Arial, sans-serif' }}>
+              EIN: <Link href={einDocUrl} style={{ color: '#D93737', fontWeight: 600 }}>Open</Link>
             </Text>
-            <Text className="text-[#666666] text-[11px] leading-[16px] mt-[8px]">
-              To approve: change customer group to <strong>Approved</strong>.
-              The applicant gets a welcome + password setup email automatically.
+          )}
+          {licenseDocUrl && (
+            <Text style={{ margin: '6px 0 0', fontSize: '13px', fontFamily: 'Helvetica, Arial, sans-serif' }}>
+              License: <Link href={licenseDocUrl} style={{ color: '#D93737', fontWeight: 600 }}>Open</Link>
             </Text>
-          </>
-        )}
-      </Section>
+          )}
+        </>
+      )}
+
+      {customerLink && (
+        <>
+          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Text
+            style={{
+              margin: 0,
+              fontSize: '14px',
+              fontFamily: 'Helvetica, Arial, sans-serif',
+              fontWeight: 700,
+            }}
+          >
+            <Link href={customerLink} style={{ color: '#0A0A0A' }}>
+              Open in Medusa admin →
+            </Link>
+          </Text>
+          <Text
+            style={{
+              margin: '8px 0 0',
+              fontSize: '11px',
+              color: '#4A4A45',
+              fontFamily: 'Helvetica, Arial, sans-serif',
+              lineHeight: '1.5',
+            }}
+          >
+            To approve: click <strong>Approve &amp; Send Welcome</strong> on the
+            customer detail page. The applicant gets a welcome + password
+            setup email automatically.
+          </Text>
+        </>
+      )}
     </Base>
   )
 }
 
 const FieldRow = ({ label, value }: { label: string; value: string }) => (
-  <Text className="text-[13px] leading-[20px] m-0 mt-[6px]">
-    <span className="text-[#666666]">{label}: </span>
-    <span className="text-black">{value}</span>
+  <Text
+    style={{
+      margin: '0 0 8px',
+      fontFamily: 'Helvetica, Arial, sans-serif',
+      fontSize: '13px',
+      lineHeight: '1.5',
+    }}
+  >
+    <span
+      style={{
+        display: 'inline-block',
+        width: '110px',
+        color: '#4A4A45',
+        fontWeight: 600,
+        fontSize: '11px',
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+      }}
+    >
+      {label}
+    </span>
+    <span style={{ color: '#0A0A0A' }}>{value}</span>
   </Text>
 )
 

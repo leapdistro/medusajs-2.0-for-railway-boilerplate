@@ -1,5 +1,5 @@
-import { Hr, Section, Text } from '@react-email/components'
-import { Base } from './base'
+import { Hr } from '@react-email/components'
+import { Base, Headline, P } from './base'
 
 /** Template key — referenced by the /api/store/mbs/applications route. */
 export const WHOLESALE_APPLICATION_APPLICANT = 'wholesale-application-applicant'
@@ -13,42 +13,36 @@ export interface WholesaleApplicationApplicantProps {
 export const isWholesaleApplicationApplicantData = (data: any): data is WholesaleApplicationApplicantProps =>
   typeof data?.contactName === 'string' && typeof data?.businessName === 'string'
 
-/**
- * Confirmation email sent to the applicant immediately after submitting
- * the wholesale application form. Friendly + sets expectation of a
- * one-business-day turnaround. Replies route to wholesale@hempmbs.com.
- */
+/** Confirmation email sent to the applicant immediately after submitting
+ *  the wholesale application form. */
 export const WholesaleApplicationApplicantEmail = ({
   contactName,
   businessName,
   preview = 'We received your wholesale application — review takes about one business day.',
 }: WholesaleApplicationApplicantProps) => {
+  const firstName = contactName.split(' ')[0] || contactName
   return (
     <Base preview={preview}>
-      <Section className="mt-[16px]">
-        <Text className="text-black text-[20px] leading-[28px] font-bold m-0">
-          Hi {contactName.split(' ')[0] || contactName},
-        </Text>
-        <Text className="text-black text-[14px] leading-[22px] mt-[16px]">
-          Thanks for applying for a Mind Body Spirit wholesale account on
-          behalf of <strong>{businessName}</strong>. We received your application
-          and uploaded documents.
-        </Text>
-        <Text className="text-black text-[14px] leading-[22px]">
-          Our team reviews new applications within{' '}
-          <strong>one business day</strong>. Once approved, you&rsquo;ll get a
-          welcome email with a link to set your password and start ordering at
-          wholesale pricing.
-        </Text>
-        <Hr className="border border-solid border-[#eaeaea] my-[24px] mx-0 w-full" />
-        <Text className="text-[#666666] text-[12px] leading-[20px] m-0">
-          Questions in the meantime? Just reply to this email — it goes
-          straight to our wholesale team.
-        </Text>
-        <Text className="text-[#666666] text-[12px] leading-[20px] mt-[8px]">
-          — The Mind Body Spirit team
-        </Text>
-      </Section>
+      <Headline>Application <span style={{ color: '#D93737' }}>received.</span></Headline>
+      <P>
+        Hi {firstName} — thanks for applying for a Mind Body Spirit wholesale
+        account on behalf of <strong>{businessName}</strong>. Your application
+        and uploaded documents are in.
+      </P>
+      <P>
+        Our team reviews new accounts within{' '}
+        <strong style={{ color: '#D93737' }}>one business day</strong>. Once
+        approved, you&rsquo;ll get a welcome email with a link to set your
+        password and start ordering at wholesale pricing.
+      </P>
+
+      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+
+      <P muted>
+        Questions in the meantime? Just reply to this email — it goes
+        straight to our wholesale team.
+      </P>
+      <P muted>— The Mind Body Spirit team</P>
     </Base>
   )
 }
