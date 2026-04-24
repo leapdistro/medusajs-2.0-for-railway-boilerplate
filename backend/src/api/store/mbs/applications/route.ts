@@ -237,7 +237,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         template: "wholesale-application-team",
         from: resendFrom,
         data: {
-          subject: `New wholesale application: ${businessName}`,
+          emailOptions: {
+            subject: `New wholesale application: ${businessName}`,
+          },
           businessName, contactName, email, phone,
           address: `${address1}${address2 ? `, ${address2}` : ""}, ${city}, ${state} ${zip}`,
           ein, license, website, volume, heard, message,
@@ -251,7 +253,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         template: "wholesale-application-applicant",
         from: resendFrom,
         data: {
-          subject: "Your Mind Body Spirit wholesale application",
+          emailOptions: {
+            subject: "Your Mind Body Spirit wholesale application",
+          },
           contactName,
           businessName,
         },
