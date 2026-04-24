@@ -7,13 +7,15 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  * audit trail / fallback.
  *
  * This handler covers BOTH user contexts:
- *   - User-initiated reset via /auth/forgot
- *   - Approval-welcome flow: customer-approved subscriber triggers a
- *     reset programmatically when admin moves a customer to the
- *     "approved" group, which fires this same event.
+ *   - User-initiated reset via /auth/forgot → standard reset email
+ *   - Approval-welcome flow → admin route stamps customer.metadata.pending_welcome
+ *     before triggering the reset; we detect that flag and send the welcome
+ *     variant of the email, then clear it.
  *
- * The `isWelcome` flag is read from event.data.context if present (set
- * by the approval subscriber) so the email copy reframes accordingly.
+ * Why metadata (not event.data.context): Medusa's reset-password endpoint
+ * doesn't accept arbitrary fields on the request body, so we can't pass
+ * context through the event. customer.metadata is the cheapest reliable
+ * channel.
  *
  * Event payload shape (Medusa v2):
  *   { entity_id: <auth_identity_id ≈ email>, actor_type: "customer", token: <jwt> }
@@ -21,9 +23,9 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 export default async function customerPasswordResetHandler({
   event,
   container,
-}: SubscriberArgs<{ entity_id: string; actor_type?: string; token?: string; context?: { isWelcome?: boolean } }>) {
+}: SubscriberArgs<{ entity_id: string; actor_type?: string; token?: string }>) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const data = event?.data ?? ({} as { entity_id?: string; actor_type?: string; token?: string; context?: { isWelcome?: boolean } })
+  const data = event?.data ?? ({} as { entity_id?: string; actor_type?: string; token?: string })
 
   // Skip admin user resets if they fire on the same event channel.
   if (data.actor_type && data.actor_type !== "customer") return
@@ -40,7 +42,27 @@ export default async function customerPasswordResetHandler({
   const params = new URLSearchParams({ token })
   if (email && email.includes("@")) params.set("email", email)
   const resetUrl = `${storefrontUrl}/auth/reset?${params.toString()}`
-  const isWelcome = data.context?.isWelcome === true
+
+  // Detect welcome context by reading customer.metadata.pending_welcome.
+  // The admin "Approve & Send Welcome" route sets this flag right before
+  // triggering reset; we clear it after sending.
+  let isWelcome = false
+  let customerId: string | null = null
+  let customerMetadata: Record<string, any> | null = null
+  if (email && email.includes("@")) {
+    try {
+      const customerService: any = container.resolve(Modules.CUSTOMER)
+      const customers = await customerService.listCustomers({ email: [email] }, { take: 1 })
+      const c = customers?.[0]
+      if (c) {
+        customerId = c.id
+        customerMetadata = c.metadata ?? {}
+        isWelcome = !!customerMetadata?.pending_welcome
+      }
+    } catch (e: any) {
+      logger.warn(`[password-reset] could not look up customer by email: ${e?.message}`)
+    }
+  }
 
   // Audit log — kept even when Resend is wired so devs can grep Railway
   // logs to confirm a reset fired (e.g. when debugging delivery issues).
@@ -80,6 +102,19 @@ export default async function customerPasswordResetHandler({
       },
     }])
     logger.info(`[password-reset] sent ${isWelcome ? "welcome" : "reset"} email to ${email} via Resend`)
+
+    // Clear the pending_welcome flag so subsequent /auth/forgot resets
+    // get the standard email copy.
+    if (isWelcome && customerId) {
+      try {
+        const customerService: any = container.resolve(Modules.CUSTOMER)
+        const cleared = { ...(customerMetadata ?? {}) }
+        delete (cleared as any).pending_welcome
+        await customerService.updateCustomers(customerId, { metadata: cleared })
+      } catch (e: any) {
+        logger.warn(`[password-reset] could not clear pending_welcome flag: ${e?.message}`)
+      }
+    }
   } catch (e: any) {
     logger.warn(`[password-reset] email send failed (non-fatal): ${e?.message ?? e}`)
   }

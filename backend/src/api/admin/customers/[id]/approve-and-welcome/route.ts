@@ -74,48 +74,60 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
   }
 
-  // Trigger Medusa's reset-password flow with the welcome context flag.
-  // This fires auth.password_reset → password-reset subscriber → email.
+  // Set a `pending_welcome=true` flag on the customer's metadata BEFORE
+  // calling reset. The password-reset subscriber will read this flag to
+  // know this is a welcome (vs a normal /auth/forgot reset) and clear it
+  // after sending. We use metadata as the channel because Medusa's
+  // reset-password endpoint doesn't accept arbitrary context fields.
+  const welcomedAt = new Date().toISOString()
+  try {
+    await customerService.updateCustomers(customer.id, {
+      metadata: {
+        ...(customer.metadata ?? {}),
+        pending_welcome: true,
+        welcomed_at: welcomedAt,
+        application_status: "approved",
+      },
+    })
+  } catch (e: any) {
+    logger.warn(`[approve-and-welcome] could not stamp pending_welcome metadata: ${e?.message}`)
+    return res.status(500).json({ ok: false, message: "Could not flag pending welcome", groupAttached })
+  }
+
+  // Trigger Medusa's reset-password flow. Server-to-server call; needs the
+  // store publishable key. MEDUSA_PUBLISHABLE_API_KEY must be set on
+  // Railway (same value as the storefront's NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY).
   const baseUrl = process.env.MEDUSA_BACKEND_URL || `http://localhost:${process.env.PORT || 9000}`
   const publishableKey = process.env.MEDUSA_PUBLISHABLE_API_KEY
+  if (!publishableKey) {
+    return res.status(500).json({
+      ok: false,
+      message: "MEDUSA_PUBLISHABLE_API_KEY env var is not set on the backend. Add it on Railway (same value as storefront's NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY).",
+      groupAttached,
+    })
+  }
 
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (publishableKey) headers["x-publishable-api-key"] = publishableKey
     const resetRes = await fetch(`${baseUrl}/auth/customer/emailpass/reset-password`, {
       method: "POST",
-      headers,
-      body: JSON.stringify({
-        identifier: customer.email,
-        context: { isWelcome: true },
-      }),
+      headers: {
+        "Content-Type": "application/json",
+        "x-publishable-api-key": publishableKey,
+      },
+      body: JSON.stringify({ identifier: customer.email }),
     })
     if (!resetRes.ok) {
       const body = await resetRes.text().catch(() => "")
       logger.warn(`[approve-and-welcome] reset-password failed for ${customer.email} (${resetRes.status}): ${body.slice(0, 200)}`)
       return res.status(500).json({
         ok: false,
-        message: `Could not trigger welcome email: ${resetRes.status}`,
+        message: `Could not trigger welcome email: ${resetRes.status} ${body.slice(0, 100)}`,
         groupAttached,
       })
     }
   } catch (e: any) {
     logger.warn(`[approve-and-welcome] reset-password threw for ${customer.email}: ${e?.message}`)
     return res.status(500).json({ ok: false, message: `Could not trigger welcome email: ${e?.message}`, groupAttached })
-  }
-
-  // Stamp metadata so the widget can render "Last sent" + flip its label.
-  const welcomedAt = new Date().toISOString()
-  try {
-    await customerService.updateCustomers(customer.id, {
-      metadata: {
-        ...(customer.metadata ?? {}),
-        welcomed_at: welcomedAt,
-        application_status: "approved",
-      },
-    })
-  } catch (e: any) {
-    logger.warn(`[approve-and-welcome] could not stamp metadata: ${e?.message}`)
   }
 
   logger.info(`[approve-and-welcome] success: ${customer.email} (groupAttached=${groupAttached})`)
