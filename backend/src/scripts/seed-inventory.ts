@@ -21,8 +21,8 @@ const WAREHOUSE_NAME = process.env.SEED_INVENTORY_LOCATION_NAME || "MBS US Wareh
 
 export default async function seedInventory({ container, args }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const link    = container.resolve(ContainerRegistrationKeys.LINK)
-  const remoteQuery = container.resolve(ContainerRegistrationKeys.REMOTE_QUERY)
+  const link   = container.resolve(ContainerRegistrationKeys.LINK)
+  const query  = container.resolve(ContainerRegistrationKeys.QUERY)
 
   const productService:    any = container.resolve(Modules.PRODUCT)
   const inventoryService:  any = container.resolve(Modules.INVENTORY)
@@ -47,13 +47,12 @@ export default async function seedInventory({ container, args }: ExecArgs) {
   logger.info(`  · warehouse: ${warehouse.name} (${warehouse.id})`)
 
   // ─── 2. List every variant ─────────────────────────────────────────
-  // Pull all variants with their existing inventory items via remote query so
+  // Pull all variants with their existing inventory items via query.graph so
   // we can detect what's already linked + skip without duplicate work.
-  const { data: variants } = await remoteQuery({
-    entryPoint: "product_variant",
+  const { data: variants } = await query.graph({
+    entity: "product_variant",
     fields: ["id", "sku", "manage_inventory", "title", "product.title", "inventory_items.inventory.id", "inventory_items.inventory.sku"],
-    pagination: { take: 1000 },
-  } as any) as any
+  })
   if (!variants?.length) {
     logger.warn("✗ No product variants found.")
     return
