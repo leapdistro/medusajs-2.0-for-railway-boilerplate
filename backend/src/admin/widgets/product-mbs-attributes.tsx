@@ -13,13 +13,10 @@ import {
 } from "@medusajs/ui"
 import { useEffect, useMemo, useState } from "react"
 
-const TIER_OPTS = [
-  { value: "classic", label: "Classic" },
-  { value: "exotic",  label: "Exotic" },
-  { value: "super",   label: "Super" },
-  { value: "rapper",  label: "Rapper" },
-  { value: "snow",    label: "Snowcaps" },
-]
+/* Tier dropdown was removed on 2026-04-25 — tier now derives from the
+ * product's sub-category assignment. Operators set tier by picking the
+ * Classic / Exotic / Super / Rapper / Snowcaps sub-cat in the Organize
+ * section of the product create flow. No separate tier dropdown here. */
 
 const STRAIN_OPTS = [
   { value: "Indica",  label: "Indica" },
@@ -45,7 +42,6 @@ const ALL_EFFECTS = [
 ] as const
 
 type Form = {
-  tier: string
   strain_type: string
   best_for: string
   potency: string
@@ -56,7 +52,6 @@ type Form = {
 }
 
 const EMPTY_FORM: Form = {
-  tier: "",
   strain_type: "",
   best_for: "",
   potency: "",
@@ -80,7 +75,6 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
       .then(({ attributes }) => {
         if (cancelled || !attributes) return
         setForm({
-          tier: attributes.tier ?? "",
           strain_type: attributes.strain_type ?? "",
           best_for: attributes.best_for ?? "",
           potency: attributes.potency != null ? String(attributes.potency) : "",
@@ -116,7 +110,6 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
     setSaving(true)
     try {
       const payload = {
-        tier: form.tier || null,
         strain_type: form.strain_type || null,
         best_for: form.best_for || null,
         potency: form.potency ? Number(form.potency) : null,
@@ -174,7 +167,7 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         <div>
           <Heading level="h2">MBS Attributes</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            Cannabis-specific fields used by the storefront (tier, strain, COA, effects).
+            Cannabis-specific fields used by the storefront (strain, potency, COA, effects). Tier comes from the sub-category in Organize.
           </Text>
         </div>
         <Button variant="primary" onClick={onSave} isLoading={saving} disabled={loading}>
@@ -183,13 +176,6 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
       </div>
 
       <div className="grid grid-cols-1 gap-6 px-6 py-6 md:grid-cols-2">
-        <SelectField
-          label="Tier"
-          value={form.tier}
-          onChange={(v) => setForm({ ...form, tier: v })}
-          options={TIER_OPTS}
-          placeholder="Select tier"
-        />
         <SelectField
           label="Strain Type"
           value={form.strain_type}

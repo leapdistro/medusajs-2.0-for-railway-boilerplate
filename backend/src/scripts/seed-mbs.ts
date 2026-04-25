@@ -149,8 +149,8 @@ export default async function seedMbsProducts({ container }: ExecArgs) {
       logger.info(`  + ${p.slug}: created in ${childKey}`)
     }
 
+    /* `tier` removed from MBS Attributes 2026-04-25 — derives from sub-cat now. */
     const attrPayload = {
-      tier: p.tier,
       strain_type: p.strain,
       best_for: p.bestFor,
       potency: p.potency,
