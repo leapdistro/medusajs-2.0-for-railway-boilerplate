@@ -176,6 +176,7 @@ export default async function seedUsSetup({ container }: ExecArgs) {
     const existingNames = new Set(existingOptions.map((o: { name: string }) => o.name))
 
     const wantedOptions = [
+      { name: "Local Pickup",      code: "local-pickup", amount: 0,    label: "Pickup",    description: "Pick up at MBS warehouse — call to schedule" },
       { name: "UPS Ground",        code: "ups-ground",   amount: 1500, label: "Standard",  description: "5–7 business days" },
       { name: "UPS 2-Day Air",     code: "ups-2day",     amount: 3500, label: "Express",   description: "2 business days" },
       { name: "UPS Next Day Air",  code: "ups-next-day", amount: 6500, label: "Overnight", description: "Next business day" },
@@ -183,7 +184,7 @@ export default async function seedUsSetup({ container }: ExecArgs) {
 
     const toCreate = wantedOptions.filter((o) => !existingNames.has(o.name))
     if (toCreate.length === 0) {
-      logger.info("  · shipping options: all 3 exist")
+      logger.info("  · shipping options: all 4 exist")
     } else {
       await createShippingOptionsWorkflow(container).run({
         input: toCreate.map((o) => ({
