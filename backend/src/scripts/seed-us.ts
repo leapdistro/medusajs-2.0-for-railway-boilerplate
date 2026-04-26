@@ -181,11 +181,16 @@ export default async function seedUsSetup({ container }: ExecArgs) {
     const existingOptions = await fulfillmentService.listShippingOptions({ service_zone_id: serviceZoneId })
     const existingNames = new Set(existingOptions.map((o: { name: string }) => o.name))
 
+    /* Amounts are in WHOLE USD units (matching variant prices) — Medusa
+     * v2 doesn't use cents for these. Original seed had cents-style
+     * values (1500/3500/6500) which displayed as $1,500/$3,500/$6,500
+     * on the storefront — corrected here. fix-shipping-prices.ts can
+     * repair existing options that were created with the wrong values. */
     const wantedOptions = [
-      { name: "Local Pickup",      code: "local-pickup", amount: 0,    label: "Pickup",    description: "Pick up at MBS warehouse — call to schedule" },
-      { name: "UPS Ground",        code: "ups-ground",   amount: 1500, label: "Standard",  description: "5–7 business days" },
-      { name: "UPS 2-Day Air",     code: "ups-2day",     amount: 3500, label: "Express",   description: "2 business days" },
-      { name: "UPS Next Day Air",  code: "ups-next-day", amount: 6500, label: "Overnight", description: "Next business day" },
+      { name: "Local Pickup",      code: "local-pickup", amount: 0,  label: "Pickup",    description: "Pick up at MBS warehouse — call to schedule" },
+      { name: "UPS Ground",        code: "ups-ground",   amount: 15, label: "Standard",  description: "5–7 business days" },
+      { name: "UPS 2-Day Air",     code: "ups-2day",     amount: 35, label: "Express",   description: "2 business days" },
+      { name: "UPS Next Day Air",  code: "ups-next-day", amount: 65, label: "Overnight", description: "Next business day" },
     ]
 
     const toCreate = wantedOptions.filter((o) => !existingNames.has(o.name))
