@@ -141,7 +141,13 @@ export default async function seedUsSetup({ container }: ExecArgs) {
   }
 
   // ─── Fulfillment set: US (with UPS service zone) ───────────────────
-  const existingSets = await fulfillmentService.listFulfillmentSets({ name: "MBS US delivery" })
+  // Expand `service_zones` so the existing-set branch knows the zone id —
+  // the default list response doesn't include the relation, which made
+  // shipping options silently skip on subsequent runs.
+  const existingSets = await fulfillmentService.listFulfillmentSets(
+    { name: "MBS US delivery" },
+    { relations: ["service_zones"] },
+  )
   let fulfillmentSet = existingSets[0]
   if (!fulfillmentSet) {
     fulfillmentSet = await fulfillmentService.createFulfillmentSets({
