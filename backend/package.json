@@ -20,6 +20,7 @@
     "seed:fix-prices": "medusa exec ./src/scripts/fix-prices.ts",
     "seed:inventory": "medusa exec ./src/scripts/seed-inventory.ts",
     "wipe:catalog": "medusa exec ./src/scripts/wipe-catalog.ts",
+    "link:shipping-profile": "medusa exec ./src/scripts/link-shipping-profile.ts",
     "ib": "init-backend",
     "start": "init-backend && cd .medusa/server && medusa start --verbose",
     "dev": "medusa develop",
