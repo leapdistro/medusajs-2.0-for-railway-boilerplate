@@ -3,7 +3,9 @@
  * subscriber + admin route handlers tiny and identical-by-construction
  * (so customer + team emails always show the exact same totals/addresses).
  */
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../mbs-settings"
+import { EmailTemplates } from "../templates"
 
 /* Friendly labels for payment provider IDs. Mirrors the storefront's
  * PROVIDER_LABELS map (src/lib/cart.ts). When we add KAJA, add a row
@@ -172,4 +174,191 @@ export function pickPaymentProviderId(order: any): string | null {
   const coll = order?.payment_collections?.[0]
   const session = coll?.payment_sessions?.[0]
   return session?.provider_id ?? coll?.payments?.[0]?.provider_id ?? null
+}
+
+const TEAM_NOTIFICATION_TO = "wholesale@hempmbs.com"
+
+/**
+ * Sends the 3 order-placed emails (Order Received, Team Alert, Payment
+ * Instructions) for the given order. Used by BOTH the order.placed
+ * subscriber AND the manual-resend admin route — keeps the assembly
+ * logic identical so a successful manual send proves the data path
+ * works and isolates failures to event wiring.
+ *
+ * Returns a structured result so callers (admin route) can show the
+ * operator exactly what fired/skipped/failed.
+ */
+export type OrderPlacedSendResult = {
+  ok: boolean
+  orderId: string
+  displayId?: string
+  receivedSent?: boolean
+  teamAlertSent?: boolean
+  paymentInstructionsSent?: boolean
+  paymentInstructionsSkipped?: boolean
+  errors: string[]
+}
+
+export async function sendOrderPlacedEmails(container: any, orderId: string): Promise<OrderPlacedSendResult> {
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
+  const result: OrderPlacedSendResult = { ok: false, orderId, errors: [] }
+
+  const resendKey  = process.env.RESEND_API_KEY
+  const resendFrom = process.env.RESEND_FROM_EMAIL
+  if (!resendKey || !resendFrom) {
+    result.errors.push("RESEND_API_KEY or RESEND_FROM_EMAIL not set")
+    return result
+  }
+
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const customerService: any = container.resolve(Modules.CUSTOMER)
+
+  // Pull the order with everything emails need.
+  let order: any
+  try {
+    const { data: orders } = await query.graph({
+      entity: "order",
+      fields: [
+        "id", "display_id", "email", "customer_id", "currency_code", "created_at",
+        "shipping_total", "tax_total", "subtotal", "total",
+        "*items", "*items.product", "items.product.images.url",
+        "*shipping_address",
+        "*billing_address",
+        "*shipping_methods",
+        "payment_collections.id",
+        "payment_collections.payment_sessions.provider_id",
+        "payment_collections.payments.provider_id",
+        "payment_collections.payments.captured_at",
+      ],
+      filters: { id: orderId },
+    })
+    order = orders?.[0]
+    if (!order) {
+      result.errors.push(`Order ${orderId} not found`)
+      return result
+    }
+  } catch (e: any) {
+    result.errors.push(`query.graph failed: ${e?.message}`)
+    logger.error(`[order-emails] query.graph failed for ${orderId}: ${e?.message}`)
+    return result
+  }
+
+  result.displayId = String(order.display_id ?? order.id)
+
+  // Customer lookup for businessName + fallback name.
+  let customer: any = null
+  if (order.customer_id) {
+    try {
+      const list = await customerService.listCustomers({ id: [order.customer_id] }, { take: 1 })
+      customer = list?.[0] ?? null
+    } catch (e: any) {
+      logger.warn(`[order-emails] customer ${order.customer_id} lookup failed: ${e?.message}`)
+    }
+  }
+  const businessName: string | null =
+    (typeof customer?.metadata?.business_name === "string" && customer.metadata.business_name) ||
+    (typeof customer?.company_name === "string" && customer.company_name) || null
+
+  const settings = await loadEmailSettings(container)
+  const items = pickLineItems(order)
+  const totals = computeTotals(order)
+  const currency = order.currency_code ?? "usd"
+  const provider = describeProvider(pickPaymentProviderId(order))
+  const shippingMethodName = pickShippingMethodName(order)
+  const contactName = pickContactName(order, customer)
+  const displayId = result.displayId
+  const moneyArgs = (n: number) => formatMoney(n, currency)
+  const notificationModuleService: any = container.resolve(Modules.NOTIFICATION)
+
+  // 1. Customer "order received"
+  if (order.email) {
+    try {
+      await notificationModuleService.createNotifications([{
+        to: order.email,
+        channel: "email",
+        template: EmailTemplates.ORDER_RECEIVED,
+        from: resendFrom,
+        data: {
+          emailOptions: { subject: `Order #${displayId} received — we'll send tracking soon` },
+          displayId, contactName, businessName, items,
+          itemsTotalFormatted:    moneyArgs(totals.itemsTotal),
+          shippingTotalFormatted: moneyArgs(totals.shippingTotal),
+          taxTotalFormatted:      moneyArgs(totals.taxTotal),
+          grandTotalFormatted:    moneyArgs(totals.grandTotal),
+          shippingAddress: pickAddress(order.shipping_address),
+          billingAddress:  pickAddress(order.billing_address),
+          shippingMethodName,
+          paymentLabel: provider.label,
+          needsPaymentInstructions: provider.needsInstructions,
+        },
+      }])
+      result.receivedSent = true
+    } catch (e: any) {
+      result.errors.push(`ORDER_RECEIVED failed: ${e?.message}`)
+      logger.warn(`[order-emails] ORDER_RECEIVED failed: ${e?.message}`)
+    }
+  } else {
+    result.errors.push("Order has no email — skipped customer emails")
+  }
+
+  // 2. Team alert
+  try {
+    await notificationModuleService.createNotifications([{
+      to: TEAM_NOTIFICATION_TO,
+      channel: "email",
+      template: EmailTemplates.ORDER_TEAM_ALERT,
+      from: resendFrom,
+      data: {
+        emailOptions: { subject: `[MBS] New order #${displayId} — ${moneyArgs(totals.grandTotal)} from ${businessName || contactName}` },
+        displayId,
+        orderId: order.id,
+        customerEmail: order.email ?? "(no email)",
+        contactName, businessName, items,
+        itemsTotalFormatted:    moneyArgs(totals.itemsTotal),
+        shippingTotalFormatted: moneyArgs(totals.shippingTotal),
+        taxTotalFormatted:      moneyArgs(totals.taxTotal),
+        grandTotalFormatted:    moneyArgs(totals.grandTotal),
+        shippingAddress: pickAddress(order.shipping_address),
+        billingAddress:  pickAddress(order.billing_address),
+        shippingMethodName,
+        paymentLabel: provider.label,
+      },
+    }])
+    result.teamAlertSent = true
+  } catch (e: any) {
+    result.errors.push(`ORDER_TEAM_ALERT failed: ${e?.message}`)
+    logger.warn(`[order-emails] ORDER_TEAM_ALERT failed: ${e?.message}`)
+  }
+
+  // 3. Payment Instructions (conditional)
+  if (provider.needsInstructions && order.email) {
+    try {
+      await notificationModuleService.createNotifications([{
+        to: order.email,
+        channel: "email",
+        template: EmailTemplates.PAYMENT_INSTRUCTIONS,
+        from: resendFrom,
+        data: {
+          emailOptions: { subject: `Payment instructions for Order #${displayId} — ${moneyArgs(totals.grandTotal)} due` },
+          displayId, contactName,
+          amountDueFormatted: moneyArgs(totals.grandTotal),
+          payment: {
+            ...settings.payment,
+            memo_instruction: settings.payment.memo_instruction?.replace(/Order #N/i, `Order #${displayId}`),
+          },
+          contactEmail: settings.contact.email,
+          contactPhone: settings.contact.phone,
+        },
+      }])
+      result.paymentInstructionsSent = true
+    } catch (e: any) {
+      result.errors.push(`PAYMENT_INSTRUCTIONS failed: ${e?.message}`)
+      logger.warn(`[order-emails] PAYMENT_INSTRUCTIONS failed: ${e?.message}`)
+    }
+  } else {
+    result.paymentInstructionsSkipped = true
+  }
+
+  result.ok = result.errors.length === 0
+  return result
 }
