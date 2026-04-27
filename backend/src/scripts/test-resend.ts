@@ -7,16 +7,18 @@ import { sendOrderPlacedEmails } from "../modules/email-notifications/lib/order-
  * the event bus entirely. Tells us whether the email assembly + send
  * pipeline works independently of the order.placed subscriber wiring.
  *
- * Usage:
- *   pnpm test:resend -- <order_id>
- *   pnpm test:resend -- order_01KQ8FB51Y8NBGFSEK63N6SA7B
+ * Usage (env var is most reliable — pnpm/medusa-exec arg forwarding
+ * has shell-specific quirks):
+ *   ORDER_ID=order_01... pnpm test:resend
+ * Or (if arg forwarding works in your shell):
+ *   pnpm test:resend -- order_01...
  */
 export default async function testResend({ container, args }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const orderId = args?.[0]
+  const orderId = process.env.ORDER_ID || args?.[0]
 
   if (!orderId) {
-    logger.error("Usage: pnpm test:resend -- <order_id>")
+    logger.error("Missing order id. Use:  ORDER_ID=order_01... pnpm test:resend")
     return
   }
 
