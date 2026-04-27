@@ -80,13 +80,18 @@ export function pickAddress(a: any): any {
   }
 }
 
-/** Build the line-item rows used by ORDER_RECEIVED + ORDER_TEAM_ALERT. */
+/** Build the line-item rows used by ORDER_RECEIVED + ORDER_TEAM_ALERT.
+ *  Thumbnail comes from the line-item snapshot Medusa stores at
+ *  add-to-cart time (li.thumbnail), with product.thumbnail / first image
+ *  as fallbacks. The buyer-facing template shows it as a tiny 60×60
+ *  square next to each line; the team template ignores the field. */
 export function pickLineItems(order: any): Array<{
   title: string
   variantTitle?: string | null
   qty: number
   unitPriceFormatted: string
   subtotalFormatted: string
+  thumbnail?: string | null
 }> {
   const currency = order.currency_code ?? "usd"
   return (order.items ?? []).map((it: any) => ({
@@ -95,6 +100,7 @@ export function pickLineItems(order: any): Array<{
     qty: Number(it.quantity ?? 0),
     unitPriceFormatted: formatMoney(Number(it.unit_price ?? 0), currency),
     subtotalFormatted:  formatMoney(Number(it.subtotal ?? (Number(it.unit_price ?? 0) * Number(it.quantity ?? 0))), currency),
+    thumbnail: it.thumbnail ?? it.product?.thumbnail ?? it.product?.images?.[0]?.url ?? null,
   }))
 }
 

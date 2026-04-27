@@ -44,7 +44,7 @@ export default async function orderPlacedHandler({ event: { data }, container }:
     fields: [
       'id', 'display_id', 'email', 'currency_code', 'created_at',
       'shipping_total', 'tax_total', 'subtotal', 'total',
-      '*items', '*items.product',
+      '*items', '*items.product', 'items.product.images.url',
       '*shipping_address',
       '*billing_address',
       '*shipping_methods',

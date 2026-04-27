@@ -1,4 +1,4 @@
-import { Hr, Section, Text } from '@react-email/components'
+import { Hr, Img, Section, Text } from '@react-email/components'
 import { Base, Headline, P } from './base'
 
 export const ORDER_RECEIVED = 'order-received'
@@ -21,6 +21,10 @@ export type OrderEmailLine = {
   qty: number
   unitPriceFormatted: string
   subtotalFormatted: string
+  /** Optional product thumbnail URL. Used by ORDER_RECEIVED only — falls
+   *  back to a paper-colored placeholder square when missing so the
+   *  layout stays aligned. ORDER_TEAM_ALERT ignores this field. */
+  thumbnail?: string | null
 }
 export type OrderReceivedProps = {
   displayId: string
@@ -65,20 +69,48 @@ export const OrderReceivedTemplate = (p: OrderReceivedProps) => {
       <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
 
       <SubHead>Items</SubHead>
+      {/* Table layout (not flex) for Outlook compat. Thumbnail column is
+       *  fixed 60×60; text column takes the remaining width. */}
       {p.items.map((it, i) => (
-        <div key={i} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #F3F1EA' }}>
-          <Text style={{ margin: 0, fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '14px', fontWeight: 600, color: '#0A0A0A' }}>
-            {it.title}
-          </Text>
-          {it.variantTitle && (
-            <Text style={{ margin: '2px 0 0', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '12px', color: '#4A4A45' }}>
-              {it.variantTitle}
-            </Text>
-          )}
-          <Text style={{ margin: '4px 0 0', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', color: '#1A1A1A' }}>
-            {it.qty} × {it.unitPriceFormatted} = <strong>{it.subtotalFormatted}</strong>
-          </Text>
-        </div>
+        <table
+          key={i}
+          role="presentation"
+          cellPadding={0}
+          cellSpacing={0}
+          border={0}
+          style={{ width: '100%', marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #F3F1EA' }}
+        >
+          <tbody>
+            <tr>
+              <td width="60" valign="top" style={{ width: 60, paddingRight: 12 }}>
+                {it.thumbnail ? (
+                  <Img
+                    src={it.thumbnail}
+                    alt={it.title}
+                    width="60"
+                    height="60"
+                    style={{ display: 'block', width: 60, height: 60, objectFit: 'cover', border: '1px solid #E5E1D6' }}
+                  />
+                ) : (
+                  <div style={{ width: 60, height: 60, backgroundColor: '#F3F1EA', border: '1px solid #E5E1D6' }} />
+                )}
+              </td>
+              <td valign="top">
+                <Text style={{ margin: 0, fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '14px', fontWeight: 600, color: '#0A0A0A' }}>
+                  {it.title}
+                </Text>
+                {it.variantTitle && (
+                  <Text style={{ margin: '2px 0 0', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '12px', color: '#4A4A45' }}>
+                    {it.variantTitle}
+                  </Text>
+                )}
+                <Text style={{ margin: '4px 0 0', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', color: '#1A1A1A' }}>
+                  {it.qty} × {it.unitPriceFormatted} = <strong>{it.subtotalFormatted}</strong>
+                </Text>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       ))}
 
       <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
@@ -109,8 +141,8 @@ OrderReceivedTemplate.PreviewProps = {
   contactName: 'Jordan Lee',
   businessName: 'Greenline Provisions',
   items: [
-    { title: 'Wedding Cake', variantTitle: '1/4 oz', qty: 2, unitPriceFormatted: '$120.00', subtotalFormatted: '$240.00' },
-    { title: 'Pineapple Express', variantTitle: '1 oz', qty: 1, unitPriceFormatted: '$420.00', subtotalFormatted: '$420.00' },
+    { title: 'Wedding Cake', variantTitle: '1/4 oz', qty: 2, unitPriceFormatted: '$120.00', subtotalFormatted: '$240.00', thumbnail: 'https://placehold.co/120x120/0A0A0A/FAFAF7?text=WC' },
+    { title: 'Pineapple Express', variantTitle: '1 oz', qty: 1, unitPriceFormatted: '$420.00', subtotalFormatted: '$420.00', thumbnail: null },
   ],
   itemsTotalFormatted: '$660.00',
   shippingTotalFormatted: '$15.00',
