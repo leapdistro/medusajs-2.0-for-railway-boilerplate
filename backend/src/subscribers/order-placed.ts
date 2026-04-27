@@ -38,25 +38,41 @@ export default async function orderPlacedHandler({ event: { data }, container }:
     return
   }
 
-  // Pull the order with everything emails need (items + addresses + methods + payments).
-  const { data: orders } = await query.graph({
-    entity: 'order',
-    fields: [
-      'id', 'display_id', 'email', 'currency_code', 'created_at',
-      'shipping_total', 'tax_total', 'subtotal', 'total',
-      '*items', '*items.product', 'items.product.images.url',
-      '*shipping_address',
-      '*billing_address',
-      '*shipping_methods',
-      '*payment_collections',
-      '*payment_collections.payment_sessions',
-      '*payment_collections.payments',
-    ],
-    filters: { id: data.id },
-  })
-  const order = orders?.[0]
-  if (!order) {
-    logger.warn(`[order-placed] order ${data.id} not found — skipping emails`)
+  /* Pull the order with everything emails need. Notes on field syntax:
+   *   - `*items` / `*shipping_address` work because items + addresses
+   *     are direct relations on the Order entity.
+   *   - `payment_collections` is a SEPARATE module (Payment), connected
+   *     via a module link. Wildcards (`*payment_collections`) don't
+   *     traverse module links — they throw a Mikro-ORM
+   *     "does not have property" error. Use explicit dotted paths.
+   *   - Same is true for shipping_options' price_set (we hit this in
+   *     fix-shipping-prices).
+   */
+  let order: any
+  try {
+    const { data: orders } = await query.graph({
+      entity: 'order',
+      fields: [
+        'id', 'display_id', 'email', 'customer_id', 'currency_code', 'created_at',
+        'shipping_total', 'tax_total', 'subtotal', 'total',
+        '*items', '*items.product', 'items.product.images.url',
+        '*shipping_address',
+        '*billing_address',
+        '*shipping_methods',
+        'payment_collections.id',
+        'payment_collections.payment_sessions.provider_id',
+        'payment_collections.payments.provider_id',
+        'payment_collections.payments.captured_at',
+      ],
+      filters: { id: data.id },
+    })
+    order = orders?.[0]
+    if (!order) {
+      logger.warn(`[order-placed] order ${data.id} not found — skipping emails`)
+      return
+    }
+  } catch (e: any) {
+    logger.error(`[order-placed] query.graph failed for order ${data.id}: ${e?.message}`)
     return
   }
 

@@ -52,21 +52,26 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   let order: any
   try {
+    /* payment_collections lives in the Payment module — needs explicit
+     * dotted paths, not `*` wildcards (wildcards don't traverse module
+     * links and throw Mikro-ORM "does not have property" errors). */
     const { data: orders } = await query.graph({
       entity: "order",
       fields: [
         "id", "display_id", "email", "customer_id", "status", "metadata",
         "currency_code", "shipping_total", "tax_total",
         "*items",
-        "*payment_collections", "*payment_collections.payments",
+        "payment_collections.id",
+        "payment_collections.payments.captured_at",
+        "payment_collections.payments.provider_id",
       ],
       filters: { id: orderId },
     })
     order = orders?.[0]
     if (!order) return res.status(404).json({ ok: false, message: "Order not found" })
   } catch (e: any) {
-    logger.warn(`[cancel-with-reason] could not load order ${orderId}: ${e?.message}`)
-    return res.status(500).json({ ok: false, message: "Could not load order" })
+    logger.warn(`[cancel-with-reason] query.graph failed for ${orderId}: ${e?.message}`)
+    return res.status(500).json({ ok: false, message: `Could not load order: ${e?.message}` })
   }
 
   if (order.status === "canceled" || order.status === "cancelled") {
