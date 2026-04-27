@@ -54,12 +54,19 @@ export function formatMoney(amount: number, currency = "usd"): string {
   }
 }
 
-/** Coerce any Medusa v2 money value to a plain number. v2 wraps monetary
- *  fields in BigNumber objects (sometimes plain numbers, sometimes
- *  `{ numeric: 120 }`, sometimes `{ value: "120.00" }`, sometimes the
- *  `raw_<field>: { value: "120" }` sibling). `Number(bigNumberObject)`
- *  → NaN → defaults to 0 — which is exactly the "items show $0" bug
- *  we hit in the order emails. */
+/** Coerce any Medusa v2 money/quantity value to a plain number. v2 wraps
+ *  these in several different shapes depending on whether they came
+ *  through query.graph, a workflow result, or the module service:
+ *    - plain number / string (rare; sometimes for quantity)
+ *    - { numeric: 120 } (post-serialization)
+ *    - { value: "120.00" } (BigNumber raw form)
+ *    - { raw: { value: "120" } } (nested wrapper)
+ *    - BigNumber class instance — only `.toString()` returns the value
+ *      ("120"); inspecting `.value` / `.numeric` returns undefined.
+ *      This last case is what made the per-line `quantity` field render
+ *      as 0 in the order emails (unit_price was fine because it came
+ *      through as { value: "..." }).
+ *  Falls back to 0 only when the value is genuinely missing. */
 export function asNumber(v: unknown): number {
   if (v == null) return 0
   if (typeof v === "number") return Number.isFinite(v) ? v : 0
@@ -75,7 +82,21 @@ export function asNumber(v: unknown): number {
       if (Number.isFinite(n)) return n
     }
     if (typeof obj.value === "number" && Number.isFinite(obj.value)) return obj.value
-    if (obj.raw) return asNumber(obj.raw)
+    if (obj.raw) {
+      const fromRaw = asNumber(obj.raw)
+      if (fromRaw) return fromRaw
+    }
+    /* BigNumber class instance fallback: its .toString() returns the
+     * numeric string, while inspecting public properties returns
+     * undefined. Only fire if toString gives us something non-trivial
+     * (skips the default "[object Object]"). */
+    if (typeof obj.toString === "function") {
+      const s = obj.toString()
+      if (s && s !== "[object Object]") {
+        const n = Number(s)
+        if (Number.isFinite(n)) return n
+      }
+    }
   }
   return 0
 }
@@ -124,10 +145,22 @@ export function pickLineItems(order: any): Array<{
   thumbnail?: string | null
 }> {
   const currency = order.currency_code ?? "usd"
-  return (order.items ?? []).map((it: any) => {
+  return (order.items ?? []).map((it: any, i: number) => {
     const qty       = asNumber(it.quantity)  || asNumber(it.raw_quantity)
     const unitPrice = asNumber(it.unit_price) || asNumber(it.raw_unit_price)
     const subtotal  = asNumber(it.subtotal)   || asNumber(it.raw_subtotal) || (unitPrice * qty)
+    /* DIAGNOSTIC: dump the raw shape if we get a zero qty so we can see
+     * exactly what Medusa returned for it.quantity. Drop once confirmed
+     * working across orders. */
+    if (qty === 0 && i === 0) {
+      console.log("[order-emails] DEBUG zero qty — item shape:", {
+        quantity: it.quantity,
+        quantity_type: typeof it.quantity,
+        quantity_keys: it.quantity && typeof it.quantity === "object" ? Object.keys(it.quantity) : null,
+        raw_quantity: it.raw_quantity,
+        raw_quantity_type: typeof it.raw_quantity,
+      })
+    }
     return {
       title: it.product_title ?? it.title ?? "",
       variantTitle: it.variant_title ?? it.subtitle ?? null,
