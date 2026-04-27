@@ -54,6 +54,9 @@ const medusaConfig = {
       resolve: './src/modules/mbs-attributes',
     },
     {
+      resolve: './src/modules/mbs-settings',
+    },
+    {
       key: Modules.FILE,
       resolve: '@medusajs/file',
       options: {

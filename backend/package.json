@@ -23,6 +23,7 @@
     "wipe:catalog": "medusa exec ./src/scripts/wipe-catalog.ts",
     "link:shipping-profile": "medusa exec ./src/scripts/link-shipping-profile.ts",
     "inspect:cart": "medusa exec ./src/scripts/inspect-cart.ts",
+    "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",
     "ib": "init-backend",
     "start": "init-backend && cd .medusa/server && medusa start --verbose",
     "dev": "medusa develop",
