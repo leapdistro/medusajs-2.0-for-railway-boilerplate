@@ -52,15 +52,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   let order: any
   try {
-    /* payment_collections lives in the Payment module — needs explicit
-     * dotted paths, not `*` wildcards (wildcards don't traverse module
-     * links and throw Mikro-ORM "does not have property" errors). */
+    /* Wildcards don't work on Order entity (or on module-linked relations
+     * like payment_collections) — use explicit dotted paths everywhere. */
     const { data: orders } = await query.graph({
       entity: "order",
       fields: [
         "id", "display_id", "email", "customer_id", "status", "metadata",
         "currency_code", "shipping_total", "tax_total",
-        "*items",
+        "items.id", "items.quantity", "items.unit_price", "items.subtotal",
         "payment_collections.id",
         "payment_collections.payments.captured_at",
         "payment_collections.payments.provider_id",

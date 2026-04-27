@@ -213,7 +213,10 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const customerService: any = container.resolve(Modules.CUSTOMER)
 
-  // Pull the order with everything emails need.
+  /* Pull the order with everything emails need. Wildcards (*field) DO
+   * NOT work on the Order entity in Medusa v2 (unlike Cart) — they
+   * throw "Entity 'Order' does not have property '*items'" or similar.
+   * Use explicit dotted paths for every field instead. */
   let order: any
   try {
     const { data: orders } = await query.graph({
@@ -221,10 +224,24 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
       fields: [
         "id", "display_id", "email", "customer_id", "currency_code", "created_at",
         "shipping_total", "tax_total", "subtotal", "total",
-        "*items", "*items.product", "items.product.images.url",
-        "*shipping_address",
-        "*billing_address",
-        "*shipping_methods",
+        // Items (explicit fields, no wildcards)
+        "items.id", "items.title", "items.product_title", "items.variant_title",
+        "items.quantity", "items.unit_price", "items.subtotal", "items.thumbnail",
+        "items.product_id",
+        "items.product.id", "items.product.thumbnail",
+        "items.product.images.url",
+        // Addresses
+        "shipping_address.first_name", "shipping_address.last_name", "shipping_address.company",
+        "shipping_address.address_1", "shipping_address.address_2",
+        "shipping_address.city", "shipping_address.province", "shipping_address.postal_code",
+        "shipping_address.country_code", "shipping_address.phone",
+        "billing_address.first_name", "billing_address.last_name", "billing_address.company",
+        "billing_address.address_1", "billing_address.address_2",
+        "billing_address.city", "billing_address.province", "billing_address.postal_code",
+        "billing_address.country_code", "billing_address.phone",
+        // Shipping methods
+        "shipping_methods.id", "shipping_methods.name", "shipping_methods.amount",
+        // Payment collections (Payment is a separate module — dotted only)
         "payment_collections.id",
         "payment_collections.payment_sessions.provider_id",
         "payment_collections.payments.provider_id",
