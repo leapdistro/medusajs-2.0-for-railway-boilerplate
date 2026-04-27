@@ -139,31 +139,42 @@ export function pickLineItems(order: any): Array<{
   })
 }
 
-/** Sum line-item subtotals — order.subtotal in v2 has inconsistent
- *  semantics, so we recompute the unambiguous sum (same approach the
- *  storefront cart view uses). All money fields go through asNumber()
- *  to unwrap BigNumber objects safely. */
+/** Read totals straight from Medusa's pre-computed order fields. In v2,
+ *  Order.subtotal = sum of line items (no shipping, no tax, no discounts);
+ *  Order.total = subtotal - discounts + shipping + tax. We use these
+ *  directly instead of hand-summing items — Medusa already did the math
+ *  (including discounts, promos, etc. that we'd miss).
+ *
+ *  Fallbacks layered for resilience:
+ *    1. order.<field>          (BigNumber object — usually present)
+ *    2. order.raw_<field>      (string-payload sibling — guaranteed)
+ *    3. hand-sum of items.subtotal (only for itemsTotal, only if both
+ *       above are missing — should never happen on a real order). */
 export function computeTotals(order: any): {
   itemsTotal: number
   shippingTotal: number
   taxTotal: number
   grandTotal: number
 } {
-  const itemsTotal = (order.items ?? []).reduce((s: number, i: any) => {
-    const sub =
-      asNumber(i.subtotal) ||
-      asNumber(i.raw_subtotal) ||
-      ((asNumber(i.unit_price) || asNumber(i.raw_unit_price)) * (asNumber(i.quantity) || asNumber(i.raw_quantity)))
-    return s + sub
-  }, 0)
+  const itemsTotal =
+    asNumber(order.subtotal) ||
+    asNumber(order.raw_subtotal) ||
+    (order.items ?? []).reduce((s: number, i: any) => {
+      const sub =
+        asNumber(i.subtotal) ||
+        asNumber(i.raw_subtotal) ||
+        ((asNumber(i.unit_price) || asNumber(i.raw_unit_price)) * (asNumber(i.quantity) || asNumber(i.raw_quantity)))
+      return s + sub
+    }, 0)
+
   const shippingTotal = asNumber(order.shipping_total) || asNumber(order.raw_shipping_total)
   const taxTotal      = asNumber(order.tax_total)      || asNumber(order.raw_tax_total)
-  return {
-    itemsTotal,
-    shippingTotal,
-    taxTotal,
-    grandTotal: itemsTotal + shippingTotal + taxTotal,
-  }
+  const grandTotal    =
+    asNumber(order.total) ||
+    asNumber(order.raw_total) ||
+    (itemsTotal + shippingTotal + taxTotal)
+
+  return { itemsTotal, shippingTotal, taxTotal, grandTotal }
 }
 
 /** Pull contact + payment info from mbs-settings with sensible defaults
