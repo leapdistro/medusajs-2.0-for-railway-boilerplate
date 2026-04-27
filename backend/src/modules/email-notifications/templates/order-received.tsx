@@ -39,7 +39,6 @@ export type OrderReceivedProps = {
   billingAddress: OrderEmailAddress
   shippingMethodName: string
   paymentLabel: string
-  needsPaymentInstructions: boolean
   preview?: string
 }
 
@@ -60,11 +59,9 @@ export const OrderReceivedTemplate = (p: OrderReceivedProps) => {
       <SubHead>Order #{p.displayId}</SubHead>
       <KvLine label="Payment" value={p.paymentLabel} />
       <KvLine label="Shipping" value={p.shippingMethodName} />
-      {p.needsPaymentInstructions && (
-        <P muted>
-          We&rsquo;ll send a separate email with payment instructions (DBA, mailing address, wire info). Once payment is verified, we&rsquo;ll cut your shipping label and send tracking.
-        </P>
-      )}
+      <P muted>
+        Our team will reach out shortly with any payment details needed and a tracking number once your order ships.
+      </P>
 
       <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
 
@@ -152,7 +149,6 @@ OrderReceivedTemplate.PreviewProps = {
   billingAddress:  { first_name: 'Jordan', last_name: 'Lee', company: 'Greenline', address_1: '123 Main St', city: 'Austin', province: 'TX', postal_code: '78701', country_code: 'us', phone: '5125551234' },
   shippingMethodName: 'UPS Ground',
   paymentLabel: 'Check / Wire / Net Terms',
-  needsPaymentInstructions: true,
 } as OrderReceivedProps
 
 export const SubHead = ({ children }: { children: React.ReactNode }) => (

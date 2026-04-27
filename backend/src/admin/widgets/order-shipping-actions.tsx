@@ -65,6 +65,9 @@ const OrderShippingActionsWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
 
   return (
     <Container className="divide-y p-0">
+      {!isCancelled && (
+        <PaymentInstructionsSection orderId={data.id} meta={meta} onSent={refresh} />
+      )}
       <ShipSection orderId={data.id} wasShipped={wasShipped} meta={meta} onSent={refresh} />
       {!isCancelled && (
         <CancelSection orderId={data.id} reasons={reasons} onSent={refresh} />
@@ -79,6 +82,61 @@ const OrderShippingActionsWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
         </div>
       )}
     </Container>
+  )
+}
+
+/* ──────────── Payment Instructions section ──────────── */
+const PaymentInstructionsSection = ({ orderId, meta, onSent }: { orderId: string; meta: any; onSent: () => void }) => {
+  const [busy, setBusy] = useState(false)
+  const sentAt = typeof meta.payment_instructions_sent_at === "string"
+    ? new Date(meta.payment_instructions_sent_at)
+    : null
+
+  const submit = async () => {
+    if (sentAt && !confirm("Payment instructions were already sent. Send again?")) return
+    setBusy(true)
+    try {
+      const res = await fetch(`/admin/orders/${orderId}/send-payment-instructions`, {
+        method: "POST",
+        credentials: "include",
+      })
+      const json = await res.json()
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.errors?.join(" | ") ?? json?.message ?? `Failed (${res.status})`)
+        return
+      }
+      toast.success(sentAt ? "Payment instructions resent" : "Payment instructions sent")
+      onSent()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Network error")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="px-6 py-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1">
+          <Heading level="h2">Payment instructions</Heading>
+          <Text size="small" className="text-ui-fg-subtle">
+            For check / wire / Net Terms orders. Sends DBA + mailing address + bank info from MBS Settings → Payment Info.
+          </Text>
+          {sentAt && (
+            <Text size="small" className="text-ui-fg-muted mt-1">
+              Last sent: {sentAt.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
+            </Text>
+          )}
+        </div>
+        <Button
+          variant={sentAt ? "secondary" : "primary"}
+          onClick={submit}
+          isLoading={busy}
+        >
+          {sentAt ? "Resend" : "Send Payment Instructions"}
+        </Button>
+      </div>
+    </div>
   )
 }
 
