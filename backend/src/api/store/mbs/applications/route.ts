@@ -7,19 +7,24 @@ import { randomBytes } from "crypto"
  * API key like the rest of /store/mbs/*).
  *
  * Flow:
- *   1. Validate required fields (text + 2 files)
- *   2. Upload EIN doc + Resale Certificate to Bucket via the file service
- *   3. Register Medusa auth identity for the email with a secure random
- *      password (never returned, never logged) — this lets the applicant
- *      use Medusa's standard /auth/customer/emailpass/reset-password flow
- *      later to set their actual password
- *   4. POST /store/customers with the auth token → creates a Customer
- *      record LINKED to that auth identity, with all our metadata
- *   5. Conditionally send Resend emails (only if RESEND_API_KEY +
- *      RESEND_FROM_EMAIL set — gracefully no-ops otherwise)
+ *   1. Validate text + 2 file fields
+ *   2. Look up existing customer by email — duplicate-application logic
+ *      runs FIRST so we don't waste storage / send misleading emails on
+ *      reject paths:
+ *        - approved      → 409 (sign in instead)
+ *        - pending_review→ 409 (we already have it)
+ *        - denied        → re-application (allowed; updates existing record)
+ *        - none / new    → fresh submission
+ *   3. Upload EIN doc + Resale Certificate (only if not rejected above)
+ *   4. New: register Medusa auth identity + create Customer
+ *      Re-application: update existing customer's metadata + reset to
+ *        pending_review + clear denial state. Auth identity already
+ *        exists — no register call needed.
+ *   5. Send applicant + team emails (team email gets isReapplication
+ *      banner so the operator can spot resubmissions)
  *
- * Multer middleware in src/api/middlewares.ts parses the multipart payload
- * — files arrive on `req.files`, text fields on `req.body`.
+ * Multer middleware in src/api/middlewares.ts parses multipart — files
+ * arrive on `req.files`, text fields on `req.body`.
  */
 
 type UploadedFile = {
@@ -47,14 +52,10 @@ function generateRandomPassword(): string {
   return randomBytes(32).toString("base64url")
 }
 
-/** Resolve the publicly-reachable URL of THIS server. The auth + customer
- *  endpoints are HTTP — even when called from inside the same Medusa
- *  process, going via HTTP is the simplest way to use the publishable-key
- *  validated paths. Falls back to localhost in dev. */
+/** Resolve the publicly-reachable URL of THIS server. */
 function backendBaseUrl(req: MedusaRequest): string {
   const fromEnv = process.env.BACKEND_PUBLIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN_VALUE
   if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`
-  // Derive from the incoming request as a last resort
   const host = req.get?.("host") ?? "localhost:9000"
   const proto = req.protocol ?? (host.includes("localhost") ? "http" : "https")
   return `${proto}://${host}`
@@ -63,12 +64,11 @@ function backendBaseUrl(req: MedusaRequest): string {
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
 
-  // Multer fills req.files as { fieldname: File[] } when using .fields()
   const files = (req as unknown as { files?: Record<string, UploadedFile[]> }).files ?? {}
   const einDoc     = files.einDoc?.[0]
   const licenseDoc = files.licenseDoc?.[0]
 
-  // ─── Validate text fields ──────────────────────────────────────────
+  // ─── (1) Validate text fields ──────────────────────────────────────
   const body = req.body as Record<string, unknown>
   const businessName = pickStr(body.businessName)
   const contactName  = pickStr(body.contactName)
@@ -110,7 +110,48 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (!einDoc)     return res.status(400).json({ ok: false, message: "EIN document is required" })
   if (!licenseDoc) return res.status(400).json({ ok: false, message: "Resale certificate is required" })
 
-  // ─── Upload files to Bucket ──────────────────────────────────────────
+  // ─── (2) Customer lookup BEFORE side effects ───────────────────────
+  const customerService: any = req.scope.resolve(Modules.CUSTOMER)
+
+  let existingCustomer: { id: string; email: string; metadata?: Record<string, any> | null } | null = null
+  try {
+    const list = await customerService.listCustomers({ email: [email] }, { take: 1 })
+    existingCustomer = list?.[0] ?? null
+  } catch (e: any) {
+    logger.warn(`[/store/mbs/applications] customer lookup failed (continuing): ${e?.message}`)
+  }
+
+  let isReapplication = false
+  let previousDenialReason: string | null = null
+
+  if (existingCustomer) {
+    const meta = existingCustomer.metadata ?? {}
+    const prevStatus = typeof meta.application_status === "string" ? meta.application_status : null
+
+    if (prevStatus === "approved") {
+      logger.info(`[/store/mbs/applications] reject: already approved (${email})`)
+      return res.status(409).json({
+        ok: false,
+        code: "ALREADY_APPROVED",
+        message: `${email} already has a wholesale account. Sign in to start ordering, or use a different email if this is for a separate business.`,
+      })
+    }
+    if (prevStatus === "pending_review") {
+      logger.info(`[/store/mbs/applications] reject: already pending (${email})`)
+      return res.status(409).json({
+        ok: false,
+        code: "ALREADY_PENDING",
+        message: `We already have a wholesale application from ${email} under review. Give us one business day — we'll be in touch soon.`,
+      })
+    }
+    // prevStatus === "denied" or null/undefined → allow as re-application
+    isReapplication = true
+    if (prevStatus === "denied" && typeof meta.denial_reason_label === "string") {
+      previousDenialReason = meta.denial_reason_label
+    }
+  }
+
+  // ─── (3) Upload files (only after the duplicate gate cleared) ───────
   const fileService: any = req.scope.resolve(Modules.FILE)
   const ts = Date.now()
   const safeBiz = businessName.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)
@@ -136,94 +177,145 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return res.status(500).json({ ok: false, message: "File upload failed. Please try again or email " + NOTIFICATION_TO })
   }
 
-  // ─── Register Medusa auth identity (with secure random password) ────
-  const baseUrl = backendBaseUrl(req)
-  const publishableKey = req.get("x-publishable-api-key") || ""
-  const tempPassword = generateRandomPassword()
-
-  let authToken: string | undefined
-  let duplicateEmail = false
-  try {
-    const registerRes = await fetch(`${baseUrl}/auth/customer/emailpass/register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-publishable-api-key": publishableKey,
-      },
-      body: JSON.stringify({ email, password: tempPassword }),
-    })
-    if (registerRes.ok) {
-      const registerJson = await registerRes.json() as { token?: string }
-      authToken = registerJson.token
-    } else {
-      const body = await registerRes.text().catch(() => "")
-      // Most common: email already in use → applicant has applied before
-      if (registerRes.status === 401 || registerRes.status === 400 || body.toLowerCase().includes("already")) {
-        duplicateEmail = true
-        logger.warn(`[/store/mbs/applications] duplicate email at auth register: ${email}`)
-      } else {
-        logger.error(`[/store/mbs/applications] auth register failed: ${registerRes.status} ${body.slice(0, 200)}`)
-        return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
-      }
-    }
-  } catch (e: any) {
-    logger.error(`[/store/mbs/applications] auth register threw: ${e?.message}`)
-    return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
-  }
-
-  // ─── Create the linked Customer (skips on duplicate — original record stands) ──
+  // ─── (4) Either update existing (re-application) or register new ────
   let customerId: string | undefined
-  if (authToken) {
+
+  if (isReapplication && existingCustomer) {
+    /* Re-application path: customer + auth identity already exist.
+     * Update the customer's metadata in-place — overwrite application
+     * fields with the latest submission, reset status to pending_review,
+     * and CLEAR denial state (operator will re-deny via the widget if
+     * the issue still isn't addressed). */
     try {
-      const customerRes = await fetch(`${baseUrl}/store/customers`, {
+      await customerService.updateCustomers(existingCustomer.id, {
+        first_name: contactName.split(" ")[0] || contactName,
+        last_name:  contactName.split(" ").slice(1).join(" ") || null,
+        company_name: businessName,
+        phone,
+        metadata: {
+          ...(existingCustomer.metadata ?? {}),
+          application_status: "pending_review",
+          applied_at: new Date().toISOString(),
+          business_name: businessName,
+          ein,
+          license,
+          address_line1: address1,
+          address_line2: address2,
+          city,
+          state,
+          zip,
+          country,
+          website,
+          volume,
+          heard,
+          message,
+          ein_doc_url: einDocUrl,
+          license_doc_url: licenseDocUrl,
+          // Clear prior denial state — clean slate for review
+          denied_at: null,
+          denial_reason_id: null,
+          denial_reason_label: null,
+          denial_operator_note: null,
+        },
+      })
+      customerId = existingCustomer.id
+      logger.info(`[/store/mbs/applications] re-application accepted for ${email} (customer ${customerId})`)
+    } catch (e: any) {
+      logger.error(`[/store/mbs/applications] re-application update failed: ${e?.message}`)
+      return res.status(500).json({ ok: false, message: "Could not save re-application. Please email " + NOTIFICATION_TO })
+    }
+  } else {
+    /* Fresh submission path: register auth identity then create customer. */
+    const baseUrl = backendBaseUrl(req)
+    const publishableKey = req.get("x-publishable-api-key") || ""
+    const tempPassword = generateRandomPassword()
+
+    let authToken: string | undefined
+    try {
+      const registerRes = await fetch(`${baseUrl}/auth/customer/emailpass/register`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-publishable-api-key": publishableKey,
-          Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({
-          email,
-          first_name: contactName.split(" ")[0] || contactName,
-          last_name:  contactName.split(" ").slice(1).join(" ") || null,
-          company_name: businessName,
-          phone,
-          metadata: {
-            application_status: "pending_review",
-            applied_at: new Date().toISOString(),
-            business_name: businessName,
-            ein,
-            license,
-            address_line1: address1,
-            address_line2: address2,
-            city,
-            state,
-            zip,
-            country,
-            website,
-            volume,
-            heard,
-            message,
-            ein_doc_url: einDocUrl,
-            license_doc_url: licenseDocUrl,
-          },
-        }),
+        body: JSON.stringify({ email, password: tempPassword }),
       })
-      if (customerRes.ok) {
-        const customerJson = await customerRes.json() as { customer?: { id?: string } }
-        customerId = customerJson.customer?.id
+      if (registerRes.ok) {
+        const registerJson = await registerRes.json() as { token?: string }
+        authToken = registerJson.token
       } else {
-        const body = await customerRes.text().catch(() => "")
-        logger.error(`[/store/mbs/applications] customer create failed: ${customerRes.status} ${body.slice(0, 200)}`)
+        const body = await registerRes.text().catch(() => "")
+        /* Edge case: customer lookup found nothing but auth identity DOES
+         * exist (orphan auth row). Treat it like ALREADY_APPROVED — safer
+         * to point them to sign-in than to silently fail. */
+        if (registerRes.status === 401 || registerRes.status === 400 || body.toLowerCase().includes("already")) {
+          logger.warn(`[/store/mbs/applications] orphan auth identity for ${email} (no customer record)`)
+          return res.status(409).json({
+            ok: false,
+            code: "ALREADY_APPROVED",
+            message: `${email} appears to already have an account. Try signing in (or use the password reset link), or use a different email.`,
+          })
+        }
+        logger.error(`[/store/mbs/applications] auth register failed: ${registerRes.status} ${body.slice(0, 200)}`)
         return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
       }
     } catch (e: any) {
-      logger.error(`[/store/mbs/applications] customer create threw: ${e?.message}`)
+      logger.error(`[/store/mbs/applications] auth register threw: ${e?.message}`)
       return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+    }
+
+    if (authToken) {
+      try {
+        const customerRes = await fetch(`${baseUrl}/store/customers`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-publishable-api-key": publishableKey,
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            email,
+            first_name: contactName.split(" ")[0] || contactName,
+            last_name:  contactName.split(" ").slice(1).join(" ") || null,
+            company_name: businessName,
+            phone,
+            metadata: {
+              application_status: "pending_review",
+              applied_at: new Date().toISOString(),
+              business_name: businessName,
+              ein,
+              license,
+              address_line1: address1,
+              address_line2: address2,
+              city,
+              state,
+              zip,
+              country,
+              website,
+              volume,
+              heard,
+              message,
+              ein_doc_url: einDocUrl,
+              license_doc_url: licenseDocUrl,
+            },
+          }),
+        })
+        if (customerRes.ok) {
+          const customerJson = await customerRes.json() as { customer?: { id?: string } }
+          customerId = customerJson.customer?.id
+        } else {
+          const body = await customerRes.text().catch(() => "")
+          logger.error(`[/store/mbs/applications] customer create failed: ${customerRes.status} ${body.slice(0, 200)}`)
+          return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+        }
+      } catch (e: any) {
+        logger.error(`[/store/mbs/applications] customer create threw: ${e?.message}`)
+        return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
+      }
     }
   }
 
-  // ─── Conditionally send Resend emails ──────────────────────────────
+  // ─── (5) Send Resend emails (best-effort) ───────────────────────────
   const resendKey  = process.env.RESEND_API_KEY
   const resendFrom = process.env.RESEND_FROM_EMAIL
   const emailsEnabled = !!(resendKey && resendFrom)
@@ -238,13 +330,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         from: resendFrom,
         data: {
           emailOptions: {
-            subject: `New wholesale application: ${businessName}`,
+            subject: isReapplication
+              ? `Re-application: ${businessName}`
+              : `New wholesale application: ${businessName}`,
           },
           businessName, contactName, email, phone,
           address: `${address1}${address2 ? `, ${address2}` : ""}, ${city}, ${state} ${zip}`,
           ein, license, website, volume, heard, message,
           einDocUrl, licenseDocUrl,
           customerId,
+          isReapplication,
+          previousDenialReason,
         },
       }])
       await notificationService.createNotifications([{
@@ -254,7 +350,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         from: resendFrom,
         data: {
           emailOptions: {
-            subject: "Your Mind Body Spirit wholesale application",
+            subject: isReapplication
+              ? "We received your updated wholesale application"
+              : "Your Mind Body Spirit wholesale application",
           },
           contactName,
           businessName,
@@ -265,9 +363,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   } else {
     logger.info(
-      `[/store/mbs/applications] emails skipped — RESEND_API_KEY/RESEND_FROM_EMAIL not set. New application from ${businessName} (${email}). Customer: ${customerId ?? "(duplicate)"}.`
+      `[/store/mbs/applications] emails skipped — RESEND_API_KEY/RESEND_FROM_EMAIL not set. ${isReapplication ? "Re-application" : "New application"} from ${businessName} (${email}). Customer: ${customerId ?? "(unknown)"}.`
     )
   }
 
-  return res.json({ ok: true, customerId, duplicate: duplicateEmail })
+  return res.json({
+    ok: true,
+    customerId,
+    isReapplication,
+  })
 }

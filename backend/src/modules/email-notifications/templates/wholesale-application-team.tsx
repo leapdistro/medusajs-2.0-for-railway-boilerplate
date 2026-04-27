@@ -19,6 +19,12 @@ export interface WholesaleApplicationTeamProps {
   einDocUrl?: string | null
   licenseDocUrl?: string | null
   customerId?: string | null
+  /** True when this is a re-application from a previously-denied applicant.
+   *  Changes the headline + adds a banner so the operator notices. */
+  isReapplication?: boolean
+  /** Label of the previous denial reason (resolved at send time from
+   *  customer.metadata.denial_reason_label). Only used when isReapplication. */
+  previousDenialReason?: string | null
   preview?: string
 }
 
@@ -44,19 +50,40 @@ export const WholesaleApplicationTeamEmail = ({
   einDocUrl,
   licenseDocUrl,
   customerId,
+  isReapplication,
+  previousDenialReason,
   preview,
 }: WholesaleApplicationTeamProps) => {
   const adminBase = process.env.MEDUSA_ADMIN_URL || process.env.STOREFRONT_URL || ''
   const customerLink = customerId && adminBase
     ? `${adminBase.replace(/\/$/, '')}/app/customers/${customerId}`
     : null
-  const previewLine = preview ?? `New application from ${businessName} (${contactName})`
+  const previewLine = preview ?? (
+    isReapplication
+      ? `Re-application from ${businessName} (${contactName})`
+      : `New application from ${businessName} (${contactName})`
+  )
   return (
     <Base preview={previewLine}>
-      <Headline>New <span style={{ color: '#D93737' }}>application.</span></Headline>
+      <Headline>
+        {isReapplication ? <>Re-<span style={{ color: '#D93737' }}>application.</span></> : <>New <span style={{ color: '#D93737' }}>application.</span></>}
+      </Headline>
       <P muted>
         Review within one business day per the SLA we promise applicants.
       </P>
+
+      {isReapplication && (
+        <div style={{
+          background: '#FFF7E6',
+          border: '1px solid #C98A00',
+          padding: '12px 14px',
+          margin: '12px 0 0',
+        }}>
+          <Text style={{ margin: 0, fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', lineHeight: 1.5, color: '#0A0A0A' }}>
+            <strong>This applicant was previously denied.</strong>{previousDenialReason ? <> Reason: <em>{previousDenialReason}</em>.</> : null} Review whether the issue is now addressed before approving.
+          </Text>
+        </div>
+      )}
 
       <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
 
