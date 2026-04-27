@@ -54,6 +54,32 @@ export function formatMoney(amount: number, currency = "usd"): string {
   }
 }
 
+/** Coerce any Medusa v2 money value to a plain number. v2 wraps monetary
+ *  fields in BigNumber objects (sometimes plain numbers, sometimes
+ *  `{ numeric: 120 }`, sometimes `{ value: "120.00" }`, sometimes the
+ *  `raw_<field>: { value: "120" }` sibling). `Number(bigNumberObject)`
+ *  → NaN → defaults to 0 — which is exactly the "items show $0" bug
+ *  we hit in the order emails. */
+export function asNumber(v: unknown): number {
+  if (v == null) return 0
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0
+  if (typeof v === "string") {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  if (typeof v === "object") {
+    const obj = v as any
+    if (typeof obj.numeric === "number" && Number.isFinite(obj.numeric)) return obj.numeric
+    if (typeof obj.value === "string") {
+      const n = Number(obj.value)
+      if (Number.isFinite(n)) return n
+    }
+    if (typeof obj.value === "number" && Number.isFinite(obj.value)) return obj.value
+    if (obj.raw) return asNumber(obj.raw)
+  }
+  return 0
+}
+
 /** Resolve provider id → friendly label + whether it needs a separate
  *  payment-instructions email. */
 export function describeProvider(providerId?: string | null): { label: string; needsInstructions: boolean } {
@@ -83,10 +109,12 @@ export function pickAddress(a: any): any {
 }
 
 /** Build the line-item rows used by ORDER_RECEIVED + ORDER_TEAM_ALERT.
- *  Thumbnail comes from the line-item snapshot Medusa stores at
- *  add-to-cart time (li.thumbnail), with product.thumbnail / first image
- *  as fallbacks. The buyer-facing template shows it as a tiny 60×60
- *  square next to each line; the team template ignores the field. */
+ *  Money fields go through asNumber() because v2 wraps them in BigNumber
+ *  objects — Number(bigNumberObject) is NaN, which previously made the
+ *  emails show $0 for every line. Thumbnail comes from the line-item
+ *  snapshot Medusa stores at add-to-cart time (li.thumbnail), with
+ *  product.thumbnail / first image as fallbacks. The buyer-facing
+ *  template shows it as a tiny 60×60 square; team template ignores. */
 export function pickLineItems(order: any): Array<{
   title: string
   variantTitle?: string | null
@@ -96,31 +124,40 @@ export function pickLineItems(order: any): Array<{
   thumbnail?: string | null
 }> {
   const currency = order.currency_code ?? "usd"
-  return (order.items ?? []).map((it: any) => ({
-    title: it.product_title ?? it.title ?? "",
-    variantTitle: it.variant_title ?? it.subtitle ?? null,
-    qty: Number(it.quantity ?? 0),
-    unitPriceFormatted: formatMoney(Number(it.unit_price ?? 0), currency),
-    subtotalFormatted:  formatMoney(Number(it.subtotal ?? (Number(it.unit_price ?? 0) * Number(it.quantity ?? 0))), currency),
-    thumbnail: it.thumbnail ?? it.product?.thumbnail ?? it.product?.images?.[0]?.url ?? null,
-  }))
+  return (order.items ?? []).map((it: any) => {
+    const qty       = asNumber(it.quantity)  || asNumber(it.raw_quantity)
+    const unitPrice = asNumber(it.unit_price) || asNumber(it.raw_unit_price)
+    const subtotal  = asNumber(it.subtotal)   || asNumber(it.raw_subtotal) || (unitPrice * qty)
+    return {
+      title: it.product_title ?? it.title ?? "",
+      variantTitle: it.variant_title ?? it.subtitle ?? null,
+      qty,
+      unitPriceFormatted: formatMoney(unitPrice, currency),
+      subtotalFormatted:  formatMoney(subtotal,  currency),
+      thumbnail: it.thumbnail ?? it.product?.thumbnail ?? it.product?.images?.[0]?.url ?? null,
+    }
+  })
 }
 
 /** Sum line-item subtotals — order.subtotal in v2 has inconsistent
  *  semantics, so we recompute the unambiguous sum (same approach the
- *  storefront cart view uses). */
+ *  storefront cart view uses). All money fields go through asNumber()
+ *  to unwrap BigNumber objects safely. */
 export function computeTotals(order: any): {
   itemsTotal: number
   shippingTotal: number
   taxTotal: number
   grandTotal: number
 } {
-  const itemsTotal = (order.items ?? []).reduce(
-    (s: number, i: any) => s + Number(i.subtotal ?? (Number(i.unit_price ?? 0) * Number(i.quantity ?? 0))),
-    0
-  )
-  const shippingTotal = Number(order.shipping_total ?? 0)
-  const taxTotal      = Number(order.tax_total ?? 0)
+  const itemsTotal = (order.items ?? []).reduce((s: number, i: any) => {
+    const sub =
+      asNumber(i.subtotal) ||
+      asNumber(i.raw_subtotal) ||
+      ((asNumber(i.unit_price) || asNumber(i.raw_unit_price)) * (asNumber(i.quantity) || asNumber(i.raw_quantity)))
+    return s + sub
+  }, 0)
+  const shippingTotal = asNumber(order.shipping_total) || asNumber(order.raw_shipping_total)
+  const taxTotal      = asNumber(order.tax_total)      || asNumber(order.raw_tax_total)
   return {
     itemsTotal,
     shippingTotal,
@@ -224,9 +261,13 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
       fields: [
         "id", "display_id", "email", "customer_id", "currency_code", "created_at",
         "shipping_total", "tax_total", "subtotal", "total",
-        // Items (explicit fields, no wildcards)
+        "raw_shipping_total", "raw_tax_total", "raw_subtotal", "raw_total",
+        // Items (explicit fields, no wildcards). raw_* siblings carry the
+        // BigNumber payload as a string, so we have a fallback if the
+        // primary field comes through as an opaque object.
         "items.id", "items.title", "items.product_title", "items.variant_title",
         "items.quantity", "items.unit_price", "items.subtotal", "items.thumbnail",
+        "items.raw_unit_price", "items.raw_subtotal", "items.raw_quantity",
         "items.product_id",
         "items.product.id", "items.product.thumbnail",
         "items.product.images.url",
