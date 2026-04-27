@@ -17,6 +17,11 @@ import {
   PASSWORD_RESET,
   isPasswordResetData,
 } from './password-reset'
+import {
+  ApplicationDeniedEmail,
+  APPLICATION_DENIED,
+  isApplicationDeniedData,
+} from './application-denied'
 
 export const EmailTemplates = {
   INVITE_USER,
@@ -24,6 +29,7 @@ export const EmailTemplates = {
   WHOLESALE_APPLICATION_APPLICANT,
   WHOLESALE_APPLICATION_TEAM,
   PASSWORD_RESET,
+  APPLICATION_DENIED,
 } as const
 
 export type EmailTemplateType = keyof typeof EmailTemplates
@@ -75,6 +81,15 @@ export function generateEmailTemplate(templateKey: string, data: unknown): React
       }
       return <PasswordResetEmail {...data} />
 
+    case EmailTemplates.APPLICATION_DENIED:
+      if (!isApplicationDeniedData(data)) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `Invalid data for template "${EmailTemplates.APPLICATION_DENIED}"`
+        )
+      }
+      return <ApplicationDeniedEmail {...data} />
+
     default:
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
@@ -89,4 +104,5 @@ export {
   WholesaleApplicationApplicantEmail,
   WholesaleApplicationTeamEmail,
   PasswordResetEmail,
+  ApplicationDeniedEmail,
 }
