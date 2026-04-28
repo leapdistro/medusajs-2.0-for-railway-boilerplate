@@ -76,20 +76,38 @@ export function asNumber(v: unknown): number {
   }
   if (typeof v === "object") {
     const obj = v as any
+    /* Public getter on a live BigNumber class instance */
     if (typeof obj.numeric === "number" && Number.isFinite(obj.numeric)) return obj.numeric
+    /* Underscore-suffixed private field on a SERIALIZED-then-deserialized
+     * BigNumber (class methods + getters lost). This is the v2 quantity
+     * shape we hit — Medusa's MikroOrmBigNumberProperty stores the
+     * plain numeric on `numeric_` and the raw on `raw_`. */
+    if (typeof obj.numeric_ === "number" && Number.isFinite(obj.numeric_)) return obj.numeric_
+    /* Raw form: { value: "120.00", precision: 20 } */
     if (typeof obj.value === "string") {
       const n = Number(obj.value)
       if (Number.isFinite(n)) return n
     }
     if (typeof obj.value === "number" && Number.isFinite(obj.value)) return obj.value
+    /* Nested raw — class instance getter */
     if (obj.raw) {
       const fromRaw = asNumber(obj.raw)
       if (fromRaw) return fromRaw
     }
-    /* BigNumber class instance fallback: its .toString() returns the
-     * numeric string, while inspecting public properties returns
-     * undefined. Only fire if toString gives us something non-trivial
-     * (skips the default "[object Object]"). */
+    /* Underscore-nested raw — serialized BigNumber */
+    if (obj.raw_) {
+      const fromRawU = asNumber(obj.raw_)
+      if (fromRawU) return fromRawU
+    }
+    /* bignumber.js instance — has .toNumber() */
+    if (typeof obj.toNumber === "function") {
+      try {
+        const n = obj.toNumber()
+        if (Number.isFinite(n)) return n
+      } catch { /* fall through */ }
+    }
+    /* Last resort: toString — only if it returns something other than
+     * the default "[object Object]". */
     if (typeof obj.toString === "function") {
       const s = obj.toString()
       if (s && s !== "[object Object]") {
@@ -145,22 +163,17 @@ export function pickLineItems(order: any): Array<{
   thumbnail?: string | null
 }> {
   const currency = order.currency_code ?? "usd"
-  return (order.items ?? []).map((it: any, i: number) => {
-    const qty       = asNumber(it.quantity)  || asNumber(it.raw_quantity)
+  return (order.items ?? []).map((it: any) => {
+    /* Quantity lives on items[i].detail (the OrderItem join), NOT on the
+     * line item directly. Fall back to it.quantity / it.raw_quantity in
+     * case some upstream code already flattened it. */
+    const qty =
+      asNumber(it.detail?.quantity) ||
+      asNumber(it.detail?.raw_quantity) ||
+      asNumber(it.quantity) ||
+      asNumber(it.raw_quantity)
     const unitPrice = asNumber(it.unit_price) || asNumber(it.raw_unit_price)
     const subtotal  = asNumber(it.subtotal)   || asNumber(it.raw_subtotal) || (unitPrice * qty)
-    /* DIAGNOSTIC: dump the raw shape if we get a zero qty so we can see
-     * exactly what Medusa returned for it.quantity. Drop once confirmed
-     * working across orders. */
-    if (qty === 0 && i === 0) {
-      console.log("[order-emails] DEBUG zero qty — item shape:", {
-        quantity: it.quantity,
-        quantity_type: typeof it.quantity,
-        quantity_keys: it.quantity && typeof it.quantity === "object" ? Object.keys(it.quantity) : null,
-        raw_quantity: it.raw_quantity,
-        raw_quantity_type: typeof it.raw_quantity,
-      })
-    }
     return {
       title: it.product_title ?? it.title ?? "",
       variantTitle: it.variant_title ?? it.subtitle ?? null,
@@ -303,12 +316,17 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
         "id", "display_id", "email", "customer_id", "currency_code", "created_at",
         "shipping_total", "tax_total", "subtotal", "total",
         "raw_shipping_total", "raw_tax_total", "raw_subtotal", "raw_total",
-        // Items (explicit fields, no wildcards). raw_* siblings carry the
-        // BigNumber payload as a string, so we have a fallback if the
-        // primary field comes through as an opaque object.
+        // Items. CRITICAL: quantity is NOT on the line item itself —
+        // v2 splits "what was ordered" (OrderLineItem: title, unit_price,
+        // subtotal) from "current fulfillment state" (OrderItem: quantity,
+        // fulfilled_quantity, returned_quantity, etc.) so partial
+        // refunds/returns can update the latter without re-creating lines.
+        // OrderLineItemDTO exposes the OrderItem join via `.detail`.
+        // Querying `items.quantity` (without .detail) returns undefined.
         "items.id", "items.title", "items.product_title", "items.variant_title",
-        "items.quantity", "items.unit_price", "items.subtotal", "items.thumbnail",
-        "items.raw_unit_price", "items.raw_subtotal", "items.raw_quantity",
+        "items.unit_price", "items.subtotal", "items.thumbnail",
+        "items.raw_unit_price", "items.raw_subtotal",
+        "items.detail.quantity", "items.detail.raw_quantity",
         "items.product_id",
         "items.product.id", "items.product.thumbnail",
         "items.product.images.url",
