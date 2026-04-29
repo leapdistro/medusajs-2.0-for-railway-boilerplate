@@ -17,6 +17,16 @@ const upload = multer({
   },
 })
 
+/**
+ * Separate multer instance for supplier-invoice PDFs. Larger limit
+ * (15 MB) since multi-page invoices with embedded scans can exceed
+ * 10 MB. Single file per upload.
+ */
+const invoiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+})
+
 export default defineMiddlewares({
   routes: [
     {
@@ -26,6 +36,15 @@ export default defineMiddlewares({
         upload.fields([
           { name: "einDoc",     maxCount: 1 },
           { name: "licenseDoc", maxCount: 1 },
+        ]),
+      ],
+    },
+    {
+      matcher: "/admin/receiving/extract",
+      method: "POST",
+      middlewares: [
+        invoiceUpload.fields([
+          { name: "invoice", maxCount: 1 },
         ]),
       ],
     },
