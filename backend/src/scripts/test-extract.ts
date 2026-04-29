@@ -79,7 +79,7 @@ export default async function testExtract({ container }: ExecArgs) {
     qtySum += li.quantityLb
     priceSum += lineTotal
     logger.info(
-      `  · ${li.strainName.padEnd(28)} ${li.quantityLb.toFixed(2).padStart(6)} lb  @ $${li.unitPricePerLb.toFixed(2).padStart(8)} /lb  = $${lineTotal.toFixed(2)}`,
+      `  · ${li.strainName.padEnd(28)} ${(li.strainType ?? "?").padEnd(7)} ${li.quantityLb.toFixed(2).padStart(6)} lb  @ $${li.unitPricePerLb.toFixed(2).padStart(8)} /lb  = $${lineTotal.toFixed(2)}`,
     )
   }
   logger.info("─────────────── Totals ───────────────")

@@ -26,6 +26,7 @@
     "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
+    "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",
     "ib": "init-backend",
     "start": "init-backend && cd .medusa/server && medusa start --verbose",
     "dev": "medusa develop",

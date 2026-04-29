@@ -57,6 +57,9 @@ const medusaConfig = {
       resolve: './src/modules/mbs-settings',
     },
     {
+      resolve: './src/modules/receiving-drafts',
+    },
+    {
       key: Modules.FILE,
       resolve: '@medusajs/file',
       options: {

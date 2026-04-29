@@ -27,6 +27,16 @@ const invoiceUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
 })
 
+/**
+ * COA upload — operator uploads compliance docs (PDFs/images) per
+ * receiving line item. Up to 50 files at once for bulk-drop UX,
+ * 10 MB each (lab COAs are typically 1-3 MB).
+ */
+const coaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 50 },
+})
+
 export default defineMiddlewares({
   routes: [
     {
@@ -45,6 +55,15 @@ export default defineMiddlewares({
       middlewares: [
         invoiceUpload.fields([
           { name: "invoice", maxCount: 1 },
+        ]),
+      ],
+    },
+    {
+      matcher: "/admin/receiving/coa-upload",
+      method: "POST",
+      middlewares: [
+        coaUpload.fields([
+          { name: "coas", maxCount: 50 },
         ]),
       ],
     },

@@ -26,6 +26,10 @@ export type ExtractedLineItem = {
   quantityLb: number
   /** Unit price in USD per POUND. */
   unitPricePerLb: number
+  /** AI's best-guess strain type from common knowledge. null when uncertain
+   *  or when the strain name is truncated/unfamiliar — operator picks
+   *  manually in those cases. */
+  strainType: "Indica" | "Sativa" | "Hybrid" | null
 }
 
 export type ExtractedSupplier = {
@@ -57,7 +61,7 @@ const PROMPT = `You are a precise data extractor for cannabis wholesale supplier
   "supplier": { "name": string, "phone": string|null, "email": string|null, "address": string|null },
   "invoiceNumber": string,
   "invoiceDate": "YYYY-MM-DD",
-  "lineItems": [ { "strainName": string, "quantityLb": number, "unitPricePerLb": number } ],
+  "lineItems": [ { "strainName": string, "quantityLb": number, "unitPricePerLb": number, "strainType": "Indica"|"Sativa"|"Hybrid"|null } ],
   "shippingTotal": number,
   "subtotal": number|null,
   "total": number,
@@ -72,8 +76,9 @@ Rules:
 5. invoiceDate must be ISO 8601 ("YYYY-MM-DD"). Parse "Apr 27, 2026" → "2026-04-27", "4/27/26" → "2026-04-27".
 6. supplier.address: combine into one string (street, city, state, ZIP). null if missing.
 7. If a field is genuinely missing or unreadable, use null for optional fields. Don't guess.
-8. notes: use this to flag anything ambiguous — e.g. "Two strains had unclear pricing units, assumed per lb". null if no flags.
-9. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
+8. strainType: classify each strain as "Indica", "Sativa", or "Hybrid" based on common cannabis-industry knowledge of the strain. Most well-known strains have a documented dominant type (e.g. Northern Lights = Indica, Sour Diesel = Sativa, GG4/Gorilla Glue = Hybrid). Use null ONLY if the strain name is truncated, unfamiliar, or genuinely ambiguous — DO NOT guess. Operator will fill nulls manually.
+9. notes: use this to flag anything ambiguous — e.g. "Two strains had unclear pricing units, assumed per lb". null if no flags.
+10. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
 
 export type ExtractInvoiceResult = {
   ok: boolean
