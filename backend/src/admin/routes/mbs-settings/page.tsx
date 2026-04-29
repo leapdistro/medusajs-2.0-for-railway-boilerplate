@@ -33,6 +33,7 @@ const TABS = [
   { id: "contact_info",         label: "Contact Info"          },
   { id: "cancellation_reasons", label: "Cancellation Reasons"  },
   { id: "denial_reasons",       label: "Denial Reasons"        },
+  { id: "flower_tier_prices",   label: "Tier Prices"           },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -131,6 +132,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "denial_reasons" && (
               <ReasonListForm row={currentRow} onSaved={onSaved} keyName="denial_reasons" />
+            )}
+            {tab === "flower_tier_prices" && (
+              <TierPricesForm row={currentRow} onSaved={onSaved} />
             )}
           </>
         )}
@@ -322,6 +326,110 @@ const ReasonListForm = ({ row, onSaved, keyName }: { row?: SettingRow; onSaved: 
 
       <div>
         <Button variant="primary" onClick={save} isLoading={saving}>Save Reasons</Button>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────── Tier Prices (Flower) ─────────────────────── */
+type TierKey = "classic" | "exotic" | "super" | "snow" | "rapper"
+type SizeKey = "qp" | "half" | "lb"
+type TierPrices = Record<TierKey, Record<SizeKey, number>>
+
+const TIER_ORDER: TierKey[] = ["classic", "exotic", "super", "snow", "rapper"]
+const SIZE_ORDER: SizeKey[] = ["qp", "half", "lb"]
+const TIER_LABELS: Record<TierKey, string> = {
+  classic: "Classic",
+  exotic:  "Exotic",
+  super:   "Super",
+  snow:    "Snow",
+  rapper:  "Rapper",
+}
+const SIZE_LABELS: Record<SizeKey, string> = {
+  qp:   "QP",
+  half: "½",
+  lb:   "LB",
+}
+
+const EMPTY_TIER_PRICES: TierPrices = {
+  classic: { qp: 0, half: 0, lb: 0 },
+  exotic:  { qp: 0, half: 0, lb: 0 },
+  super:   { qp: 0, half: 0, lb: 0 },
+  snow:    { qp: 0, half: 0, lb: 0 },
+  rapper:  { qp: 0, half: 0, lb: 0 },
+}
+
+const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (!row?.value) return
+    const incoming = row.value as Partial<TierPrices>
+    setV({
+      classic: { ...EMPTY_TIER_PRICES.classic, ...(incoming.classic ?? {}) },
+      exotic:  { ...EMPTY_TIER_PRICES.exotic,  ...(incoming.exotic  ?? {}) },
+      super:   { ...EMPTY_TIER_PRICES.super,   ...(incoming.super   ?? {}) },
+      snow:    { ...EMPTY_TIER_PRICES.snow,    ...(incoming.snow    ?? {}) },
+      rapper:  { ...EMPTY_TIER_PRICES.rapper,  ...(incoming.rapper  ?? {}) },
+    })
+  }, [row])
+
+  const setCell = (tier: TierKey, size: SizeKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({ ...p, [tier]: { ...p[tier], [size]: Number.isFinite(n) ? n : 0 } }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const next = await saveSetting("flower_tier_prices", v)
+      onSaved(next)
+      toast.success("Tier prices saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Default selling prices for Flower variants (USD whole dollars). Used at receiving — when operator picks a tier for a new strain, that tier&apos;s prices auto-fill the QP / Half / LB variant prices. Per-variant overrides via standard Medusa admin still work.
+      </Text>
+
+      <div className="border">
+        {/* Header row */}
+        <div className="grid grid-cols-4 border-b">
+          <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
+          {SIZE_ORDER.map((s) => (
+            <div key={s} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{SIZE_LABELS[s]}</div>
+          ))}
+        </div>
+        {/* Rows */}
+        {TIER_ORDER.map((tier, idx) => (
+          <div key={tier} className={`grid grid-cols-4${idx < TIER_ORDER.length - 1 ? " border-b" : ""}`}>
+            <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
+            {SIZE_ORDER.map((size) => (
+              <div key={size} className="p-1.5">
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={1}
+                  value={v[tier][size] || ""}
+                  onChange={setCell(tier, size)}
+                  placeholder="0"
+                  className="text-right"
+                />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Tier Prices</Button>
       </div>
     </div>
   )

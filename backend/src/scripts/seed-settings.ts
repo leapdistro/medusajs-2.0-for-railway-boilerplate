@@ -68,6 +68,17 @@ const DEFAULTS: Array<{
       { id: "duplicate_application",   label: "Duplicate application",           archived: false },
     ],
   },
+  {
+    key: "flower_tier_prices",
+    description: "Default selling prices for Flower variants by tier × size (USD whole dollars). Used by receiving to auto-fill new variant prices when operator picks a tier. Per-variant overrides via standard Medusa admin still work — these are defaults, not enforced.",
+    value: {
+      classic: { qp: 250, half: 450, lb:  800 },
+      exotic:  { qp: 300, half: 550, lb: 1000 },
+      super:   { qp: 350, half: 650, lb: 1200 },
+      snow:    { qp: 400, half: 750, lb: 1400 },
+      rapper:  { qp: 500, half: 950, lb: 1800 },
+    },
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {
