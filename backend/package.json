@@ -24,12 +24,14 @@
     "link:shipping-profile": "medusa exec ./src/scripts/link-shipping-profile.ts",
     "inspect:cart": "medusa exec ./src/scripts/inspect-cart.ts",
     "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",
+    "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "ib": "init-backend",
     "start": "init-backend && cd .medusa/server && medusa start --verbose",
     "dev": "medusa develop",
     "email:dev": "email dev --dir=./src/modules/email-notifications/templates --port=3002"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@medusajs/admin-sdk": "2.13.6",
     "@medusajs/admin-shared": "2.13.6",
     "@medusajs/cli": "2.13.6",
