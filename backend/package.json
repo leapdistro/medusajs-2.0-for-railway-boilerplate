@@ -16,6 +16,8 @@
     "build": "medusa build && node src/scripts/postBuild.js",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "seed:mbs": "medusa exec ./src/scripts/seed-mbs.ts",
+    "seed:flower-categories": "medusa exec ./src/scripts/seed-flower-categories.ts",
+    "wipe:receiving": "medusa exec ./src/scripts/wipe-receiving.ts",
     "seed:us": "medusa exec ./src/scripts/seed-us.ts",
     "seed:fix-prices": "medusa exec ./src/scripts/fix-prices.ts",
     "seed:fix-shipping-prices": "medusa exec ./src/scripts/fix-shipping-prices.ts",

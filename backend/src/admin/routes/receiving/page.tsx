@@ -132,6 +132,17 @@ type ReviewRow = {
 
 type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: number }>
 
+/* Mirrors the server-side SaveRowResult — only the fields the UI
+ * renders, plus an optional error string. */
+type SaveRowResult = {
+  strainName: string
+  action: "created" | "restocked" | "failed"
+  productId?: string
+  productHandle?: string
+  qtyQps: number
+  error?: string
+}
+
 /* Persisted draft summary — what shows in the resume cards. Cheap to
  * keep in sync (rewritten on every save). */
 type DraftSummary = {
@@ -391,8 +402,29 @@ const ReviewView: React.FC<{
   /* Indices currently being AI-parsed (THCa/Cann from COA). Drives
    * the spinner state on per-row buttons + bulk progress count. */
   const [coaParsing, setCoaParsing] = useState<Set<number>>(new Set())
+  /* Per-row outcomes from the most recent Save click. Drives the
+   * green/red status pill in each row. Cleared on next Save attempt
+   * or when operator edits any row (so stale "✓ created" doesn't
+   * mislead them after they've changed something). */
+  const [saveResults, setSaveResults] = useState<SaveRowResult[] | null>(null)
 
   const shipPerLb = useMemo(() => shippingPerLb(invoice), [invoice])
+
+  /* Live-computed totals from current rows. Differs from the AI-extracted
+   * `invoice.subtotal` / `invoice.total` if the operator added/removed/
+   * edited rows. Render both so divergence is visible. */
+  const computedSubtotal = useMemo(
+    () => rows.reduce((s, r) => s + (r.quantityLb || 0) * (r.unitPricePerLb || 0), 0),
+    [rows],
+  )
+  const computedTotal = useMemo(
+    () => computedSubtotal + (invoice.shippingTotal || 0),
+    [computedSubtotal, invoice.shippingTotal],
+  )
+  /* Threshold for "differs" warning. >$0.01 catches real edits without
+   * flagging floating-point noise. */
+  const subtotalDiverges = invoice.subtotal != null && Math.abs(invoice.subtotal - computedSubtotal) > 0.01
+  const totalDiverges = Math.abs((invoice.total || 0) - computedTotal) > 0.01
 
   /* keep shipping spread accurate if operator edits qty inline */
   useEffect(() => {
@@ -430,7 +462,39 @@ const ReviewView: React.FC<{
 
   const updateRow = useCallback((idx: number, patch: Partial<ReviewRow>) => {
     setRows((cur) => cur.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+    /* Stale results would mislead the operator after they edit. Clear
+     * them on any row change. */
+    setSaveResults(null)
   }, [])
+
+  /* ---- Row add / delete ----
+   * Add appends a blank row at the bottom (orange tint until filled).
+   * Delete removes selected indices and clears the selection set. Both
+   * also clear stale save-result pills since the row indices shift. */
+  const addBlankRow = useCallback(() => {
+    setRows((cur) => [...cur, {
+      strainName: "",
+      quantityLb: 0,
+      unitPricePerLb: 0,
+      tier: null,
+      strainType: null,
+      bestFor: null,
+      effects: [],
+      coa: { state: "idle" },
+      thcaPercent: "",
+      totalCannabinoidsPercent: "",
+      coaNotes: null,
+    }])
+    setSaveResults(null)
+  }, [])
+
+  const deleteSelectedRows = useCallback(() => {
+    if (selected.size === 0) return
+    if (!confirm(`Delete ${selected.size} row(s)?`)) return
+    setRows((cur) => cur.filter((_, i) => !selected.has(i)))
+    setSelected(new Set())
+    setSaveResults(null)
+  }, [selected])
 
   /* ---- Selection helpers ---- */
   const toggleRow = useCallback((idx: number) => {
@@ -573,15 +637,17 @@ const ReviewView: React.FC<{
   const onSave = useCallback(async () => {
     if (!allValid) return
     setSaving(true)
+    setSaveResults(null)
     try {
-      /* Slice 2C will implement /admin/receiving/save — for now just stub
-       * the request so the wiring is testable. */
       const payload = {
         supplier: invoice.supplier,
         invoiceNumber: invoice.invoiceNumber,
         invoiceDate: invoice.invoiceDate,
         shippingTotal: invoice.shippingTotal,
         total: invoice.total,
+        computedSubtotal,
+        computedTotal,
+        draftId: draftId ?? undefined,
         rows: rows.map((r) => ({
           strainName: r.strainName.trim(),
           quantityLb: r.quantityLb,
@@ -596,17 +662,37 @@ const ReviewView: React.FC<{
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
         })),
       }
-      // eslint-disable-next-line no-console
-      console.log("[receiving:save:stub]", payload)
-      toast.info("Save handler coming in Slice 2C", {
-        description: "Payload logged to console for now.",
+      const res = await fetch("/admin/receiving/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
       })
+      const json = await res.json()
+      if (!res.ok && !json?.summary) {
+        /* Hard server error before per-row processing started — no
+         * results to show. */
+        throw new Error(json?.error ?? `Save failed (${res.status})`)
+      }
+      setSaveResults(json.results ?? [])
+      const s = json.summary as { created: number; restocked: number; failed: number }
+      if (s.failed === 0) {
+        toast.success("Receiving saved", {
+          description: `${s.created} created · ${s.restocked} restocked`,
+        })
+        /* Clear the draft id since the draft was deleted server-side. */
+        setDraftId(null)
+      } else {
+        toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
+          description: "See per-row errors below. Fix and re-save (succeeded rows skip-restock automatically).",
+        })
+      }
     } catch (e: any) {
       toast.error("Save failed", { description: e?.message ?? "Network error" })
     } finally {
       setSaving(false)
     }
-  }, [allValid, invoice, rows])
+  }, [allValid, invoice, rows, draftId, computedSubtotal, computedTotal])
 
   /* ---- header card ---- */
   return (
@@ -670,20 +756,58 @@ const ReviewView: React.FC<{
               <Input value={invoice.invoiceDate} onChange={(e) => setInvoice((c) => ({ ...c, invoiceDate: e.target.value }))} />
             </Field>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            <Field label="Shipping">
-              <Input type="number" step="0.01" value={invoice.shippingTotal}
-                onChange={(e) => setInvoice((c) => ({ ...c, shippingTotal: Number(e.target.value) || 0 }))} />
+          {/* Shipping is a single editable field — feeds the per-lb spread */}
+          <Field label="Shipping (operator-editable)">
+            <Input type="number" step="0.01" value={invoice.shippingTotal}
+              onChange={(e) => setInvoice((c) => ({ ...c, shippingTotal: Number(e.target.value) || 0 }))} />
+          </Field>
+
+          {/* Two columns: AI-extracted (from invoice PDF) vs LIVE-computed
+            * (current rows + shipping). Divergence highlighted in amber so
+            * the operator notices when their edits break parity with the
+            * supplier's printed bill. */}
+          <div className="grid grid-cols-2 gap-2" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 10 }}>
+            <Field label="From invoice (AI-extracted)">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  <span className="text-ui-fg-subtle">Subtotal</span>
+                  <span>{fmtMoneyWhole(invoice.subtotal ?? 0)}</span>
+                </div>
+                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  <span className="text-ui-fg-subtle">Total</span>
+                  <Input type="number" step="0.01" value={invoice.total}
+                    onChange={(e) => setInvoice((c) => ({ ...c, total: Number(e.target.value) || 0 }))}
+                    style={{ width: 120, textAlign: "right" }} />
+                </div>
+              </div>
             </Field>
-            <Field label="Subtotal">
-              <Input type="number" step="0.01" value={invoice.subtotal ?? 0}
-                onChange={(e) => setInvoice((c) => ({ ...c, subtotal: Number(e.target.value) || null }))} />
-            </Field>
-            <Field label="Total">
-              <Input type="number" step="0.01" value={invoice.total}
-                onChange={(e) => setInvoice((c) => ({ ...c, total: Number(e.target.value) || 0 }))} />
+            <Field label="Computed from rows">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  <span className="text-ui-fg-subtle">Σ qty × cost</span>
+                  <span style={{ color: subtotalDiverges ? "#C98A00" : "#0A0A0A", fontWeight: subtotalDiverges ? 600 : 400 }}>
+                    {fmtMoney(computedSubtotal)}
+                  </span>
+                </div>
+                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  <span className="text-ui-fg-subtle">+ shipping</span>
+                  <span style={{ color: totalDiverges ? "#C98A00" : "#549402", fontWeight: 600 }}>
+                    {fmtMoney(computedTotal)}
+                  </span>
+                </div>
+              </div>
             </Field>
           </div>
+
+          {(subtotalDiverges || totalDiverges) && (
+            <div style={{ background: "rgba(201,138,0,0.1)", border: "1px solid #C98A00", padding: "6px 10px" }}>
+              <Text size="xsmall" style={{ color: "#C98A00", fontFamily: "monospace" }}>
+                ⚠ Computed differs from invoice by ${Math.abs(computedTotal - (invoice.total || 0)).toFixed(2)}.
+                Inventory will be saved at the computed amount; QBO Bill (Slice 2D) uses the invoice total.
+              </Text>
+            </div>
+          )}
+
           <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 8 }}>
             <Text size="small" className="text-ui-fg-subtle">Shipping spread</Text>
             <Text size="small" weight="plus" style={{ fontFamily: "monospace" }}>
@@ -751,6 +875,10 @@ const ReviewView: React.FC<{
           <BulkSelect placeholder="Type" options={STRAIN_TYPE_OPTIONS.map((o) => ({ value: o, label: o }))} onPick={(v) => bulkApply({ strainType: v as StrainType })} />
           <BulkSelect placeholder="Best For" options={BEST_FOR_OPTIONS.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ bestFor: v as BestFor })} />
           <span style={{ flex: 1 }} />
+          <button type="button" onClick={deleteSelectedRows}
+            style={{ background: "transparent", border: "1px solid #B91C1C", color: "#B91C1C", padding: "4px 12px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.05em", cursor: "pointer" }}>
+            Delete {selected.size}
+          </button>
           <button type="button" onClick={clearSelection}
             style={{ background: "transparent", border: "1px solid #FAFAF7", color: "#FAFAF7", padding: "4px 12px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}>
             Clear
@@ -804,6 +932,9 @@ const ReviewView: React.FC<{
                   <Td>
                     <Input value={row.strainName}
                       onChange={(e) => updateRow(i, { strainName: e.target.value })} />
+                    {saveResults?.[i] && (
+                      <SaveStatusPill result={saveResults[i]} />
+                    )}
                   </Td>
                   <Td style={{ minWidth: 80 }}>
                     <Input type="number" step="0.01" value={row.quantityLb}
@@ -926,6 +1057,14 @@ const ReviewView: React.FC<{
         </table>
       </div>
 
+      {/* Add-row affordance — below the table, above the footer */}
+      <div className="flex justify-start">
+        <button type="button" onClick={addBlankRow}
+          style={{ background: "transparent", border: "1px dashed #C9C3B2", padding: "8px 16px", fontSize: 12, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em", cursor: "pointer", color: "#0A0A0A" }}>
+          + Add Row
+        </button>
+      </div>
+
       {/* Footer summary */}
       <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 12 }}>
         <div className="flex gap-4">
@@ -941,6 +1080,25 @@ const ReviewView: React.FC<{
         </Button>
       </div>
     </div>
+  )
+}
+
+/* ---------- Save-result pill ---------- */
+const SaveStatusPill: React.FC<{ result: SaveRowResult }> = ({ result }) => {
+  if (result.action === "failed") {
+    return (
+      <span title={result.error}
+        style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", border: "1px solid #B91C1C", color: "#B91C1C", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", cursor: "help" }}>
+        ✗ failed
+      </span>
+    )
+  }
+  const label = result.action === "created" ? "✓ created" : "✓ restocked"
+  return (
+    <span title={`${result.qtyQps} QPs added · ${result.productHandle ?? ""}`}
+      style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", border: "1px solid #549402", color: "#549402", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+      {label}
+    </span>
   )
 }
 

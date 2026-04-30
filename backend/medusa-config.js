@@ -60,6 +60,9 @@ const medusaConfig = {
       resolve: './src/modules/receiving-drafts',
     },
     {
+      resolve: './src/modules/receiving-history',
+    },
+    {
       key: Modules.FILE,
       resolve: '@medusajs/file',
       options: {

@@ -13,6 +13,13 @@ coverage
 
 !src/**
 
+# Mikro-ORM auto-generated schema snapshots — regenerated locally on every
+# db:generate / db:migrate. Tracking them in git caused a major incident
+# 2026-04-29 (snapshot got out of sync, db:generate produced a migration
+# that DROPped every Medusa core table; db:migrate executed it and wiped
+# the production DB). Treat as build artifacts.
+src/modules/**/migrations/.snapshot-*.json
+
 ./tsconfig.tsbuildinfo
 # package-lock.json
 yarn.lock
