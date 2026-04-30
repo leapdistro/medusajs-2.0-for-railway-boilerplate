@@ -52,7 +52,10 @@ export default async function seedUsSetup({ container }: ExecArgs) {
   }
 
   // ─── Region: United States with USD ────────────────────────────────
-  const existingRegions = await regionService.listRegions({ name: "United States" })
+  const existingRegions = await regionService.listRegions(
+    { name: "United States" },
+    { relations: ["countries"] },
+  )
   let usRegion = existingRegions[0]
   if (!usRegion) {
     const { result } = await createRegionsWorkflow(container).run({
@@ -69,6 +72,16 @@ export default async function seedUsSetup({ container }: ExecArgs) {
     logger.info(`  + region: United States (${usRegion.id})`)
   } else {
     logger.info(`  · region: United States exists (${usRegion.id})`)
+    /* Ensure 'us' country is attached. Base seed sometimes creates the
+     * region without countries; cart.update_addresses then 400s with
+     * "Country with code us is not within region United States". */
+    const countryCodes = (usRegion.countries ?? []).map((c: any) => c.iso_2)
+    if (!countryCodes.includes("us")) {
+      await regionService.updateRegions(usRegion.id, {
+        countries: [...countryCodes.filter(Boolean), "us"],
+      })
+      logger.info(`  + region: added country 'us' (was: [${countryCodes.join(",")}])`)
+    }
   }
 
   // ─── Tax region: US (provider tp_system) ───────────────────────────

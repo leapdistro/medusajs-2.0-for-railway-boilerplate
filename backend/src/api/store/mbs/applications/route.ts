@@ -312,6 +312,37 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         logger.error(`[/store/mbs/applications] customer create threw: ${e?.message}`)
         return res.status(500).json({ ok: false, message: "Could not save application. Please email " + NOTIFICATION_TO })
       }
+
+      /* Promote the application's address into a real customer_address
+       * row so it shows in admin's Addresses tab (operators expect to
+       * see it there, not buried in Metadata). Best-effort — failure
+       * here doesn't fail the application submission since metadata
+       * still carries the address as the source of truth. */
+      if (customerId) {
+        try {
+          const customerService: any = req.scope.resolve(Modules.CUSTOMER)
+          const [first, ...rest] = contactName.trim().split(/\s+/)
+          await customerService.createCustomerAddresses([{
+            customer_id: customerId,
+            first_name: first || contactName,
+            last_name: rest.join(" ") || null,
+            company: businessName,
+            phone,
+            address_1: address1,
+            address_2: address2 || null,
+            city,
+            province: state,                   // Medusa uses `province` not `state`
+            postal_code: zip,                  // Medusa uses `postal_code` not `zip`
+            country_code: (country || "us").toLowerCase(),
+            address_name: "Business",
+            is_default_shipping: true,
+            is_default_billing: true,
+            metadata: { from_application: true },
+          }])
+        } catch (e: any) {
+          logger.warn(`[/store/mbs/applications] address create failed (non-fatal): ${e?.message}`)
+        }
+      }
     }
   }
 
