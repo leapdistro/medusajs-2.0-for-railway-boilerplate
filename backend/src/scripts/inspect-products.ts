@@ -27,6 +27,7 @@ export default async function inspectProducts({ container }: ExecArgs) {
       "variants.id",
       "variants.title",
       "variants.sku",
+      "variants.weight",
       "variants.options.value",
       "variants.options.option.title",
       "variants.price_set.id",
@@ -88,7 +89,8 @@ export default async function inspectProducts({ container }: ExecArgs) {
           ? "✗ NO PRICES SET"
           : prices.map((p: any) => `${p.currency_code.toUpperCase()} ${p.amount}`).join(", ")
         const opts = (v.options ?? []).map((o: any) => `${o.option?.title ?? "?"}=${o.value}`).join(", ") || "(no options)"
-        logger.info(`        · ${v.title.padEnd(20)} sku=${(v.sku ?? "-").padEnd(28)} prices=${priceStr}`)
+        const weightStr = v.weight != null ? `${v.weight}g` : "✗ NO WEIGHT (margin calc will hide)"
+        logger.info(`        · ${v.title.padEnd(20)} sku=${(v.sku ?? "-").padEnd(28)} prices=${priceStr}  weight=${weightStr}`)
         logger.info(`            options: ${opts}`)
       }
     }

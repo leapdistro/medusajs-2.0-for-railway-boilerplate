@@ -89,6 +89,13 @@ const SIZE_QP_MULTIPLIER: Record<SizeKey, number> = {
   qp: 1, half: 2, lb: 4,
 }
 
+/* Variant weight in grams. Drives the storefront margin calc (cost/g)
+ * and ShipStation's box weight when wired. 1 lb ≈ 453.6g; we round to
+ * whole grams since fractional grams aren't worth the precision. */
+const SIZE_GRAMS: Record<SizeKey, number> = {
+  qp: 113, half: 227, lb: 454,
+}
+
 /* SKU pattern from feedback memory (locked 2026-04-25):
  *   <size>-<subcat>-<type>-<strain>  (lowercase, hyphenated)
  * For Flower receiving: subcat=flower, type=indica/sativa/hybrid. */
@@ -305,6 +312,9 @@ export async function saveOneRow(
       options: { Size: SIZE_LABELS[size] },
       prices: [{ amount: tp[size], currency_code: "usd" }],
       manage_inventory: true,
+      /* Weight in grams — required for the storefront margin calc to
+       * render (cost/gram math). Also feeds ShipStation when wired. */
+      weight: SIZE_GRAMS[size],
       metadata: {
         tier_linked: true,
         tier_key: row.tier,
