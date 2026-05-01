@@ -130,6 +130,8 @@ export type SaveContext = {
   stockLocationId: string
   /** Map of tier → flower-sub-category-id (resolved once). Throws if missing. */
   tierCategoryIds: Record<TierKey, string>
+  /** Default shipping profile id — required link or cart checkout fails. */
+  shippingProfileId: string
 }
 
 export async function buildSaveContext(
@@ -174,12 +176,23 @@ export async function buildSaveContext(
     tierCategoryIds[tierKey] = cat.id
   }
 
+  /* Default shipping profile — every product must link to one or
+   * cart.complete() throws "shipping profiles not satisfied" at
+   * checkout. Lazy-resolved here so we hit it once per save batch. */
+  const fulfillmentService: any = container.resolve(Modules.FULFILLMENT)
+  const profiles = await fulfillmentService.listShippingProfiles({ type: "default" })
+  const shippingProfile = profiles?.[0]
+  if (!shippingProfile) {
+    throw new Error("No default shipping profile found. Run `pnpm seed:us` first.")
+  }
+
   return {
     shipPerLb,
     tierPrices,
     salesChannelId: defaultChannel.id,
     stockLocationId: locations[0].id,
     tierCategoryIds: tierCategoryIds as Record<TierKey, string>,
+    shippingProfileId: shippingProfile.id,
   }
 }
 
@@ -363,6 +376,20 @@ export async function saveOneRow(
       [Modules.PRODUCT]: { product_id: productId },
       [MBS_ATTRIBUTES_MODULE]: { product_attributes_id: attrs.id },
     })
+
+    /* 6. Link product → default shipping profile. Without this,
+     * cart.complete() throws "shipping profiles not satisfied" at
+     * checkout. createProductsWorkflow doesn't auto-link this. */
+    try {
+      await link.create({
+        [Modules.PRODUCT]: { product_id: productId },
+        [Modules.FULFILLMENT]: { shipping_profile_id: ctx.shippingProfileId },
+      })
+    } catch (e: any) {
+      /* Non-fatal — operator can run pnpm link:shipping-profile to
+       * backfill if this happens. Log but don't fail the row. */
+      console.warn(`[receiving:save] shipping profile link failed for ${row.strainName}: ${e?.message}`)
+    }
 
     return {
       ...baseResult,
