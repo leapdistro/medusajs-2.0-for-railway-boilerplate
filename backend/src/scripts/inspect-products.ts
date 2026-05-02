@@ -30,6 +30,10 @@ export default async function inspectProducts({ container }: ExecArgs) {
       "variants.title",
       "variants.sku",
       "variants.weight",
+      "variants.inventory_items.required_quantity",
+      "variants.inventory_items.inventory.id",
+      "variants.inventory_items.inventory.location_levels.stocked_quantity",
+      "variants.inventory_items.inventory.location_levels.location_id",
       "variants.options.value",
       "variants.options.option.title",
       "variants.price_set.id",
@@ -94,8 +98,13 @@ export default async function inspectProducts({ container }: ExecArgs) {
           : prices.map((p: any) => `${p.currency_code.toUpperCase()} ${p.amount}`).join(", ")
         const opts = (v.options ?? []).map((o: any) => `${o.option?.title ?? "?"}=${o.value}`).join(", ") || "(no options)"
         const weightStr = v.weight != null ? `${v.weight}g` : "✗ NO WEIGHT (margin calc will hide)"
+        const invItems = (v.inventory_items ?? []).map((ii: any) => {
+          const levels = (ii.inventory?.location_levels ?? []).map((lv: any) => `${lv.stocked_quantity}@${(lv.location_id ?? "?").slice(-6)}`).join(",")
+          return `inv=${(ii.inventory?.id ?? "?").slice(-8)} required_qty=${ii.required_quantity} stock=[${levels || "0"}]`
+        }).join(", ")
         logger.info(`        · ${v.title.padEnd(20)} sku=${(v.sku ?? "-").padEnd(28)} prices=${priceStr}  weight=${weightStr}`)
         logger.info(`            options: ${opts}`)
+        if (invItems) logger.info(`            inventory: ${invItems}`)
       }
     }
     if (attrs) {
