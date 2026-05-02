@@ -28,8 +28,18 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "images.*",
       "options.*", "options.values.*",
       "variants.id", "variants.title", "variants.sku", "variants.weight",
+      "variants.manage_inventory",
       "variants.options.*", "variants.options.option.title",
       "variants.price_set.prices.amount", "variants.price_set.prices.currency_code",
+      /* Pull inventory data so the storefront can render
+       * per-variant "X available" labels without a second
+       * round-trip. For pool products (Flower QP/½/LB sharing
+       * one inventory item via required_quantity), each variant's
+       * available is floor(stock / required_quantity). */
+      "variants.inventory_items.required_quantity",
+      "variants.inventory_items.inventory.id",
+      "variants.inventory_items.inventory.location_levels.stocked_quantity",
+      "variants.inventory_items.inventory.location_levels.reserved_quantity",
       "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
       "product_attributes.*",
     ],
