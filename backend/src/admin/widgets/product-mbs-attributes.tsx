@@ -198,11 +198,10 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
           placeholder="1 / 2 / 3"
         />
         <div className="flex flex-col gap-y-2">
-          <Label size="small" weight="plus">COA URL</Label>
-          <Input
+          <Label size="small" weight="plus">COA</Label>
+          <CoaField
             value={form.coa_url}
-            onChange={(e) => setForm({ ...form, coa_url: e.target.value })}
-            placeholder="/coas/northern-lights.pdf"
+            onChange={(url) => setForm({ ...form, coa_url: url })}
           />
         </div>
         <div className="flex flex-col gap-y-2">
@@ -255,6 +254,156 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         </div>
       </div>
     </Container>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * CoaField — drag-and-drop COA upload + URL state.
+ *
+ * Three modes the operator sees:
+ *   1. EMPTY: dropzone says "Drop COA PDF here, or paste a URL below"
+ *   2. UPLOADED: shows ✓ filename + open-in-new-tab link + replace/remove
+ *   3. PASTED URL (legacy): shows the URL as text + clear-to-upload-fresh
+ *
+ * Posts to /admin/receiving/coa-upload (the same endpoint the receiving
+ * page uses for bulk COA uploads) — single file, gets back the
+ * publicly-reachable URL (MinIO in prod, /static in dev).
+ *
+ * Failures don't dirty the field — operator can retry without losing
+ * what's already saved.
+ * ──────────────────────────────────────────────────────────────────── */
+const CoaField: React.FC<{
+  value: string
+  onChange: (url: string) => void
+}> = ({ value, onChange }) => {
+  const [busy, setBusy] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useState<HTMLInputElement | null>(null)
+  const [inputEl, setInputEl] = inputRef
+
+  const upload = async (file: File) => {
+    setError(null)
+    if (file.type !== "application/pdf" && !file.type.startsWith("image/")) {
+      setError(`Unsupported type: ${file.type}. PDF or image only.`)
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB) — max 10 MB`)
+      return
+    }
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      fd.append("coas", file)
+      const res = await fetch("/admin/receiving/coa-upload", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      })
+      const json = await res.json()
+      if (!res.ok || !json.ok) throw new Error(json?.error ?? `Upload failed (${res.status})`)
+      const uploaded = json.files?.[0]
+      if (!uploaded?.url) throw new Error("Upload succeeded but no URL returned")
+      onChange(uploaded.url)
+      toast.success("COA uploaded", {
+        description: `${uploaded.originalName} → file storage. Click Save to persist.`,
+      })
+    } catch (e: any) {
+      setError(e?.message ?? "Network error")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const fileNameFromUrl = (url: string): string => {
+    try {
+      const path = new URL(url).pathname
+      return decodeURIComponent(path.split("/").pop() ?? url)
+    } catch {
+      return url.split("/").pop() ?? url
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-y-2">
+      {/* Current value display — only when set */}
+      {value && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "rgba(84,148,2,0.06)", border: "1px solid #549402", fontFamily: "monospace", fontSize: 12 }}>
+          <span style={{ color: "#549402" }}>✓</span>
+          <a href={value} target="_blank" rel="noopener noreferrer"
+             style={{ color: "#0A0A0A", textDecoration: "underline", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+             title={value}>
+            {fileNameFromUrl(value)}
+          </a>
+          <button type="button" onClick={() => onChange("")}
+                  style={{ background: "transparent", border: "none", color: "#B91C1C", cursor: "pointer", fontSize: 14, padding: 0 }}
+                  title="Remove">×</button>
+        </div>
+      )}
+
+      {/* Dropzone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          const f = e.dataTransfer.files?.[0]
+          if (f) upload(f)
+        }}
+        onClick={() => inputEl?.click()}
+        style={{
+          border: dragOver ? "2px solid #0A0A0A" : "1.5px dashed #C9C3B2",
+          background: dragOver ? "rgba(10,10,10,0.04)" : "#FAFAF7",
+          padding: "16px 12px",
+          textAlign: "center",
+          cursor: busy ? "wait" : "pointer",
+          opacity: busy ? 0.6 : 1,
+          transition: "all 120ms ease",
+          fontSize: 12,
+          fontFamily: "monospace",
+          textTransform: "uppercase",
+          letterSpacing: "0.1em",
+        }}
+      >
+        <input
+          ref={(el) => setInputEl(el)}
+          type="file"
+          accept="application/pdf,image/*"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) upload(f)
+            if (e.target) e.target.value = ""
+          }}
+        />
+        {busy
+          ? "Uploading…"
+          : value
+            ? "Drop a new file to replace"
+            : "Drop COA PDF here, or click to browse"}
+      </div>
+
+      {/* Manual URL fallback (collapsed unless operator wants it) */}
+      <details style={{ fontSize: 11 }}>
+        <summary style={{ cursor: "pointer", color: "#4A4A45", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          Paste URL instead
+        </summary>
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="https://… or /coas/strain.pdf"
+          className="mt-2"
+        />
+      </details>
+
+      {error && (
+        <div style={{ border: "1px solid #B91C1C", padding: "6px 10px", background: "#fff", fontSize: 12 }}>
+          <Text size="small" weight="plus" style={{ color: "#B91C1C" }}>{error}</Text>
+        </div>
+      )}
+    </div>
   )
 }
 
