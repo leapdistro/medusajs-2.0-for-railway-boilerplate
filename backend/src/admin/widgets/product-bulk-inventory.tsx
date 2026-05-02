@@ -35,8 +35,10 @@ const ProductBulkInventoryWidget = ({ data: product }: DetailWidgetProps<AdminPr
   const [value, setValue] = useState<string>("")
   const [busy, setBusy] = useState(false)
   const [lastResult, setLastResult] = useState<string | null>(null)
-
-  const variantCount = product?.variants?.length ?? 0
+  /* DetailWidgetProps doesn't always expand variants — fetch a fresh
+   * count from the API so the heading is accurate. Falls back to the
+   * widget-prop count if the API call fails. */
+  const [variantCount, setVariantCount] = useState<number>(product?.variants?.length ?? 0)
 
   /* Load stock locations once on mount. Defaults selected to MBS US
    * Warehouse if it exists (operator's primary location), else the
@@ -55,6 +57,23 @@ const ProductBulkInventoryWidget = ({ data: product }: DetailWidgetProps<AdminPr
       .catch(() => { /* silent — widget shows "no locations" if this fails */ })
     return () => { cancelled = true }
   }, [])
+
+  /* Fetch fresh variant count from the API when product changes. Some
+   * widget zones don't pre-expand `data.variants`, so the prop count
+   * can be 0 even when variants exist. */
+  useEffect(() => {
+    if (!product?.id) return
+    let cancelled = false
+    fetch(`/admin/products/${product.id}?fields=variants.id`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const n = (j?.product?.variants ?? []).length
+        if (n > 0) setVariantCount(n)
+      })
+      .catch(() => { /* silent */ })
+    return () => { cancelled = true }
+  }, [product?.id])
 
   const apply = useCallback(async () => {
     if (!product?.id) return
@@ -152,10 +171,12 @@ const ProductBulkInventoryWidget = ({ data: product }: DetailWidgetProps<AdminPr
           ) : <span />}
           <Button
             variant="primary"
-            disabled={busy || !value || !locationId || variantCount === 0}
+            disabled={busy || !value || !locationId}
             onClick={apply}
           >
-            {busy ? "Applying…" : `${mode === "set" ? "Set" : "Add"} on all ${variantCount} variants`}
+            {busy
+              ? "Applying…"
+              : `${mode === "set" ? "Set" : "Add"} on all ${variantCount > 0 ? variantCount + " " : ""}variants`}
           </Button>
         </div>
       </div>
