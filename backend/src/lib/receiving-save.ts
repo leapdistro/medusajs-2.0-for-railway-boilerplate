@@ -77,10 +77,15 @@ const TIER_CATEGORY_NAME: Record<TierKey, string> = {
   rapper:  "Rapper",
 }
 
+/* Size option values for variants created via receiving. Short forms
+ * since the storefront now displays operator-typed values verbatim
+ * (Path A of dynamic-catalog rebuild — no automatic transforms).
+ * Operator can rename these per-variant in admin if they prefer
+ * different copy. */
 const SIZE_LABELS: Record<SizeKey, string> = {
-  qp:   "qp (1/4lb)",
-  half: "half (1/2lb)",
-  lb:   "full (1lb)",
+  qp:   "QP",
+  half: "½",
+  lb:   "LB",
 }
 
 /* QPs per size — used for both required_quantity (variant link) and

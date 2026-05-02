@@ -24,6 +24,8 @@ export default async function inspectProducts({ container }: ExecArgs) {
       "categories.name",
       "categories.handle",
       "categories.parent_category_id",
+      "options.title",
+      "options.values.value",
       "variants.id",
       "variants.title",
       "variants.sku",
@@ -82,7 +84,9 @@ export default async function inspectProducts({ container }: ExecArgs) {
     logger.info(`      categories:  ${cats}`)
     logger.info(`      channels:    ${channels}`)
     logger.info(`      variants:    ${variantCount}`)
-    if (variantCount > 0 && variantCount <= 5) {
+    const productOpts = (p.options ?? []).map((o: any) => `${o.title}=[${(o.values ?? []).map((v: any) => v.value).join(",")}]`).join(" · ") || "(none)"
+    logger.info(`      options:     ${productOpts}`)
+    if (variantCount > 0) {
       for (const v of p.variants as any[]) {
         const prices = v.price_set?.prices ?? []
         const priceStr = prices.length === 0

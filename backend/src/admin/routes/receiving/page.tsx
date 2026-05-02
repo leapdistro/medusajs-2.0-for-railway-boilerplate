@@ -104,6 +104,17 @@ type CoaState =
   | { state: "ready"; url: string; originalName: string; mimeType: string }
   | { state: "error"; originalName: string; error: string }
 
+/* Near-match returned by /admin/receiving/check-duplicates. Surfaces
+ * existing products whose names are within typo-distance of this row's
+ * strainName, so the operator can pick "use existing" instead of
+ * accidentally creating a duplicate. */
+type NearMatch = {
+  handle: string
+  title: string
+  tier: TierKey
+  distance: number
+}
+
 /* Per-row review state — extends the extracted line item with the
  * operator's dropdown picks + COA upload state. */
 type ReviewRow = {
@@ -128,6 +139,12 @@ type ReviewRow = {
    * instead of raw cannabinoid sum". Surfaced as a ⚠ tooltip in the
    * THCa cell so the operator can review. */
   coaNotes: string | null
+  /* Existing products that look like typo-twins of this row's strain
+   * name. Populated after extract by the check-duplicates endpoint.
+   * Operator can click "Use existing" to swap strainName + tier so
+   * the save handler hits the restock path instead of creating a
+   * duplicate product. */
+  nearMatches: NearMatch[]
 }
 
 type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: number }>
@@ -208,6 +225,7 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
       thcaPercent: "",
       totalCannabinoidsPercent: "",
       coaNotes: null,
+      nearMatches: [],
     }
   })
 }
@@ -410,6 +428,38 @@ const ReviewView: React.FC<{
 
   const shipPerLb = useMemo(() => shippingPerLb(invoice), [invoice])
 
+  /* Check existing catalog for typo-twins of every strain on first
+   * mount. Annotates rows with `nearMatches` so the operator sees a
+   * ⚠ warning + "Use existing" button on rows that look like an
+   * AI typo of an already-stocked strain. Single round trip. */
+  useEffect(() => {
+    let cancelled = false
+    const names = rows.map((r) => r.strainName).filter(Boolean)
+    if (names.length === 0) return
+    fetch("/admin/receiving/check-duplicates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ strainNames: names }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const matches: Record<string, NearMatch[]> = j.matches ?? {}
+        if (Object.keys(matches).length === 0) return
+        setRows((cur) => cur.map((r) => ({
+          ...r,
+          nearMatches: matches[r.strainName] ?? [],
+        })))
+      })
+      .catch(() => { /* silent — duplicate-check is a hint, not load-bearing */ })
+    return () => { cancelled = true }
+    /* Run once on mount; if operator manually adds a row later they'll
+     * see warnings only after a manual "Re-check duplicates" action
+     * (out of scope for v0 — typing drift is rare enough not to bother). */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   /* Live-computed totals from current rows. Differs from the AI-extracted
    * `invoice.subtotal` / `invoice.total` if the operator added/removed/
    * edited rows. Render both so divergence is visible. */
@@ -467,6 +517,19 @@ const ReviewView: React.FC<{
     setSaveResults(null)
   }, [])
 
+  /* "Use existing" click handler — swaps the row's strainName + tier
+   * to match a near-match suggestion so the save handler hits the
+   * restock path. Also clears nearMatches since the typo is resolved. */
+  const useExistingMatch = useCallback((idx: number, m: NearMatch) => {
+    setRows((cur) => cur.map((r, i) => i === idx ? {
+      ...r,
+      strainName: m.title,
+      tier: m.tier,
+      nearMatches: [],
+    } : r))
+    setSaveResults(null)
+  }, [])
+
   /* ---- Row add / delete ----
    * Add appends a blank row at the bottom (orange tint until filled).
    * Delete removes selected indices and clears the selection set. Both
@@ -484,6 +547,7 @@ const ReviewView: React.FC<{
       thcaPercent: "",
       totalCannabinoidsPercent: "",
       coaNotes: null,
+      nearMatches: [],
     }])
     setSaveResults(null)
   }, [])
@@ -932,6 +996,26 @@ const ReviewView: React.FC<{
                   <Td>
                     <Input value={row.strainName}
                       onChange={(e) => updateRow(i, { strainName: e.target.value })} />
+                    {row.nearMatches.length > 0 && (
+                      <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(201,138,0,0.08)", border: "1px solid #C98A00", fontSize: 11, fontFamily: "monospace" }}>
+                        <div style={{ color: "#C98A00", marginBottom: 2 }}>⚠ Possible duplicate of:</div>
+                        {row.nearMatches.map((m, j) => (
+                          <div key={j} style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center", padding: "1px 0" }}>
+                            <span title={`Levenshtein distance: ${m.distance}`}>
+                              {m.title} <span style={{ color: "#888" }}>({m.tier})</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => useExistingMatch(i, m)}
+                              style={{ background: "#C98A00", color: "#fff", border: "none", padding: "1px 6px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}
+                              title="Replace this row's strain name + tier so save will restock the existing product instead of creating a duplicate"
+                            >
+                              Use
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {saveResults?.[i] && (
                       <SaveStatusPill result={saveResults[i]} />
                     )}
@@ -1557,6 +1641,7 @@ const ReceivingPage = () => {
               thcaPercent: r.thcaPercent ?? "",
               totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
               coaNotes: r.coaNotes ?? null,
+              nearMatches: r.nearMatches ?? [],
             }))
             setExtracted({
               invoice: p.invoice,
