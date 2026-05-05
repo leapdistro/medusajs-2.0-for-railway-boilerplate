@@ -209,7 +209,15 @@ export async function saveOneRow(
   ctx: SaveContext,
 ): Promise<SaveRowResult> {
   const strainSlug = slugify(row.strainName)
-  const handle = `${row.tier}-${strainSlug}`
+  /* Phase 5 — drop the legacy `${tier}-${strainSlug}` prefix so the
+   * URL = handle 1:1 (`/products/<cat>/<sub>/<handle>`). Identity rule
+   * is now strain-only — same strain across two tiers would collide
+   * here, but in practice the operator commits to one tier per strain
+   * at receive time (a strain is graded once, not stocked at multiple
+   * tiers simultaneously). If a collision DOES happen, Medusa rejects
+   * the create with a duplicate-handle error and the operator can
+   * rename. */
+  const handle = strainSlug
   const totalQps = Math.round(row.quantityLb * 4)
   const landedPerLb = (row.unitPricePerLb || 0) + ctx.shipPerLb
   const landedPerQp = landedPerLb / 4

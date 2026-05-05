@@ -9,10 +9,19 @@ import { deleteProductsWorkflow } from "@medusajs/medusa/core-flows"
  * The standard pnpm wipe:receiving can't help in this case because it
  * walks the history records.
  *
- * Heuristic: receiving handles are `<tier>-<strain-slug>` (e.g.,
- * `exotic-night-walker`). Manual products use freeform handles. So we
- * find every product whose handle starts with one of the 5 tier
- * prefixes, then delete it + its inventory items.
+ * Heuristic: PRE-Phase-5 receiving handles were `<tier>-<strain-slug>`
+ * (e.g., `exotic-night-walker`). The script finds every product whose
+ * handle starts with one of the 5 tier prefixes, then deletes it +
+ * its inventory items.
+ *
+ * ⚠ PHASE 5 BREAKAGE: receiving-save no longer prefixes handles with
+ * tier (handles are now strain-only, e.g. `blue-dream`). After running
+ * `migrate-handles-drop-tier`, this script will find ZERO candidates
+ * — effective no-op. BEFORE migration runs, this script will still
+ * delete legitimate (non-orphan) products that happen to carry the
+ * old prefix. Don't run this until either:
+ *   1. Migration has been applied (then it's a safe no-op), OR
+ *   2. You've confirmed every prefixed product is genuinely orphaned.
  *
  * SAFETY: dry-run by default. Pass APPLY=1 to actually delete.
  *
