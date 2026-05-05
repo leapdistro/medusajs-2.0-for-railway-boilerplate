@@ -230,13 +230,47 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
   })
 }
 
+/** Empty row used when the operator chooses "Enter manually" — same
+ *  shape as `addBlankRow` inside ReviewView so seeded + appended
+ *  manual rows behave identically. */
+const blankReviewRow = (): ReviewRow => ({
+  strainName: "",
+  quantityLb: 0,
+  unitPricePerLb: 0,
+  tier: null,
+  strainType: null,
+  bestFor: null,
+  effects: [],
+  coa: { state: "idle" },
+  thcaPercent: "",
+  totalCannabinoidsPercent: "",
+  coaNotes: null,
+  nearMatches: [],
+})
+
+/** Stub invoice used for the manual-entry path. Operator fills the
+ *  supplier + invoice fields by hand in ReviewView; per-row COA
+ *  extract automation is unchanged. invoiceDate defaults to today
+ *  (YYYY-MM-DD) so the operator usually accepts the default. */
+const blankManualInvoice = (): ExtractedInvoice => ({
+  supplier: { name: "", phone: null, email: null, address: null },
+  invoiceNumber: "",
+  invoiceDate: new Date().toISOString().slice(0, 10),
+  lineItems: [],
+  shippingTotal: 0,
+  subtotal: null,
+  total: 0,
+  notes: null,
+})
+
 /* =========================================================
  * Upload view
  * ========================================================= */
 const UploadView: React.FC<{
   onExtracted: (invoice: ExtractedInvoice, fileName: string, tokens: { in: number; out: number }) => void
   onResumeDraft: (draft: DraftRow) => void
-}> = ({ onExtracted, onResumeDraft }) => {
+  onManualEntry: () => void
+}> = ({ onExtracted, onResumeDraft, onManualEntry }) => {
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -380,7 +414,14 @@ const UploadView: React.FC<{
         </div>
       )}
 
-      <div className="flex justify-end">
+      <div className="flex justify-between items-center">
+        {/* Manual-entry escape hatch — no PDF to upload (one-off SKU,
+         *  sample, in-house product). Skips invoice extract; jumps
+         *  straight to the review grid with a blank row. Per-row COA
+         *  AI extract still runs whenever the operator drops a COA. */}
+        <Button variant="secondary" disabled={busy} onClick={onManualEntry}>
+          Skip — Enter Manually
+        </Button>
         <Button
           variant="primary"
           disabled={!file || busy}
@@ -1628,6 +1669,14 @@ const ReceivingPage = () => {
         <UploadView
           onExtracted={(invoice, fileName, tokens) =>
             setExtracted({ invoice, fileName, tokens })
+          }
+          onManualEntry={() =>
+            setExtracted({
+              invoice: blankManualInvoice(),
+              fileName: "Manual Entry",
+              tokens: { in: 0, out: 0 },
+              initialRows: [blankReviewRow()],
+            })
           }
           onResumeDraft={(d) => {
             const p = d.payload as DraftPayload
