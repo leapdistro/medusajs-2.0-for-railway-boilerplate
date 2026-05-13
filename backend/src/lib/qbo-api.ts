@@ -113,12 +113,16 @@ export async function getDefaultAccounts(
   conn: QboConnectionRow,
 ): Promise<{ inventoryAsset: AccountRef; incomeAccount: AccountRef; cogsAccount: AccountRef }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
-  /* Standard QBO chart of accounts has these by default. We query by
-   * AccountSubType which is the most reliable cross-tenant identifier. */
+  /* Standard QBO chart of accounts has these by default. QBQL doesn't
+   * support OR — query each account by its most reliable identifier:
+   * - Inventory Asset: AccountSubType = 'Inventory'
+   * - Sales of Product Income: AccountSubType = 'SalesOfProductIncome'
+   * - Cost of Goods Sold: AccountType = 'Cost of Goods Sold' (parent
+   *   type — covers SuppliesMaterialsCogs and any other COGS sub-types). */
   const queries: Array<[keyof Awaited<ReturnType<typeof getDefaultAccounts>>, string]> = [
     ["inventoryAsset", "select * from Account where AccountSubType = 'Inventory'"],
     ["incomeAccount",  "select * from Account where AccountSubType = 'SalesOfProductIncome'"],
-    ["cogsAccount",    "select * from Account where AccountSubType = 'SuppliesMaterialsCogs' OR AccountType = 'Cost of Goods Sold'"],
+    ["cogsAccount",    "select * from Account where AccountType = 'Cost of Goods Sold'"],
   ]
   const result: any = {}
   for (const [key, q] of queries) {
