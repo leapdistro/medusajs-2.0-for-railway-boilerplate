@@ -1,0 +1,239 @@
+/**
+ * Push a Medusa order to QBO as an Invoice (and, for KAJA-paid orders,
+ * a Payment that closes the Invoice). Shared between:
+ *
+ *   - The fulfillment subscriber (auto-push on order fulfilled)
+ *   - The manual "Push to QuickBooks" admin retry button
+ *
+ * Idempotent: bails if `order.metadata.qbo_invoice_id` is already set.
+ * Surfaces a descriptive error string on failure so the order widget can
+ * render it for the operator.
+ */
+import {
+  baseFromVariantSku,
+  createInvoice,
+  createPayment,
+  findItemBySku,
+  findOrCreateCustomer,
+  findPaymentMethodIdByName,
+  findQboTermIdByName,
+  invoicePublicUrl,
+} from "./qbo-api"
+import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
+
+export type OrderPushOutcome =
+  | { ok: true; invoiceId: string; balance: number; paymentId?: string; url: string }
+  | { ok: false; code: "ALREADY_PUSHED"; invoiceId: string }
+  | { ok: false; code: "NOT_CONNECTED" | "NO_CUSTOMER" | "MISSING_ITEM" | "API_ERROR"; error: string }
+
+type Logger = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void }
+
+export async function pushOrderToQbo(
+  scope: any,
+  orderId: string,
+  logger: Logger,
+): Promise<OrderPushOutcome> {
+  let qbo: any
+  try {
+    qbo = scope.resolve(QBO_CONNECTION_MODULE)
+  } catch {
+    return { ok: false, code: "NOT_CONNECTED", error: "QBO module not registered" }
+  }
+  const connRows = await qbo.listQboConnections({}, { take: 1 }).catch(() => [])
+  const conn = connRows[0]
+  if (!conn) {
+    return { ok: false, code: "NOT_CONNECTED", error: "QBO is not connected — visit /app/quickbooks" }
+  }
+
+  /* Load the order with everything we need in one query. */
+  const { ContainerRegistrationKeys } = await import("@medusajs/framework/utils")
+  const query = scope.resolve(ContainerRegistrationKeys.QUERY)
+  const { data: orders } = await query.graph({
+    entity: "order",
+    fields: [
+      "id", "display_id", "currency_code", "total", "subtotal", "shipping_total",
+      "metadata", "created_at",
+      "customer.id", "customer.email", "customer.phone", "customer.metadata",
+      "items.id", "items.title", "items.quantity", "items.unit_price", "items.total",
+      "items.variant_sku", "items.variant_id", "items.product_title",
+    ],
+    filters: { id: orderId },
+  })
+  const order = (orders as any[])[0]
+  if (!order) {
+    return { ok: false, code: "API_ERROR", error: `No order ${orderId}` }
+  }
+
+  /* Idempotency. */
+  if (order.metadata?.qbo_invoice_id) {
+    return { ok: false, code: "ALREADY_PUSHED", invoiceId: String(order.metadata.qbo_invoice_id) }
+  }
+
+  const customer = order.customer
+  if (!customer?.email) {
+    return { ok: false, code: "NO_CUSTOMER", error: "Order has no customer or email — push aborted" }
+  }
+  const customerMeta = (customer.metadata ?? {}) as Record<string, any>
+
+  /* 1. Resolve QBO Customer id — eager path stamps on approval; lazy
+   *    fallback finds/creates here. */
+  let qboCustomerId = customerMeta.qbo_customer_id as string | undefined
+  if (!qboCustomerId) {
+    try {
+      const created = await findOrCreateCustomer(qbo, conn, {
+        businessName: String(customerMeta.business_name ?? "").trim() || customer.email,
+        email: customer.email,
+        phone: customer.phone ?? null,
+        addressLine1: customerMeta.address_line1 ?? null,
+        addressLine2: customerMeta.address_line2 ?? null,
+        city: customerMeta.city ?? null,
+        state: customerMeta.state ?? null,
+        zip: customerMeta.zip ?? null,
+        country: customerMeta.country ?? "US",
+        contactName: customerMeta.contact_name ?? null,
+        notes: "Auto-created during order fulfillment push",
+      })
+      qboCustomerId = created.id
+      /* Stamp back so future pushes for this customer skip the lookup. */
+      const customerService: any = scope.resolve("customer")
+      await customerService.updateCustomers(customer.id, {
+        metadata: { ...customerMeta, qbo_customer_id: qboCustomerId },
+      })
+    } catch (e: any) {
+      return { ok: false, code: "API_ERROR", error: `QBO Customer push failed: ${e?.message}` }
+    }
+  }
+
+  /* 2. Look up the QBO SalesTerm id when customer is Net 15. */
+  let salesTermId: string | null = null
+  if (customerMeta.payment_terms === "net15") {
+    try {
+      salesTermId = await findQboTermIdByName(qbo, conn, "Net 15")
+    } catch (e: any) {
+      logger.warn(`[qbo-order-push] Net 15 term lookup failed: ${e?.message}`)
+    }
+  }
+
+  /* 3. Map order lines to QBO Item lines. Variant SKU → base SKU →
+   *    QBO Item lookup. Any missing item halts the push so operator
+   *    can push a receiving (or manually create the QBO item) first. */
+  const lines = []
+  const missing: string[] = []
+  for (const item of order.items ?? []) {
+    const vSku = item.variant_sku as string | null
+    if (!vSku) {
+      missing.push(item.product_title ?? item.title ?? "untitled line")
+      continue
+    }
+    const baseSku = baseFromVariantSku(vSku)
+    const found = await findItemBySku(qbo, conn, baseSku).catch(() => null)
+    if (!found) {
+      missing.push(`${item.product_title ?? item.title ?? "untitled"} (SKU ${baseSku})`)
+      continue
+    }
+    /* unit_price + total are in cents (Medusa convention); convert to
+     * dollars for QBO. Use the per-line total / qty to get the
+     * effective discounted unit price. */
+    const qty = Number(item.quantity ?? 0)
+    const totalCents = Number(item.total ?? 0)
+    const unitDollars = qty > 0 ? totalCents / qty / 100 : 0
+    lines.push({
+      itemId: found.id,
+      itemName: found.name,
+      qty,
+      unitPrice: round2(unitDollars),
+      description: item.product_title ?? item.title ?? undefined,
+    })
+  }
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      code: "MISSING_ITEM",
+      error: `QBO Items not found for: ${missing.join("; ")}. Push a receiving for them or create the items manually in QBO.`,
+    }
+  }
+  if (lines.length === 0) {
+    return { ok: false, code: "API_ERROR", error: "Order has no eligible line items to push" }
+  }
+
+  /* 4. Create the Invoice. */
+  const txnDate = new Date().toISOString().slice(0, 10)
+  let invoice
+  try {
+    invoice = await createInvoice(qbo, conn, {
+      customerId: qboCustomerId,
+      txnDate,
+      docNumber: String(order.display_id ?? order.id),
+      lines,
+      salesTermId,
+      privateNote: `Medusa order ${order.display_id ?? order.id}`,
+      taxExempt: true,
+    })
+  } catch (e: any) {
+    return { ok: false, code: "API_ERROR", error: `Invoice create failed: ${e?.message}` }
+  }
+
+  /* 5. KAJA-paid path: close the invoice with a Payment so QBO marks
+   *    it PAID. Net 15 path skips this — operator records the check
+   *    payment manually when it arrives. */
+  let paymentId: string | undefined
+  if (customerMeta.payment_terms !== "net15") {
+    try {
+      const paymentMethodId = await findPaymentMethodIdByName(qbo, conn, "Credit Card").catch(() => null)
+      const kajaRef =
+        (order.metadata?.kaja_transaction_id as string | undefined)
+          ?? (order.metadata?.payment_ref as string | undefined)
+          ?? undefined
+      const payment = await createPayment(qbo, conn, {
+        customerId: qboCustomerId,
+        invoiceId: invoice.id,
+        amount: invoice.totalAmt,
+        txnDate,
+        paymentMethodId: paymentMethodId ?? undefined,
+        refNum: kajaRef,
+        privateNote: `Auto-payment for Medusa order ${order.display_id ?? order.id}`,
+      })
+      paymentId = payment.id
+    } catch (e: any) {
+      /* Invoice succeeded; payment did not. The Invoice will sit
+       * UNPAID — operator can record the payment manually in QBO. */
+      logger.warn(`[qbo-order-push] payment create failed for order ${order.id}: ${e?.message}`)
+    }
+  }
+
+  /* 6. Stamp the order with the QBO ids so future calls are idempotent
+   *    + the order widget can display the link. */
+  const nowIso = new Date().toISOString()
+  try {
+    const orderService: any = scope.resolve("order")
+    await orderService.updateOrders(order.id, {
+      metadata: {
+        ...(order.metadata ?? {}),
+        qbo_invoice_id: invoice.id,
+        qbo_pushed_at: nowIso,
+        qbo_payment_id: paymentId ?? null,
+        qbo_push_error: null,
+      },
+    })
+  } catch (e: any) {
+    logger.warn(`[qbo-order-push] could not stamp order ${order.id} with qbo_invoice_id: ${e?.message}`)
+  }
+  await qbo.updateQboConnections({
+    id: conn.id,
+    last_bill_id: invoice.id,
+    last_bill_pushed_at: nowIso,
+  }).catch(() => {})
+
+  logger.info(`[qbo-order-push] order ${order.id} → Invoice ${invoice.id} (balance ${invoice.balance})`)
+  return {
+    ok: true,
+    invoiceId: invoice.id,
+    balance: invoice.balance,
+    paymentId,
+    url: invoicePublicUrl(conn.environment, conn.realm_id, invoice.id),
+  }
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}

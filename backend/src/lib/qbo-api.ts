@@ -362,6 +362,178 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
+/**
+ * Strip the trailing variant-size segment off a Medusa variant SKU to
+ * get the base SKU we stamped on the QBO Item. Variant SKUs are
+ * `<cat-3>-<sub-3>-<type-3>-<strain-abbrev>-<size>` and we always set
+ * QBO Item.Sku = same minus the size. Size is always one hyphen-segment.
+ */
+export function baseFromVariantSku(variantSku: string): string {
+  return variantSku.replace(/-[^-]+$/, "")
+}
+
+/* ─── Item lookup by SKU (read-only — for invoice push) ─── */
+
+export async function findItemBySku(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  sku: string,
+): Promise<{ id: string; name: string } | null> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const safe = sku.replace(/'/g, "''")
+  const json = await qboFetch(
+    fresh,
+    `/query?query=${encodeURIComponent(`select * from Item where Sku = '${safe}'`)}`,
+  )
+  const item = json?.QueryResponse?.Item?.[0]
+  return item ? { id: String(item.Id), name: item.Name } : null
+}
+
+/* ─── Invoice creation ─── */
+
+export type InvoiceLine = {
+  itemId: string
+  itemName?: string
+  qty: number
+  unitPrice: number              // dollars, already discounted (post Medusa promo)
+  description?: string
+}
+
+export async function createInvoice(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  args: {
+    customerId: string
+    txnDate: string                // YYYY-MM-DD (fulfillment date)
+    docNumber?: string             // Medusa order display id (truncated to 21 chars)
+    lines: InvoiceLine[]
+    shippingTotal?: number         // adds a separate ItemBasedSalesItemLine for shipping
+    shippingItemId?: string        // QBO Item id for the Shipping line (skipped if omitted)
+    salesTermId?: string | null    // Net 15 / Net 30 etc. — sets DueDate via QBO rules
+    privateNote?: string
+    /* Mark all lines tax-exempt. For B2B-only this should always be true.
+     * Sets the line's TaxCodeRef to "NON". */
+    taxExempt?: boolean
+  },
+): Promise<{ id: string; docNumber: string | null; totalAmt: number; balance: number }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const taxCodeRef = args.taxExempt ? { value: "NON" } : undefined
+
+  const itemLines = args.lines.map((l, i) => ({
+    Id: String(i + 1),
+    DetailType: "SalesItemLineDetail",
+    Amount: round2(l.qty * l.unitPrice),
+    Description: l.description ?? "",
+    SalesItemLineDetail: {
+      ItemRef: { value: l.itemId, name: l.itemName },
+      Qty: l.qty,
+      UnitPrice: l.unitPrice,
+      ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
+    },
+  }))
+
+  /* Shipping is a separate line referencing a Shipping item — keeps it
+   * out of inventory accounts and visible on the Invoice. If no shipping
+   * item id was provided, skip the line and just embed it in privateNote
+   * so the operator knows it was charged. */
+  const Line: any[] = [...itemLines]
+  if (args.shippingTotal && args.shippingItemId) {
+    Line.push({
+      Id: String(itemLines.length + 1),
+      DetailType: "SalesItemLineDetail",
+      Amount: round2(args.shippingTotal),
+      Description: "Shipping",
+      SalesItemLineDetail: {
+        ItemRef: { value: args.shippingItemId, name: "Shipping" },
+        Qty: 1,
+        UnitPrice: round2(args.shippingTotal),
+        ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
+      },
+    })
+  }
+
+  const body: any = {
+    CustomerRef: { value: args.customerId },
+    TxnDate: args.txnDate,
+    Line,
+  }
+  if (args.docNumber) body.DocNumber = args.docNumber.slice(0, 21)
+  if (args.salesTermId) body.SalesTermRef = { value: args.salesTermId }
+  if (args.privateNote) body.PrivateNote = args.privateNote.slice(0, 4000)
+  /* GlobalTaxCalculation: TaxExcluded keeps total = sum(lines) — no
+   * auto tax overlay (per user: tax exempt across the board). */
+  if (args.taxExempt) body.GlobalTaxCalculation = "TaxExcluded"
+
+  const created = await qboFetch(fresh, `/invoice`, { method: "POST", body: JSON.stringify(body) })
+  const inv = created?.Invoice
+  if (!inv?.Id) throw new Error(`Invoice create returned no Id: ${JSON.stringify(created).slice(0, 400)}`)
+  return {
+    id: String(inv.Id),
+    docNumber: inv.DocNumber ?? null,
+    totalAmt: Number(inv.TotalAmt ?? 0),
+    balance: Number(inv.Balance ?? 0),
+  }
+}
+
+export function invoicePublicUrl(environment: string, realmId: string, invoiceId: string): string {
+  return environment === "production"
+    ? `https://app.qbo.intuit.com/app/invoice?txnId=${invoiceId}`
+    : `https://app.sandbox.qbo.intuit.com/app/invoice?txnId=${invoiceId}`
+}
+
+/* ─── Payment creation (closes an Invoice for KAJA-paid orders) ─── */
+
+export async function createPayment(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  args: {
+    customerId: string
+    invoiceId: string
+    amount: number               // should equal Invoice.TotalAmt to fully close it
+    txnDate: string              // YYYY-MM-DD
+    /* QBO PaymentMethod Id — default "Credit Card" usually has Id 1 in
+     * standard sandbox; we look it up by name to be safe. */
+    paymentMethodId?: string
+    /* External reference number — KAJA's transaction id when available. */
+    refNum?: string
+    privateNote?: string
+  },
+): Promise<{ id: string; totalAmt: number }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const body: any = {
+    CustomerRef: { value: args.customerId },
+    TotalAmt: round2(args.amount),
+    TxnDate: args.txnDate,
+    Line: [{
+      Amount: round2(args.amount),
+      LinkedTxn: [{ TxnId: args.invoiceId, TxnType: "Invoice" }],
+    }],
+  }
+  if (args.paymentMethodId) body.PaymentMethodRef = { value: args.paymentMethodId }
+  if (args.refNum) body.PaymentRefNum = args.refNum.slice(0, 21)
+  if (args.privateNote) body.PrivateNote = args.privateNote.slice(0, 4000)
+
+  const created = await qboFetch(fresh, `/payment`, { method: "POST", body: JSON.stringify(body) })
+  const pay = created?.Payment
+  if (!pay?.Id) throw new Error(`Payment create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
+  return { id: String(pay.Id), totalAmt: Number(pay.TotalAmt ?? 0) }
+}
+
+export async function findPaymentMethodIdByName(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  name: string,
+): Promise<string | null> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const safe = name.replace(/'/g, "''")
+  const json = await qboFetch(
+    fresh,
+    `/query?query=${encodeURIComponent(`select * from PaymentMethod where Name = '${safe}'`)}`,
+  )
+  const m = json?.QueryResponse?.PaymentMethod?.[0]
+  return m ? String(m.Id) : null
+}
+
 export function billPublicUrl(environment: string, realmId: string, billId: string): string {
   /* QBO doesn't have a stable public deep-link to a specific Bill,
    * but the closest is the App vendor center. Operators usually
