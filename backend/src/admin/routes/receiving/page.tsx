@@ -467,6 +467,17 @@ const ReviewView: React.FC<{
    * mislead them after they've changed something). */
   const [saveResults, setSaveResults] = useState<SaveRowResult[] | null>(null)
 
+  /* Full-success state — when ALL rows save cleanly we replace the
+   * review form with a success card so the operator can't accidentally
+   * re-click Save (which would hit the restock path on every row and
+   * pile up a duplicate failed receiving in history). The card carries
+   * the Push to QuickBooks button + links into the new receiving and
+   * the receiving history detail. */
+  const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null)
+  const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
+  const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
+  const [pushingToQbo, setPushingToQbo] = useState(false)
+
   const shipPerLb = useMemo(() => shippingPerLb(invoice), [invoice])
 
   /* Check existing catalog for typo-twins of every strain on first
@@ -787,6 +798,12 @@ const ReviewView: React.FC<{
         })
         /* Clear the draft id since the draft was deleted server-side. */
         setDraftId(null)
+        /* Flip into success view — locks out the Save button so
+         * operator can't double-save. */
+        if (json.historyId) {
+          setSavedHistoryId(json.historyId)
+          setSavedSummary({ created: s.created, restocked: s.restocked })
+        }
       } else {
         toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
           description: "See per-row errors below. Fix and re-save (succeeded rows skip-restock automatically).",
@@ -798,6 +815,61 @@ const ReviewView: React.FC<{
       setSaving(false)
     }
   }, [allValid, invoice, rows, draftId, computedSubtotal, computedTotal])
+
+  const onPushSavedToQbo = async () => {
+    if (!savedHistoryId) return
+    setPushingToQbo(true)
+    try {
+      const res = await fetch("/admin/qbo/push-bill", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ historyId: savedHistoryId }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? `Push failed (${res.status})`)
+      setSavedPushedBillId(json.billId)
+      toast.success("Pushed to QuickBooks", {
+        description: `Bill ${json.billId} · ${json.lines} line(s)`,
+      })
+    } catch (e: any) {
+      toast.error("Push failed", { description: e?.message ?? "Network error" })
+    } finally {
+      setPushingToQbo(false)
+    }
+  }
+
+  /* ---- success card — replaces the form after a full-success save ---- */
+  if (savedHistoryId && savedSummary) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div style={{ border: "1.5px solid var(--tier-exotic, #549402)", background: "#fff", padding: 24 }}>
+          <Heading level="h2" style={{ color: "var(--tier-exotic, #549402)" }}>
+            ✓ Receiving Saved
+          </Heading>
+          <Text size="base" className="text-ui-fg-subtle" style={{ marginTop: 4 }}>
+            {invoice.invoiceNumber} · {savedSummary.created} created · {savedSummary.restocked} restocked
+          </Text>
+          <div className="flex gap-2 mt-4 flex-wrap items-center">
+            {savedPushedBillId ? (
+              <Badge color="purple">✓ Pushed to QBO · Bill {savedPushedBillId}</Badge>
+            ) : (
+              <Button variant="primary" isLoading={pushingToQbo} onClick={onPushSavedToQbo}>
+                Push to QuickBooks
+              </Button>
+            )}
+            <Button asChild variant="secondary">
+              <a href={`/app/receiving/history/${savedHistoryId}`}>View in History</a>
+            </Button>
+            <Button asChild variant="secondary">
+              <a href="/app/products">Open Products</a>
+            </Button>
+            <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   /* ---- header card ---- */
   return (
