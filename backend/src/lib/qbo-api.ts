@@ -158,6 +158,34 @@ export async function findOrCreateItem(
   const found = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
   const existing = found?.QueryResponse?.Item?.[0]
   if (existing) {
+    /* If the caller wants an earlier InvStartDate than the item already
+     * has (e.g., a past-dated invoice for an item created today), push
+     * a sparse update before returning. QBO will reject the Bill with
+     * error 6270 otherwise. If the item already has transactions, this
+     * update will fail — the Bill POST that follows will surface the
+     * error so the operator knows to delete + recreate the item or
+     * adjust the invoice date. */
+    if (defaults?.invStartDate && existing.InvStartDate) {
+      const existingStart = String(existing.InvStartDate).slice(0, 10)
+      const requested = defaults.invStartDate.slice(0, 10)
+      if (existingStart > requested) {
+        try {
+          await qboFetch(fresh, `/item`, {
+            method: "POST",
+            body: JSON.stringify({
+              Id: existing.Id,
+              SyncToken: existing.SyncToken,
+              sparse: true,
+              InvStartDate: requested,
+            }),
+          })
+        } catch (e: any) {
+          /* Non-fatal here — surface the original Bill error to the
+           * operator who can then decide to delete the item in QBO. */
+          console.warn(`[qbo] failed to update InvStartDate on ${itemName}: ${e?.message}`)
+        }
+      }
+    }
     return { id: String(existing.Id), name: existing.Name, created: false }
   }
 
