@@ -33,7 +33,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
 
   // Pull the customer with their groups so we can check membership.
-  let customer: { id: string; email: string; metadata?: Record<string, any> | null; groups?: Array<{ id: string; name: string }> }
+  let customer: { id: string; email: string; phone?: string | null; metadata?: Record<string, any> | null; groups?: Array<{ id: string; name: string }> }
   try {
     const list = await customerService.listCustomers(
       { id: [customerId] },
@@ -159,7 +159,7 @@ type QboPushResult =
 
 async function pushCustomerToQbo(
   req: MedusaRequest,
-  customer: { id: string; email: string; metadata?: Record<string, any> | null },
+  customer: { id: string; email: string; phone?: string | null; metadata?: Record<string, any> | null },
   logger: any,
 ): Promise<QboPushResult> {
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
@@ -203,7 +203,9 @@ async function pushCustomerToQbo(
     const result = await findOrCreateCustomer(qbo, conn, {
       businessName,
       email: customer.email,
-      phone: meta.phone ?? null,
+      /* customer.phone is the Medusa top-level field (set from the
+       * apply form's phone input). metadata.phone is not populated. */
+      phone: customer.phone ?? null,
       addressLine1: meta.address_line1 ?? null,
       addressLine2: meta.address_line2 ?? null,
       city: meta.city ?? null,
