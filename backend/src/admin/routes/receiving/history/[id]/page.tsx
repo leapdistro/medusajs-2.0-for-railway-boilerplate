@@ -143,7 +143,7 @@ const ReceivingHistoryDetailPage = () => {
             <Row label="Date"          value={record.invoice_date} />
             <Row label="Shipping"      value={`$${Number(record.shipping_total).toFixed(2)}`} />
             <Row label="Invoice total" value={`$${Number(record.invoice_total).toFixed(2)}`} />
-            <Row label="Total QPs"     value={String(record.total_qps)} />
+            <Row label="Total Units"   value={String(record.total_qps)} />
             <Row label="Σ landed cost" value={`$${totalLineCost.toFixed(2)}`} />
             <Row label="Saved"         value={new Date(record.created_at).toLocaleString()} />
           </div>
@@ -164,7 +164,7 @@ const ReceivingHistoryDetailPage = () => {
             <tr style={{ background: "#F3F1EA", borderBottom: "1.5px solid #0A0A0A" }}>
               <Th>Strain</Th>
               <Th>Action</Th>
-              <Th align="right">QPs</Th>
+              <Th align="right">Units</Th>
               <Th align="right">Landed / QP</Th>
               <Th align="right">Line Cost</Th>
               <Th align="right">Sell QP / Half / LB</Th>

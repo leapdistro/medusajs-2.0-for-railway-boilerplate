@@ -71,7 +71,7 @@ const ReceivingHistoryPage = () => {
                 <Th>Supplier</Th>
                 <Th>Invoice #</Th>
                 <Th align="right">Lines</Th>
-                <Th align="right">QPs</Th>
+                <Th align="right">Units</Th>
                 <Th align="right">Invoice Total</Th>
                 <Th>Status</Th>
                 <Th></Th>
