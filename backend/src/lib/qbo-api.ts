@@ -139,6 +139,13 @@ export async function findOrCreateItem(
   conn: QboConnectionRow,
   itemName: string,
   accounts: { inventoryAsset: AccountRef; incomeAccount: AccountRef; cogsAccount: AccountRef },
+  defaults?: {
+    purchaseCost?: number               // landed cost / QP (Cost field in QBO UI)
+    salePrice?: number                  // selling price (Sales Price/Rate in QBO UI)
+    preferredVendor?: { id: string; name: string }
+    purchaseDesc?: string               // shown on bills
+    salesDesc?: string                  // shown on invoices/sales receipts
+  },
 ): Promise<{ id: string; name: string; created: boolean }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
   const safe = itemName.replace(/'/g, "''")
@@ -150,11 +157,16 @@ export async function findOrCreateItem(
   }
 
   /* Create as Inventory item — tracks stock + COGS. TrackQtyOnHand
-   * requires InvStartDate (when QBO should begin tracking) and
-   * QtyOnHand (starting count, we set 0 since the Bill we're about to
-   * push will increment it). */
+   * requires InvStartDate + QtyOnHand. We set QtyOnHand to 0 because
+   * the Bill we're about to push will be the inventory adjustment.
+   *
+   * Defaults (PurchaseCost / UnitPrice / PreferredVendorRef) are set
+   * only on creation — operators can override them in QBO and we won't
+   * clobber. Future receivings of the same item don't touch these
+   * fields, even if prices have changed (the Bill itself carries the
+   * actual cost for that receiving's COGS posting). */
   const today = new Date().toISOString().slice(0, 10)
-  const body = {
+  const body: any = {
     Name: itemName,
     Type: "Inventory",
     TrackQtyOnHand: true,
@@ -164,6 +176,14 @@ export async function findOrCreateItem(
     IncomeAccountRef: { value: accounts.incomeAccount.id, name: accounts.incomeAccount.name },
     ExpenseAccountRef:{ value: accounts.cogsAccount.id,    name: accounts.cogsAccount.name },
   }
+  if (defaults?.purchaseCost != null) body.PurchaseCost = round2(defaults.purchaseCost)
+  if (defaults?.salePrice != null) body.UnitPrice = round2(defaults.salePrice)
+  if (defaults?.preferredVendor) {
+    body.PreferredVendorRef = { value: defaults.preferredVendor.id, name: defaults.preferredVendor.name }
+  }
+  if (defaults?.purchaseDesc) body.PurchaseDesc = defaults.purchaseDesc
+  if (defaults?.salesDesc) body.Description = defaults.salesDesc
+
   const created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
   const item = created?.Item
   if (!item?.Id) throw new Error(`Item create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)

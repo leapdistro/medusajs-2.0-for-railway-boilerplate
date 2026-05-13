@@ -97,6 +97,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       action: "created" | "restocked" | "failed"
       qtyQps: number
       landedPerQp: number
+      sellPrices?: { qp: number; half: number; lb: number } | null
     }
     const lineResults = (record.line_results ?? []) as LineResult[]
     const usable = lineResults.filter((l) => l.action !== "failed" && l.qtyQps > 0 && l.landedPerQp > 0)
@@ -108,7 +109,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     for (const line of usable) {
       const tierLabel = (line.tier && TIER_LABEL[line.tier]) || "Untiered"
       const itemName = `${line.strainName} · ${tierLabel}`
-      const item = await findOrCreateItem(qbo, conn, itemName, accounts)
+      const item = await findOrCreateItem(qbo, conn, itemName, accounts, {
+        purchaseCost: line.landedPerQp,
+        salePrice: line.sellPrices?.qp,
+        preferredVendor: { id: vendor.id, name: vendor.displayName },
+        purchaseDesc: `${line.strainName} · ${tierLabel} · QP unit (landed cost)`,
+        salesDesc: `${line.strainName} · ${tierLabel} · per QP`,
+      })
       billLines.push({
         itemId: item.id,
         itemName: item.name,
