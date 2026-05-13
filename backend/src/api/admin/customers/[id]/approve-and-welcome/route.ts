@@ -1,5 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { findOrCreateCustomer, findQboTermIdByName } from "../../../../../lib/qbo-api"
+import { QBO_CONNECTION_MODULE } from "../../../../../modules/qbo-connection"
 
 const APPROVED_GROUP_NAME = (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
 
@@ -130,11 +132,98 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(500).json({ ok: false, message: `Could not trigger welcome email: ${e?.message}`, groupAttached })
   }
 
-  logger.info(`[approve-and-welcome] success: ${customer.email} (groupAttached=${groupAttached})`)
+  /* QBO Customer push — non-blocking. If QBO isn't configured, the
+   * connection is dead, or the API errors out, we still report
+   * approval success but flag the QBO state so the widget can show
+   * a "Retry QBO sync" affordance. Idempotent: skips if a
+   * qbo_customer_id is already stamped from a prior run. */
+  const qboResult = await pushCustomerToQbo(req, customer, logger).catch((e) => ({
+    state: "error" as const,
+    message: e?.message ?? String(e),
+  }))
+
+  logger.info(`[approve-and-welcome] success: ${customer.email} (groupAttached=${groupAttached}, qbo=${qboResult.state})`)
   return res.json({
     ok: true,
     email: customer.email,
     groupAttached,
     welcomedAt,
+    qbo: qboResult,
   })
+}
+
+type QboPushResult =
+  | { state: "skipped"; reason: string }
+  | { state: "synced"; qboCustomerId: string; created: boolean }
+  | { state: "error"; message: string }
+
+async function pushCustomerToQbo(
+  req: MedusaRequest,
+  customer: { id: string; email: string; metadata?: Record<string, any> | null },
+  logger: any,
+): Promise<QboPushResult> {
+  const customerService: any = req.scope.resolve(Modules.CUSTOMER)
+  let qbo: any
+  try {
+    qbo = req.scope.resolve(QBO_CONNECTION_MODULE)
+  } catch {
+    return { state: "skipped", reason: "QBO module not registered" }
+  }
+
+  const connRows = await qbo.listQboConnections({}, { take: 1 }).catch(() => [])
+  const conn = connRows[0]
+  if (!conn) {
+    return { state: "skipped", reason: "QBO not connected — visit /app/quickbooks to authorize" }
+  }
+
+  const meta = (customer.metadata ?? {}) as Record<string, any>
+
+  /* Idempotent — first run sets qbo_customer_id; subsequent approvals
+   * (resend welcome) leave it alone. */
+  if (meta.qbo_customer_id) {
+    return { state: "synced", qboCustomerId: String(meta.qbo_customer_id), created: false }
+  }
+
+  const businessName = String(meta.business_name ?? "").trim() || customer.email
+  const contactName = String(meta.contact_name ?? "").trim() || null
+
+  /* Map payment_terms → QBO SalesTerm Id. Net 15 → look up by name in
+   * the operator's QBO term list. Silent fall-through (terms unset)
+   * leaves SalesTermRef off → QBO Customer uses tenant-default terms. */
+  let salesTermId: string | null = null
+  if (meta.payment_terms === "net15") {
+    try {
+      salesTermId = await findQboTermIdByName(qbo, conn, "Net 15")
+    } catch (e: any) {
+      logger.warn(`[approve-and-welcome] could not look up Net 15 term: ${e?.message}`)
+    }
+  }
+
+  try {
+    const result = await findOrCreateCustomer(qbo, conn, {
+      businessName,
+      email: customer.email,
+      phone: meta.phone ?? null,
+      addressLine1: meta.address_line1 ?? null,
+      addressLine2: meta.address_line2 ?? null,
+      city: meta.city ?? null,
+      state: meta.state ?? null,
+      zip: meta.zip ?? null,
+      country: meta.country ?? "US",
+      contactName,
+      salesTermId,
+      notes: `Wholesale account · approved ${new Date().toISOString().slice(0, 10)}`,
+    })
+
+    /* Stamp the QBO id back on Medusa customer so future invoice pushes
+     * skip the lookup. */
+    await customerService.updateCustomers(customer.id, {
+      metadata: { ...meta, qbo_customer_id: result.id },
+    })
+
+    return { state: "synced", qboCustomerId: result.id, created: result.created }
+  } catch (e: any) {
+    logger.warn(`[approve-and-welcome] qbo customer push failed for ${customer.email}: ${e?.message}`)
+    return { state: "error", message: e?.message ?? "QBO push failed" }
+  }
 }

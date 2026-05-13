@@ -81,8 +81,18 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
           ? `Approved · welcome email sent to ${json.email}`
           : `Welcome email re-sent to ${json.email}`
       )
+      /* Surface QBO sync outcome — non-blocking step but operator
+       * needs to know if the customer didn't make it into QBO. */
+      const qbo = json.qbo as { state: string; message?: string; qboCustomerId?: string; created?: boolean } | undefined
+      if (qbo?.state === "error") {
+        toast.warning("QBO sync failed", {
+          description: `${qbo.message ?? "Retry from this widget after fixing the issue."}`,
+        })
+      } else if (qbo?.state === "synced" && qbo.created) {
+        toast.success(`QBO Customer #${qbo.qboCustomerId} created`)
+      }
       // Refresh widget state — picks up the group + new welcomed_at stamp
-      // without forcing a full-page reload.
+      // + the qbo_customer_id without forcing a full-page reload.
       await refresh()
     } catch (e: any) {
       toast.error(e?.message ?? "Network error")
@@ -121,6 +131,11 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
               : "Add the customer to the \"approved\" group and send their first welcome / password-setup email."}
           </Text>
           <Text size="small" className="text-ui-fg-muted mt-1">{lastSentLine}</Text>
+          {customer?.metadata?.qbo_customer_id ? (
+            <Text size="small" className="text-ui-fg-muted mt-1">
+              QBO Customer #{String(customer.metadata.qbo_customer_id)}
+            </Text>
+          ) : null}
         </div>
         <Button
           variant={inApproved ? "secondary" : "primary"}

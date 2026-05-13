@@ -104,6 +104,89 @@ export async function findOrCreateVendor(
   return { id: String(v.Id), displayName: v.DisplayName, created: true }
 }
 
+/* ─── Customer find-or-create ─── */
+
+export type CustomerInput = {
+  /** Wholesale account business name — used as DisplayName + CompanyName. */
+  businessName: string
+  email: string
+  phone?: string | null
+  /** Mailing/billing address fields. */
+  addressLine1?: string | null
+  addressLine2?: string | null
+  city?: string | null
+  state?: string | null
+  zip?: string | null
+  country?: string | null
+  /** Optional contact person name (rendered in Notes for context). */
+  contactName?: string | null
+  /** Net 15 / Net 30 / Due on Receipt etc. — Sales Term ID from QBO. */
+  salesTermId?: string | null
+  notes?: string | null
+}
+
+export async function findQboTermIdByName(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  termName: string,
+): Promise<string | null> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const safe = termName.replace(/'/g, "''")
+  const query = `select * from Term where Name = '${safe}'`
+  const json = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
+  const term = json?.QueryResponse?.Term?.[0]
+  return term ? String(term.Id) : null
+}
+
+export async function findOrCreateCustomer(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  input: CustomerInput,
+): Promise<{ id: string; displayName: string; created: boolean }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  /* Match priority: email first (most reliable), then DisplayName as a
+   * fallback for legacy data without email on file. */
+  const safeEmail = input.email.replace(/'/g, "''")
+  const byEmail = await qboFetch(
+    fresh,
+    `/query?query=${encodeURIComponent(`select * from Customer where PrimaryEmailAddr = '${safeEmail}'`)}`,
+  )
+  const existing = byEmail?.QueryResponse?.Customer?.[0]
+  if (existing) {
+    return { id: String(existing.Id), displayName: existing.DisplayName, created: false }
+  }
+
+  const body: any = {
+    DisplayName: input.businessName.slice(0, 500),
+    CompanyName: input.businessName.slice(0, 1024),
+    PrimaryEmailAddr: { Address: input.email },
+  }
+  if (input.phone) body.PrimaryPhone = { FreeFormNumber: input.phone }
+  if (input.addressLine1 || input.city || input.state || input.zip) {
+    body.BillAddr = {
+      Line1: input.addressLine1 ?? undefined,
+      Line2: input.addressLine2 ?? undefined,
+      City: input.city ?? undefined,
+      CountrySubDivisionCode: input.state ?? undefined,  // QBO US state field
+      PostalCode: input.zip ?? undefined,
+      Country: input.country ?? undefined,
+    }
+    /* Most B2B wholesale ships to the billing address; if the operator
+     * needs separate ship-to later they'll set it in QBO. */
+    body.ShipAddr = { ...body.BillAddr }
+  }
+  if (input.salesTermId) body.SalesTermRef = { value: input.salesTermId }
+  const noteParts: string[] = []
+  if (input.contactName) noteParts.push(`Contact: ${input.contactName}`)
+  if (input.notes) noteParts.push(input.notes)
+  if (noteParts.length > 0) body.Notes = noteParts.join(" · ").slice(0, 2000)
+
+  const created = await qboFetch(fresh, `/customer`, { method: "POST", body: JSON.stringify(body) })
+  const c = created?.Customer
+  if (!c?.Id) throw new Error(`Customer create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
+  return { id: String(c.Id), displayName: c.DisplayName, created: true }
+}
+
 /* ─── Item find-or-create (Inventory type) ─── */
 
 type AccountRef = { id: string; name: string }
