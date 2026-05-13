@@ -179,7 +179,9 @@ export async function findOrCreateItem(
   if (defaults?.purchaseCost != null) body.PurchaseCost = round2(defaults.purchaseCost)
   if (defaults?.salePrice != null) body.UnitPrice = round2(defaults.salePrice)
   if (defaults?.preferredVendor) {
-    body.PreferredVendorRef = { value: defaults.preferredVendor.id, name: defaults.preferredVendor.name }
+    /* QBO API field name is `PrefVendorRef` (not `PreferredVendorRef`),
+     * even though the UI label is "Preferred Vendor". */
+    body.PrefVendorRef = { value: defaults.preferredVendor.id, name: defaults.preferredVendor.name }
   }
   if (defaults?.purchaseDesc) body.PurchaseDesc = defaults.purchaseDesc
   if (defaults?.salesDesc) body.Description = defaults.salesDesc
