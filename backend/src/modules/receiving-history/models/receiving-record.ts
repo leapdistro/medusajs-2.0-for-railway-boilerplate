@@ -30,4 +30,6 @@ export const ReceivingRecord = model.define("receiving_record", {
    * save handler ignores them. */
   line_results: model.json(),                 // detailed per-row outcomes
   notes: model.text().nullable(),             // operator or AI notes
+  qbo_bill_id: model.text().nullable(),       // QBO Bill id set after a successful push
+  qbo_pushed_at: model.text().nullable(),     // ISO 8601 timestamp of last successful push
 })

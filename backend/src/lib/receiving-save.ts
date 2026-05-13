@@ -55,6 +55,7 @@ export type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: numbe
 
 export type SaveRowResult = {
   strainName: string
+  tier: TierKey                              // preserved so QBO push can build tier-aware item names
   action: "created" | "restocked" | "failed"
   productId?: string
   productHandle?: string
@@ -225,6 +226,7 @@ export async function saveOneRow(
 
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
+    tier: row.tier,
     action: "failed",
     qtyQps: totalQps,
     landedPerQp,

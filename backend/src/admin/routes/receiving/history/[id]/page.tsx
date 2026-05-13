@@ -1,4 +1,4 @@
-import { Badge, Button, Container, Heading, Text } from "@medusajs/ui"
+import { Badge, Button, Container, Heading, Text, toast } from "@medusajs/ui"
 import { useEffect, useState } from "react"
 
 /**
@@ -12,6 +12,7 @@ import { useEffect, useState } from "react"
 
 type LineResult = {
   strainName: string
+  tier?: string
   action: "created" | "restocked" | "failed"
   productId?: string
   productHandle?: string
@@ -32,6 +33,8 @@ type Record = {
   total_qps: number
   line_results: LineResult[]
   notes: string | null
+  qbo_bill_id: string | null
+  qbo_pushed_at: string | null
   created_at: string
   updated_at: string
 }
@@ -45,8 +48,9 @@ const ReceivingHistoryDetailPage = () => {
   const [record, setRecord] = useState<Record | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [pushing, setPushing] = useState(false)
 
-  useEffect(() => {
+  const reload = () => {
     if (!id) return
     fetch(`/admin/receiving/history/${id}`, { credentials: "include" })
       .then((r) => r.json())
@@ -56,7 +60,32 @@ const ReceivingHistoryDetailPage = () => {
         setLoading(false)
       })
       .catch((e) => { setError(e?.message ?? "Network error"); setLoading(false) })
-  }, [id])
+  }
+
+  useEffect(reload, [id])
+
+  const onPushToQbo = async () => {
+    if (!record) return
+    setPushing(true)
+    try {
+      const res = await fetch("/admin/qbo/push-bill", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ historyId: record.id }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? `Push failed (${res.status})`)
+      toast.success("Pushed to QuickBooks", {
+        description: `Bill ${json.billId} · ${json.lines} line(s)`,
+      })
+      reload()
+    } catch (e: any) {
+      toast.error("Push failed", { description: e?.message ?? "Network error" })
+    } finally {
+      setPushing(false)
+    }
+  }
 
   if (loading) return <Container className="p-6"><Text>Loading…</Text></Container>
   if (error || !record) {
@@ -82,10 +111,19 @@ const ReceivingHistoryDetailPage = () => {
           <Heading level="h1">{record.invoice_number}</Heading>
           <Text className="text-ui-fg-subtle">{record.supplier?.name ?? "Unknown supplier"} · {record.invoice_date}</Text>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           {failed === 0
             ? <Badge color="green">{created} created · {restocked} restocked</Badge>
             : <Badge color="orange">{failed} failed</Badge>}
+          {record.qbo_bill_id ? (
+            <Badge color="purple" title={`Pushed ${record.qbo_pushed_at ?? ""}`}>
+              ✓ Pushed to QBO · Bill {record.qbo_bill_id}
+            </Badge>
+          ) : (
+            <Button variant="primary" size="small" onClick={onPushToQbo} isLoading={pushing}>
+              Push to QuickBooks
+            </Button>
+          )}
         </div>
       </div>
 
