@@ -140,6 +140,7 @@ export async function findOrCreateItem(
   itemName: string,
   accounts: { inventoryAsset: AccountRef; incomeAccount: AccountRef; cogsAccount: AccountRef },
   defaults?: {
+    sku?: string                        // QBO Item SKU (matches Medusa base SKU for cross-ref)
     purchaseCost?: number               // landed cost / QP (Cost field in QBO UI)
     salePrice?: number                  // selling price (Sales Price/Rate in QBO UI)
     preferredVendor?: { id: string; name: string }
@@ -176,6 +177,7 @@ export async function findOrCreateItem(
     IncomeAccountRef: { value: accounts.incomeAccount.id, name: accounts.incomeAccount.name },
     ExpenseAccountRef:{ value: accounts.cogsAccount.id,    name: accounts.cogsAccount.name },
   }
+  if (defaults?.sku) body.Sku = defaults.sku.slice(0, 100) // QBO Sku limit is 100 chars
   if (defaults?.purchaseCost != null) body.PurchaseCost = round2(defaults.purchaseCost)
   if (defaults?.salePrice != null) body.UnitPrice = round2(defaults.salePrice)
   if (defaults?.preferredVendor) {

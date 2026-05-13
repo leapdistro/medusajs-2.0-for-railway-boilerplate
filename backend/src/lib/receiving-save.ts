@@ -5,6 +5,7 @@ import {
 } from "@medusajs/framework/utils"
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { MBS_ATTRIBUTES_MODULE } from "../modules/mbs-attributes"
+import { baseSku, generateSku } from "./sku"
 
 /**
  * Slice 2C — receiving save orchestrator.
@@ -60,6 +61,9 @@ export type SaveRowResult = {
   productId?: string
   productHandle?: string
   inventoryItemId?: string
+  /** Base SKU (size-stripped) for this strain+tier. Used as QBO Item SKU.
+   *  Variant SKUs append `-qp` / `-half` / `-lb`. */
+  baseSku?: string
   qtyQps: number
   landedPerQp: number
   sellPrices: { qp: number; half: number; lb: number } | null
@@ -102,12 +106,8 @@ const SIZE_GRAMS: Record<SizeKey, number> = {
   qp: 113, half: 227, lb: 454,
 }
 
-/* SKU pattern from feedback memory (locked 2026-04-25):
- *   <size>-<subcat>-<type>-<strain>  (lowercase, hyphenated)
- * For Flower receiving: subcat=flower, type=indica/sativa/hybrid. */
-function sku(size: SizeKey, strainType: string, strainSlug: string): string {
-  return `${size}-flower-${strainType.toLowerCase()}-${strainSlug}`
-}
+/* SKU generation moved to src/lib/sku.ts — single source of truth used
+ * across receiving + manual product flows + the QBO Item push. */
 
 function slugify(s: string): string {
   return s
@@ -316,10 +316,43 @@ export async function saveOneRow(
         productId,
         productHandle: handle,
         inventoryItemId: firstInventoryId,
+        baseSku: baseSku({
+          category: "Flower",
+          subcategory: TIER_CATEGORY_NAME[row.tier],
+          type: row.strainType,
+          strain: row.strainName,
+        }),
       }
     }
 
     /* ---------- CREATE PATH ---------- */
+
+    /* SKU collision check — generated SKUs must be unique across products.
+     * Same strain at the same tier is a restock (handled above), so any
+     * variant we find with the same proposed SKU belonging to a DIFFERENT
+     * product is a real collision (e.g. "Gold Rose Runtz" abbrevs the same
+     * as "Gold Rose Runner"). Fail this row with a descriptive message;
+     * the operator renames the strain and re-saves. */
+    const sizes: SizeKey[] = ["qp", "half", "lb"]
+    const skuParts = {
+      category: "Flower",
+      subcategory: TIER_CATEGORY_NAME[row.tier],
+      type: row.strainType,
+      strain: row.strainName,
+    }
+    const proposedSkus = sizes.map((size) => generateSku({ ...skuParts, size }))
+    const productService: any = container.resolve(Modules.PRODUCT)
+    const conflicts = await productService.listProductVariants(
+      { sku: proposedSkus },
+      { take: 10, relations: ["product"] },
+    )
+    const realCollisions = (conflicts ?? []).filter((v: any) => v?.product?.handle !== handle)
+    if (realCollisions.length > 0) {
+      const desc = realCollisions
+        .map((v: any) => `${v.sku} → ${v.product?.title ?? v.product?.handle ?? "unknown product"}`)
+        .join("; ")
+      return { ...baseResult, error: `SKU collision: ${desc}. Rename strain to avoid.` }
+    }
 
     /* 1. Create the shared inventory item first so we can pass its
      *    id into all 3 variants via inventory_items[] in one workflow
@@ -332,11 +365,11 @@ export async function saveOneRow(
     })
     const inventoryItemId = (Array.isArray(created) ? created[0] : created).id
 
-    /* 2. Build the 3 variants on the shared inventory item. */
-    const sizes: SizeKey[] = ["qp", "half", "lb"]
-    const variants = sizes.map((size) => ({
+    /* 2. Build the 3 variants on the shared inventory item.
+     *    SKUs already computed above for the collision check; reuse. */
+    const variants = sizes.map((size, idx) => ({
       title: SIZE_LABELS[size],
-      sku: sku(size, row.strainType, strainSlug),
+      sku: proposedSkus[idx],
       options: { Size: SIZE_LABELS[size] },
       prices: [{ amount: tp[size], currency_code: "usd" }],
       manage_inventory: true,
@@ -412,6 +445,7 @@ export async function saveOneRow(
       productId,
       productHandle: handle,
       inventoryItemId,
+      baseSku: baseSku(skuParts),
     }
   } catch (e: any) {
     return { ...baseResult, error: e?.message ?? String(e) }
