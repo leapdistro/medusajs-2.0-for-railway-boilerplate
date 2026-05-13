@@ -21,9 +21,20 @@ const QuickBooksPage = () => {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/admin/qbo/status", { credentials: "include" })
+      if (!res.ok) {
+        const body = await res.text().catch(() => "")
+        throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`)
+      }
       const json = (await res.json()) as Status
+      /* Defensive: the server should always send connected as a boolean,
+       * but if the route is misbehaving (500 swallowed somewhere) we
+       * treat anything that isn't explicitly true as disconnected. */
+      if (typeof (json as any).connected !== "boolean") {
+        throw new Error("Malformed status response")
+      }
       setStatus(json)
     } catch (e: any) {
+      setStatus({ connected: false })
       toast.error("Failed to load QuickBooks status: " + (e?.message ?? "unknown"))
     }
   }, [])
