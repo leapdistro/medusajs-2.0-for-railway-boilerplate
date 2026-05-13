@@ -117,6 +117,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         preferredVendor: { id: vendor.id, name: vendor.displayName },
         purchaseDesc: `${line.strainName} · ${tierLabel} · QP unit (landed cost)`,
         salesDesc: `${line.strainName} · ${tierLabel} · per QP`,
+        invStartDate: record.invoice_date.slice(0, 10),
       })
       billLines.push({
         itemId: item.id,

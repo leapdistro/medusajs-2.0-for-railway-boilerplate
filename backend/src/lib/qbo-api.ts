@@ -146,6 +146,10 @@ export async function findOrCreateItem(
     preferredVendor?: { id: string; name: string }
     purchaseDesc?: string               // shown on bills
     salesDesc?: string                  // shown on invoices/sales receipts
+    /** YYYY-MM-DD — pass the Bill's TxnDate so QBO doesn't reject the
+     *  Bill with "Transaction date is prior to start date for inventory
+     *  item" when the invoice is dated before today. */
+    invStartDate?: string
   },
 ): Promise<{ id: string; name: string; created: boolean }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
@@ -166,13 +170,15 @@ export async function findOrCreateItem(
    * clobber. Future receivings of the same item don't touch these
    * fields, even if prices have changed (the Bill itself carries the
    * actual cost for that receiving's COGS posting). */
+  /* InvStartDate must be on or before any Bill that references this
+   * item. Default to today only when the caller didn't supply one. */
   const today = new Date().toISOString().slice(0, 10)
   const body: any = {
     Name: itemName,
     Type: "Inventory",
     TrackQtyOnHand: true,
     QtyOnHand: 0,
-    InvStartDate: today,
+    InvStartDate: defaults?.invStartDate || today,
     AssetAccountRef:  { value: accounts.inventoryAsset.id, name: accounts.inventoryAsset.name },
     IncomeAccountRef: { value: accounts.incomeAccount.id, name: accounts.incomeAccount.name },
     ExpenseAccountRef:{ value: accounts.cogsAccount.id,    name: accounts.cogsAccount.name },
