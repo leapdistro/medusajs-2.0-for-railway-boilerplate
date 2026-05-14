@@ -19,11 +19,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const orderId = req.params.id
   if (!orderId) return res.status(400).json({ ok: false, error: "Missing order id" })
 
-  const outcome = await pushOrderToQbo(req.scope, orderId, {
-    info: (m) => logger.info(m),
-    warn: (m) => logger.warn(m),
-    error: (m) => logger.error(m),
-  })
+  /* ?force=true bypasses the qbo_invoice_id idempotency check —
+   * used when an operator deleted the QBO invoice and wants to re-push
+   * a fresh one against the same Medusa order. */
+  const force = String(req.query.force ?? "").toLowerCase() === "true"
+
+  const outcome = await pushOrderToQbo(
+    req.scope,
+    orderId,
+    {
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+      error: (m) => logger.error(m),
+    },
+    { force },
+  )
 
   if (outcome.ok === true) {
     return res.json({

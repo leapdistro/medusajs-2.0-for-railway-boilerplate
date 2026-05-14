@@ -42,18 +42,29 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
   const pushError = meta.qbo_push_error as string | undefined
   const pushErrorAt = meta.qbo_push_error_at as string | undefined
 
-  const onPush = async () => {
+  const onPush = async (force = false) => {
     if (!order?.id) return
     setBusy(true)
     try {
-      const res = await fetch(`/admin/orders/${order.id}/push-to-qbo`, {
-        method: "POST",
-        credentials: "include",
-      })
+      const url = `/admin/orders/${order.id}/push-to-qbo${force ? "?force=true" : ""}`
+      const res = await fetch(url, { method: "POST", credentials: "include" })
       const json = await res.json()
+      /* 409 ALREADY_PUSHED — offer to force re-push (e.g., operator
+       * deleted the QBO invoice and wants a clean retry). */
+      if (res.status === 409 && json?.code === "ALREADY_PUSHED") {
+        const ok = window.confirm(
+          `This order was already pushed (Invoice ${json.invoiceId}). Push a NEW invoice anyway? This will create a duplicate in QBO unless you deleted the old one first.`,
+        )
+        if (ok) {
+          setBusy(false)
+          return onPush(true)
+        }
+        toast("Already pushed — skipped")
+        return
+      }
       if (!res.ok) throw new Error(json?.error ?? json?.code ?? `Push failed (${res.status})`)
       toast.success("Pushed to QuickBooks", {
-        description: paymentId
+        description: json.paymentId
           ? `Invoice ${json.invoiceId} · paid`
           : `Invoice ${json.invoiceId}`,
       })
@@ -93,7 +104,7 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
           ) : null}
           <Button
             variant={pushError ? "danger" : invoiceId ? "secondary" : "primary"}
-            onClick={onPush}
+            onClick={() => onPush(false)}
             isLoading={busy}
           >
             {invoiceId ? "Retry Push" : pushError ? "Retry Push" : "Push to QuickBooks"}

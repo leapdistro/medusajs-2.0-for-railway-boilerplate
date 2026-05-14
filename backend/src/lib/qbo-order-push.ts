@@ -32,6 +32,7 @@ export async function pushOrderToQbo(
   scope: any,
   orderId: string,
   logger: Logger,
+  options: { force?: boolean } = {},
 ): Promise<OrderPushOutcome> {
   let qbo: any
   try {
@@ -67,8 +68,8 @@ export async function pushOrderToQbo(
     return { ok: false, code: "API_ERROR", error: `No order ${orderId}` }
   }
 
-  /* Idempotency. */
-  if (order.metadata?.qbo_invoice_id) {
+  /* Idempotency — skip if already pushed unless explicitly forced. */
+  if (order.metadata?.qbo_invoice_id && !options.force) {
     return { ok: false, code: "ALREADY_PUSHED", invoiceId: String(order.metadata.qbo_invoice_id) }
   }
 
