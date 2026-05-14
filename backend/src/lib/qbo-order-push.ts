@@ -188,16 +188,20 @@ export async function pushOrderToQbo(
         error: `Line "${item.product_title ?? item.title ?? "untitled"}" has invalid data (qty=${qty}, unit_price=${unitPrice}). Check the order in Medusa admin.`,
       }
     }
-    /* Description shows what the BUYER ordered in the variant they
-     * picked — e.g., "1 × LB" or "2 × 30 ct Box". The Qty/Rate columns
-     * are in pool units (variantQty × multiplier), so without this
-     * description an operator reading the invoice would see "4 QPs"
-     * without knowing the buyer ordered a single LB. */
+    /* Description anchors on the QBO Item name (which already includes
+     * the subcategory: "Strain · Super" for flower, "Strain · THC-A"
+     * for pre-rolls) so subcategory is always visible on the line even
+     * if the operator's QBO template hides the Item Name column. Then
+     * appends the variant the buyer actually picked — e.g.,
+     *   "Gold Rose Runtz · Super · 1 × LB"
+     *   "Pineapple Express · THC-A · 2 × 30 ct Box"
+     * Qty/Rate columns are in pool units (variantQty × multiplier), so
+     * without this description an operator reading the invoice would
+     * see "4 QPs" without knowing the buyer ordered a single LB. */
     const productName = item.product_title ?? item.title ?? ""
     const variantTitle = item.title && item.title !== productName ? item.title : null
-    const description = variantTitle
-      ? `${productName} · ${variantQty} × ${variantTitle}`
-      : `${productName} · ${variantQty} × unit`
+    const variantSegment = variantTitle ? `${variantQty} × ${variantTitle}` : `${variantQty} × unit`
+    const description = `${found.name} · ${variantSegment}`
     lines.push({
       itemId: found.id,
       itemName: found.name,
