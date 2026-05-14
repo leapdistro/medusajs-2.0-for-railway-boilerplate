@@ -381,14 +381,16 @@ const RowCard: React.FC<{
   onDelete?: () => void
   onPickCoa: (file: File | null) => void
 }> = ({ row, idx, onChange, onDelete, onPickCoa }) => {
-  const subcatMeta = SUBCATEGORIES.find((s) => s.key === row.subcategory)
-  const boxHint = subcatMeta ? ` — ${subcatMeta.variantLabel}` : ""
+  const EFFECT_MAX = 2
   const toggleEffect = (effect: string) => {
-    onChange({
-      effects: row.effects.includes(effect)
-        ? row.effects.filter((e) => e !== effect)
-        : [...row.effects, effect],
-    })
+    if (row.effects.includes(effect)) {
+      onChange({ effects: row.effects.filter((e) => e !== effect) })
+      return
+    }
+    /* Brand spec: max 2 effects per product (card shows up to 2). Silently
+     * ignore further additions — the chip's disabled state cues the limit. */
+    if (row.effects.length >= EFFECT_MAX) return
+    onChange({ effects: [...row.effects, effect] })
   }
   return (
     <div style={{ border: "1.5px solid #E5E1D6", padding: 16, background: "#fff" }}>
@@ -434,14 +436,14 @@ const RowCard: React.FC<{
             </Select.Content>
           </Select>
         </Field>
-        <Field label={`Quantity (boxes${boxHint})`}>
+        <Field label="Quantity (boxes)">
           <Input
             type="number"
             value={row.quantityBoxes || ""}
             onChange={(e: any) => onChange({ quantityBoxes: Number(e.target.value) || 0 })}
           />
         </Field>
-        <Field label={`Cost / Box${boxHint}`}>
+        <Field label="Cost / Box">
           <Input
             type="number"
             value={row.costPerBox || ""}
@@ -449,7 +451,7 @@ const RowCard: React.FC<{
           />
         </Field>
 
-        <Field label={`Sell Price / Box${boxHint}`}>
+        <Field label="Sell Price / Box">
           <Input
             type="number"
             value={row.sellPricePerBox || ""}
@@ -469,25 +471,28 @@ const RowCard: React.FC<{
 
       {/* Effects + COA below the main grid */}
       <div className="mt-4 flex flex-col gap-3">
-        <Field label="Effects (select any)">
+        <Field label={`Effects (max ${EFFECT_MAX} — ${row.effects.length}/${EFFECT_MAX})`}>
           <div className="flex flex-wrap gap-2">
             {EFFECTS.map((e) => {
               const on = row.effects.includes(e)
+              const atLimit = !on && row.effects.length >= EFFECT_MAX
               return (
                 <button
                   key={e}
                   type="button"
                   onClick={() => toggleEffect(e)}
+                  disabled={atLimit}
                   style={{
                     padding: "4px 10px",
                     border: "1.5px solid #0A0A0A",
                     background: on ? "#0A0A0A" : "transparent",
                     color: on ? "#fff" : "#0A0A0A",
+                    opacity: atLimit ? 0.35 : 1,
                     fontFamily: "var(--font-display, sans-serif)",
                     fontSize: 12,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
-                    cursor: "pointer",
+                    cursor: atLimit ? "not-allowed" : "pointer",
                   }}
                 >
                   {e}
