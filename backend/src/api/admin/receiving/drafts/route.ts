@@ -15,7 +15,20 @@ import { RECEIVING_DRAFTS_MODULE } from "../../../../modules/receiving-drafts"
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const drafts: any = req.scope.resolve(RECEIVING_DRAFTS_MODULE)
   const rows = await drafts.listReceivingDrafts({}, { order: { updated_at: "DESC" } })
-  res.json({ drafts: rows })
+  /* Optional ?kind= filter. summary.kind is set per-receiving-profile
+   * by the admin page (flower / pre-roll / ...). Legacy drafts without
+   * a kind default to "flower" — back-compat with the original
+   * flower-only receiving flow. */
+  const kindParam = String(req.query.kind ?? "").trim().toLowerCase()
+  if (!kindParam) {
+    res.json({ drafts: rows })
+    return
+  }
+  const filtered = (rows as any[]).filter((d) => {
+    const k = String((d.summary as any)?.kind ?? "flower").toLowerCase()
+    return k === kindParam
+  })
+  res.json({ drafts: filtered })
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {

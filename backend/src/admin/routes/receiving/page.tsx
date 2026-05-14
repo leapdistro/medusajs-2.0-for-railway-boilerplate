@@ -284,7 +284,7 @@ const UploadView: React.FC<{
   const loadDrafts = useCallback(async () => {
     setDraftsLoading(true)
     try {
-      const res = await fetch("/admin/receiving/drafts", { credentials: "include" })
+      const res = await fetch("/admin/receiving/drafts?kind=flower", { credentials: "include" })
       if (!res.ok) throw new Error()
       const json = await res.json()
       setDrafts(json.drafts ?? [])

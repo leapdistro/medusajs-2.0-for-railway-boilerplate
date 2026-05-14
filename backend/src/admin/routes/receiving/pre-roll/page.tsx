@@ -94,6 +94,16 @@ const PreRollReceivingPage = () => {
   const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
   const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
   const [pushingToQbo, setPushingToQbo] = useState(false)
+  /* Draft state — mirrors the flower receiving page's pattern.
+   *   - draftId: set when resuming OR after first Save Draft, so
+   *     subsequent saves PUT instead of POST (no duplicate drafts).
+   *   - savingDraft / lastSavedAt: feedback for the Save Draft button.
+   *   - drafts: resumable drafts list (filtered to kind=pre-roll). */
+  const [draftId, setDraftId] = useState<string | null>(null)
+  const [savingDraft, setSavingDraft] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
+  const [drafts, setDrafts] = useState<Array<{ id: string; summary: any; updated_at: string }>>([])
+  const [draftsLoading, setDraftsLoading] = useState(true)
 
   /* Pull profile subcategories from the backend so the dropdown stays
    * in sync with PREROLL_PROFILE — no hardcoded duplicate in the UI. */
@@ -122,6 +132,21 @@ const PreRollReceivingPage = () => {
       .catch((e) => { if (!cancelled) setProfileError(e?.message ?? "Failed to load profile") })
     return () => { cancelled = true }
   }, [])
+
+  /* Resumable drafts — fetched on mount, refreshed after Save Draft /
+   * discard. Filtered server-side to kind=pre-roll so flower drafts
+   * don't leak in. */
+  const loadDrafts = useCallback(async () => {
+    setDraftsLoading(true)
+    try {
+      const res = await fetch("/admin/receiving/drafts?kind=pre-roll", { credentials: "include" })
+      if (!res.ok) throw new Error()
+      const j = await res.json()
+      setDrafts(j.drafts ?? [])
+    } catch { /* silent — drafts are optional */ }
+    finally { setDraftsLoading(false) }
+  }, [])
+  useEffect(() => { loadDrafts() }, [loadDrafts])
 
   const computedTotal = useMemo(() => {
     const subtotal = rows.reduce((s, r) => s + (r.quantityBoxes || 0) * (r.costPerBox || 0), 0)
@@ -176,6 +201,75 @@ const PreRollReceivingPage = () => {
     }
   }
 
+  const buildDraftPayload = () => ({
+    supplier,
+    invoiceNumber,
+    invoiceDate,
+    shippingTotal,
+    rows,
+  })
+  const buildDraftSummary = () => ({
+    kind: "pre-roll" as const,
+    supplierName: supplier.name,
+    invoiceNumber,
+    invoiceDate,
+    rowCount: rows.length,
+    total: computedTotal,
+  })
+
+  const onSaveDraft = async () => {
+    setSavingDraft(true)
+    try {
+      const url = draftId ? `/admin/receiving/drafts/${draftId}` : "/admin/receiving/drafts"
+      const method = draftId ? "PUT" : "POST"
+      const res = await fetch(url, {
+        method,
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload: buildDraftPayload(), summary: buildDraftSummary() }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json?.ok) throw new Error(json?.message ?? `Save failed (${res.status})`)
+      if (!draftId && json.draft?.id) setDraftId(json.draft.id)
+      setLastSavedAt(new Date())
+      toast.success(draftId ? "Draft updated" : "Draft saved")
+      loadDrafts()
+    } catch (e: any) {
+      toast.error("Save draft failed", { description: e?.message ?? "Network error" })
+    } finally {
+      setSavingDraft(false)
+    }
+  }
+
+  const onResumeDraft = (d: { id: string; payload: any }) => {
+    const p = d.payload as ReturnType<typeof buildDraftPayload>
+    setSupplier(p.supplier)
+    setInvoiceNumber(p.invoiceNumber)
+    setInvoiceDate(p.invoiceDate)
+    setShippingTotal(p.shippingTotal)
+    /* Persisted rows may have a stale coa state shape — coerce to idle
+     * so the operator re-attaches if needed. COA URLs that were uploaded
+     * stay valid since they're persisted in MinIO. */
+    setRows(p.rows.map((r) => ({ ...r, coa: r.coa ?? { state: "idle" } })))
+    setDraftId(d.id)
+    setLastSavedAt(new Date())
+  }
+
+  const onDiscardDraft = async (id: string) => {
+    if (!confirm("Discard this draft? Cannot be undone.")) return
+    const res = await fetch(`/admin/receiving/drafts/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    })
+    if (res.ok) {
+      toast.success("Draft discarded")
+      if (draftId === id) setDraftId(null)
+      loadDrafts()
+    } else {
+      toast.error("Failed to discard draft")
+    }
+  }
+
   const onSave = async () => {
     if (!allValid || saving) return
     setSaving(true)
@@ -189,6 +283,7 @@ const PreRollReceivingPage = () => {
         total: computedTotal,
         computedSubtotal: computedTotal - shippingTotal,
         computedTotal,
+        draftId,
         rows: rows.map((r) => ({
           strainName: r.strainName.trim(),
           quantity: r.quantityBoxes,
@@ -220,6 +315,8 @@ const PreRollReceivingPage = () => {
         toast.success("Pre-Roll receiving saved", {
           description: `${s.created} created · ${s.restocked} restocked`,
         })
+        /* Draft was auto-deleted by the save route when draftId was set. */
+        setDraftId(null)
         if (json.historyId) {
           setSavedHistoryId(json.historyId)
           setSavedSummary({ created: s.created, restocked: s.restocked })
@@ -316,17 +413,52 @@ const PreRollReceivingPage = () => {
 
   return (
     <Container className="flex flex-col gap-6 p-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-4 flex-wrap">
         <div>
           <Heading level="h1">Pre-Roll Receiving</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            Manual entry — THC-A + Hashholes · 30 ct boxes. Use the main Receiving page for flower.
+            Manual entry — THC-A + Hashholes. Use the main Receiving page for flower.
+            {lastSavedAt && <> · draft saved {timeAgo(lastSavedAt)}</>}
           </Text>
         </div>
-        <Button variant="primary" disabled={!allValid || saving} onClick={onSave}>
-          {saving ? "Saving…" : `Save ${rows.length} Product${rows.length === 1 ? "" : "s"}`}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" disabled={savingDraft} onClick={onSaveDraft}>
+            {savingDraft ? "Saving…" : draftId ? "Update Draft" : "Save Draft"}
+          </Button>
+          <Button variant="primary" disabled={!allValid || saving} onClick={onSave}>
+            {saving ? "Saving…" : `Save ${rows.length} Product${rows.length === 1 ? "" : "s"}`}
+          </Button>
+        </div>
       </div>
+
+      {/* Resume Drafts — only renders when drafts exist */}
+      {!draftsLoading && drafts.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <Heading level="h2">Resume Drafts</Heading>
+          <div className="flex flex-col gap-2">
+            {drafts.map((d) => (
+              <div
+                key={d.id}
+                style={{ border: "1.5px solid #E5E1D6", padding: 14, background: "#fff" }}
+                className="flex justify-between items-center gap-4"
+              >
+                <div className="flex flex-col">
+                  <Text weight="plus" size="small">
+                    {d.summary?.supplierName ?? "Unnamed supplier"} · {d.summary?.invoiceNumber ?? "no invoice #"}
+                  </Text>
+                  <Text size="xsmall" className="text-ui-fg-muted">
+                    {d.summary?.rowCount ?? 0} row{(d.summary?.rowCount ?? 0) === 1 ? "" : "s"} · saved {timeAgo(new Date(d.updated_at))}
+                  </Text>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" size="small" onClick={() => onResumeDraft(d as any)}>Resume</Button>
+                  <Button variant="transparent" size="small" onClick={() => onDiscardDraft(d.id)}>Discard</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Supplier + invoice meta */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -408,6 +540,16 @@ const PreRollReceivingPage = () => {
 }
 
 /* ---- Helpers ---- */
+
+function timeAgo(d: Date): string {
+  const secs = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000))
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return d.toLocaleDateString()
+}
 
 const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="flex flex-col gap-1">

@@ -17,9 +17,12 @@ type LineResult = {
   productId?: string
   productHandle?: string
   inventoryItemId?: string
-  qtyQps: number
-  landedPerQp: number
-  sellPrices: { qp: number; half: number; lb: number } | null
+  qtyQps: number              // pool units (QPs for flower, boxes for pre-roll)
+  landedPerQp: number         // landed cost per pool unit
+  /** Map of variant size-key → sell price. For flower has qp/half/lb keys;
+   *  for pre-roll has a single size-key (e.g., "30pk" or "15pk"). The
+   *  inline shape avoids colliding with this file's local `Record` type. */
+  sellPrices: { [sizeKey: string]: number } | null
   error?: string
 }
 
@@ -165,9 +168,9 @@ const ReceivingHistoryDetailPage = () => {
               <Th>Strain</Th>
               <Th>Action</Th>
               <Th align="right">Units</Th>
-              <Th align="right">Landed / QP</Th>
+              <Th align="right">Landed / Unit</Th>
               <Th align="right">Line Cost</Th>
-              <Th align="right">Sell QP / Half / LB</Th>
+              <Th align="right">Sell Prices</Th>
               <Th>Product</Th>
             </tr>
           </thead>
@@ -189,8 +192,10 @@ const ReceivingHistoryDetailPage = () => {
                   <Td align="right" style={{ fontFamily: "monospace" }}>${l.landedPerQp.toFixed(2)}</Td>
                   <Td align="right" style={{ fontFamily: "monospace" }}>${lineCost.toFixed(2)}</Td>
                   <Td align="right" style={{ fontFamily: "monospace" }}>
-                    {l.sellPrices
-                      ? `$${l.sellPrices.qp} / $${l.sellPrices.half} / $${l.sellPrices.lb}`
+                    {l.sellPrices && Object.keys(l.sellPrices).length > 0
+                      ? Object.entries(l.sellPrices)
+                          .map(([sizeKey, price]) => `${sizeKey}: $${price}`)
+                          .join(" · ")
                       : <span style={{ color: "#888" }}>—</span>}
                   </Td>
                   <Td>
