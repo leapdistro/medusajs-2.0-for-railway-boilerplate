@@ -389,6 +389,40 @@ export async function findItemBySku(
   return item ? { id: String(item.Id), name: item.Name } : null
 }
 
+/* ─── Service item find-or-create (Shipping, Discount, etc.) ─── */
+
+/**
+ * Service items don't track inventory — used for shipping, handling,
+ * one-off charges. Income-only; no asset or COGS posting.
+ */
+export async function findOrCreateServiceItem(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  itemName: string,
+  incomeAccount: AccountRef,
+): Promise<{ id: string; name: string; created: boolean }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const safe = itemName.replace(/'/g, "''")
+  const found = await qboFetch(
+    fresh,
+    `/query?query=${encodeURIComponent(`select * from Item where Name = '${safe}'`)}`,
+  )
+  const existing = found?.QueryResponse?.Item?.[0]
+  if (existing) {
+    return { id: String(existing.Id), name: existing.Name, created: false }
+  }
+
+  const body = {
+    Name: itemName,
+    Type: "Service",
+    IncomeAccountRef: { value: incomeAccount.id, name: incomeAccount.name },
+  }
+  const created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
+  const item = created?.Item
+  if (!item?.Id) throw new Error(`Service item create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
+  return { id: String(item.Id), name: item.Name, created: true }
+}
+
 /* ─── Invoice creation ─── */
 
 export type InvoiceLine = {

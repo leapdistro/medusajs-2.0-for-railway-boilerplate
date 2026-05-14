@@ -15,8 +15,10 @@ import {
   createPayment,
   findItemBySku,
   findOrCreateCustomer,
+  findOrCreateServiceItem,
   findPaymentMethodIdByName,
   findQboTermIdByName,
+  getDefaultAccounts,
   invoicePublicUrl,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
@@ -188,7 +190,30 @@ export async function pushOrderToQbo(
     return { ok: false, code: "API_ERROR", error: "Order has no eligible line items to push" }
   }
 
-  /* 4. Create the Invoice. */
+  /* 4. Shipping line — resolve a Service-type "Shipping" Item the first
+   *    time we push an invoice with shipping cost, and reuse it
+   *    thereafter. Lives separately from product lines so QBO P&L can
+   *    split product revenue from shipping revenue. */
+  const shippingTotal = Number(order.shipping_total ?? 0)
+  let shippingItemId: string | undefined
+  if (shippingTotal > 0) {
+    try {
+      const accounts = await getDefaultAccounts(qbo, conn)
+      const shippingItem = await findOrCreateServiceItem(
+        qbo,
+        conn,
+        "Shipping",
+        accounts.incomeAccount,
+      )
+      shippingItemId = shippingItem.id
+    } catch (e: any) {
+      /* Non-fatal: invoice still pushes without the shipping line.
+       * Operator can add manually in QBO if it matters. */
+      logger.warn(`[qbo-order-push] shipping item resolve failed for order ${order.id}: ${e?.message}`)
+    }
+  }
+
+  /* 5. Create the Invoice. */
   const txnDate = new Date().toISOString().slice(0, 10)
   let invoice
   try {
@@ -197,6 +222,8 @@ export async function pushOrderToQbo(
       txnDate,
       docNumber: String(order.display_id ?? order.id),
       lines,
+      shippingTotal: shippingItemId ? shippingTotal : undefined,
+      shippingItemId,
       salesTermId,
       privateNote: `Medusa order ${order.display_id ?? order.id}`,
       taxExempt: true,
@@ -205,7 +232,7 @@ export async function pushOrderToQbo(
     return { ok: false, code: "API_ERROR", error: `Invoice create failed: ${e?.message}` }
   }
 
-  /* 5. KAJA-paid path: close the invoice with a Payment so QBO marks
+  /* 6. KAJA-paid path: close the invoice with a Payment so QBO marks
    *    it PAID. Net 15 path skips this — operator records the check
    *    payment manually when it arrives. */
   let paymentId: string | undefined
@@ -233,7 +260,7 @@ export async function pushOrderToQbo(
     }
   }
 
-  /* 6. Stamp the order with the QBO ids so future calls are idempotent
+  /* 7. Stamp the order with the QBO ids so future calls are idempotent
    *    + the order widget can display the link. */
   const nowIso = new Date().toISOString()
   try {
