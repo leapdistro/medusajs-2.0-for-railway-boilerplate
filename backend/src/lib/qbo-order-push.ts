@@ -55,10 +55,11 @@ export async function pushOrderToQbo(
       "id", "display_id", "currency_code", "total", "subtotal", "shipping_total",
       "metadata", "created_at",
       "customer.id", "customer.email", "customer.phone", "customer.metadata",
-      /* Medusa v2 line items expose quantity + unit_price; line total is
-       * computed downstream (order summary). We compute qty × unit_price
-       * ourselves and stay in source-currency dollars throughout. */
-      "items.id", "items.title", "items.quantity", "items.unit_price",
+      /* Pull quantity from multiple sources — Medusa v2 line items can
+       * have quantity zeroed out after fulfillment cancellation while
+       * raw_quantity / detail.quantity retain the original ordered qty. */
+      "items.id", "items.title", "items.quantity", "items.raw_quantity",
+      "items.unit_price", "items.detail.quantity",
       "items.variant_sku", "items.variant_id", "items.product_title",
     ],
     filters: { id: orderId },
@@ -137,11 +138,31 @@ export async function pushOrderToQbo(
     }
     /* Medusa v2 unit_price is already in source-currency dollars
      * (e.g., USD), not cents, and reflects the discounted/effective
-     * price (Medusa's pricing engine resolves promotions to the
-     * stored value). Quantity is a plain integer. */
-    const qty = Number(item.quantity ?? 0)
+     * price. For quantity, fall through multiple shapes: top-level
+     * `quantity` (most common), `detail.quantity` (sometimes the
+     * fulfillment-aware value), and `raw_quantity.value` (BigNumber
+     * source). Cancel-fulfillment workflows can zero out `quantity`
+     * while leaving raw_quantity intact. */
+    const rawQty = item.raw_quantity?.value ?? item.raw_quantity
+    const qty = Number(
+      (item.quantity != null && Number(item.quantity) > 0 ? item.quantity : null)
+        ?? (item.detail?.quantity ?? null)
+        ?? rawQty
+        ?? 0,
+    )
     const unitPrice = Number(item.unit_price ?? 0)
     if (qty <= 0 || unitPrice <= 0) {
+      /* Surface the raw item shape so we can diagnose v2 query quirks
+       * if the multi-source fallback still misses. */
+      logger.warn(
+        `[qbo-order-push] bad line data: ${JSON.stringify({
+          quantity: item.quantity,
+          raw_quantity: item.raw_quantity,
+          detail_quantity: item.detail?.quantity,
+          unit_price: item.unit_price,
+          product_title: item.product_title,
+        })}`,
+      )
       return {
         ok: false,
         code: "API_ERROR",
