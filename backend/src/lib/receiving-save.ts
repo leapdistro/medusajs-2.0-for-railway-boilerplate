@@ -6,6 +6,7 @@ import {
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { MBS_ATTRIBUTES_MODULE } from "../modules/mbs-attributes"
 import { baseSku, generateSku } from "./sku"
+import { FLOWER_PROFILE, getSubcategory, getVariantDef, type ReceivingProfile } from "./receiving-profiles"
 
 /**
  * Slice 2C — receiving save orchestrator.
@@ -70,41 +71,11 @@ export type SaveRowResult = {
   error?: string
 }
 
-/* ---- Tier → category-name mapping (matches seed-mbs.ts).
- * `snow` is "Snowcaps" (legacy label) — everywhere else uses the
- * key, but the existing category was already named Snowcaps so we
- * preserve it to avoid creating a duplicate. */
-const TIER_CATEGORY_NAME: Record<TierKey, string> = {
-  classic: "Classic",
-  exotic:  "Exotic",
-  super:   "Super",
-  snow:    "Snowcaps",
-  rapper:  "Rapper",
-}
-
-/* Size option values for variants created via receiving. Short forms
- * since the storefront now displays operator-typed values verbatim
- * (Path A of dynamic-catalog rebuild — no automatic transforms).
- * Operator can rename these per-variant in admin if they prefer
- * different copy. */
-const SIZE_LABELS: Record<SizeKey, string> = {
-  qp:   "QP",
-  half: "½",
-  lb:   "LB",
-}
-
-/* QPs per size — used for both required_quantity (variant link) and
- * the pool stocked_quantity. 1 lb = 4 QPs. */
-const SIZE_QP_MULTIPLIER: Record<SizeKey, number> = {
-  qp: 1, half: 2, lb: 4,
-}
-
-/* Variant weight in grams. Drives the storefront margin calc (cost/g)
- * and ShipStation's box weight when wired. 1 lb ≈ 453.6g; we round to
- * whole grams since fractional grams aren't worth the precision. */
-const SIZE_GRAMS: Record<SizeKey, number> = {
-  qp: 113, half: 227, lb: 454,
-}
+/* Tier/size constants moved into FLOWER_PROFILE in receiving-profiles.ts.
+ * The hardcoded TIER_CATEGORY_NAME / SIZE_LABELS / SIZE_QP_MULTIPLIER /
+ * SIZE_GRAMS are now derived per-profile (Slice R2 of receiving
+ * generalization, 2026-05-14). Other categories (Pre-Rolls etc.) layer
+ * in via their own ReceivingProfile config. */
 
 /* SKU generation moved to src/lib/sku.ts — single source of truth used
  * across receiving + manual product flows + the QBO Item push. */
@@ -127,6 +98,10 @@ function asNumber(v: string | number | null | undefined): number | null {
 /* ---- Shared invoice context for all rows in one save ---- */
 
 export type SaveContext = {
+  /** Active receiving profile — drives variant axes, subcategory lookups,
+   *  pricing model, and field requirements. Defaults to FLOWER_PROFILE
+   *  for backward compat; Pre-Rolls etc. pass their own. */
+  profile: ReceivingProfile
   /** $/lb — total invoice shipping ÷ Σ(qty_lb). 0 if no shipping. */
   shipPerLb: number
   tierPrices: TierPriceMap
@@ -134,8 +109,10 @@ export type SaveContext = {
   salesChannelId: string
   /** Stock location id to write inventory levels against (resolved once). */
   stockLocationId: string
-  /** Map of tier → flower-sub-category-id (resolved once). Throws if missing. */
-  tierCategoryIds: Record<TierKey, string>
+  /** Map of subcategory-key → Medusa product_category id (resolved once).
+   *  Keys are profile.subcategories[].key. Throws at build time if any
+   *  configured subcategory is missing in the catalog. */
+  subcategoryIds: Record<string, string>
   /** Default shipping profile id — required link or cart checkout fails. */
   shippingProfileId: string
 }
@@ -144,6 +121,7 @@ export async function buildSaveContext(
   container: any,
   shipPerLb: number,
   tierPrices: TierPriceMap,
+  profile: ReceivingProfile = FLOWER_PROFILE,
 ): Promise<SaveContext> {
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const salesChannelService = container.resolve(Modules.SALES_CHANNEL)
@@ -161,25 +139,32 @@ export async function buildSaveContext(
     throw new Error("No stock location found. Run `pnpm seed` first.")
   }
 
-  /* Look up each Flower sub-category by name under the Flower parent.
-   * Mirror of seed-mbs.ts ensureCategoryTree shape. */
+  /* Look up each configured sub-category by name under the profile's
+   * parent category. Mirror of seed-*-categories.ts shape — parent
+   * row has no parent_category_id, children point to it via that id. */
   const { data: allCats } = await query.graph({
     entity: "product_category",
     fields: ["id", "name", "parent_category_id"],
   })
-  const flowerParent = (allCats as any[]).find((c) => c.name === "Flower" && !c.parent_category_id)
-  if (!flowerParent) {
-    throw new Error("Flower parent category missing. Run `pnpm seed:mbs` to create the category tree.")
+  const parentCat = (allCats as any[]).find(
+    (c) => c.name === profile.parentCategoryName && !c.parent_category_id,
+  )
+  if (!parentCat) {
+    throw new Error(
+      `"${profile.parentCategoryName}" parent category missing. Run the matching seed script (e.g. \`pnpm seed:flower-categories\` or \`pnpm seed:preroll-categories\`) to create the category tree.`,
+    )
   }
-  const tierCategoryIds: Record<string, string> = {}
-  for (const [tierKey, catName] of Object.entries(TIER_CATEGORY_NAME)) {
+  const subcategoryIds: Record<string, string> = {}
+  for (const sub of profile.subcategories) {
     const cat = (allCats as any[]).find(
-      (c) => c.name === catName && c.parent_category_id === flowerParent.id,
+      (c) => c.name === sub.medusaName && c.parent_category_id === parentCat.id,
     )
     if (!cat) {
-      throw new Error(`Flower sub-category "${catName}" missing. Run \`pnpm seed:mbs\` to create the category tree.`)
+      throw new Error(
+        `"${profile.parentCategoryName}" sub-category "${sub.medusaName}" missing. Run the matching seed script to create the category tree.`,
+      )
     }
-    tierCategoryIds[tierKey] = cat.id
+    subcategoryIds[sub.key] = cat.id
   }
 
   /* Default shipping profile — every product must link to one or
@@ -193,11 +178,12 @@ export async function buildSaveContext(
   }
 
   return {
+    profile,
     shipPerLb,
     tierPrices,
     salesChannelId: defaultChannel.id,
     stockLocationId: locations[0].id,
-    tierCategoryIds: tierCategoryIds as Record<TierKey, string>,
+    subcategoryIds,
     shippingProfileId: shippingProfile.id,
   }
 }
@@ -317,8 +303,8 @@ export async function saveOneRow(
         productHandle: handle,
         inventoryItemId: firstInventoryId,
         baseSku: baseSku({
-          category: "Flower",
-          subcategory: TIER_CATEGORY_NAME[row.tier],
+          category: ctx.profile.parentCategoryName,
+          subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
           type: row.strainType,
           strain: row.strainName,
         }),
@@ -328,19 +314,19 @@ export async function saveOneRow(
     /* ---------- CREATE PATH ---------- */
 
     /* SKU collision check — generated SKUs must be unique across products.
-     * Same strain at the same tier is a restock (handled above), so any
+     * Same strain at the same subcategory is a restock (handled above), so any
      * variant we find with the same proposed SKU belonging to a DIFFERENT
      * product is a real collision (e.g. "Gold Rose Runtz" abbrevs the same
      * as "Gold Rose Runner"). Fail this row with a descriptive message;
      * the operator renames the strain and re-saves. */
-    const sizes: SizeKey[] = ["qp", "half", "lb"]
+    const variantDefs = ctx.profile.variants
     const skuParts = {
-      category: "Flower",
-      subcategory: TIER_CATEGORY_NAME[row.tier],
+      category: ctx.profile.parentCategoryName,
+      subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
       type: row.strainType,
       strain: row.strainName,
     }
-    const proposedSkus = sizes.map((size) => generateSku({ ...skuParts, size }))
+    const proposedSkus = variantDefs.map((v) => generateSku({ ...skuParts, size: v.sizeKey }))
     const productService: any = container.resolve(Modules.PRODUCT)
     const conflicts = await productService.listProductVariants(
       { sku: proposedSkus },
@@ -365,37 +351,39 @@ export async function saveOneRow(
     })
     const inventoryItemId = (Array.isArray(created) ? created[0] : created).id
 
-    /* 2. Build the 3 variants on the shared inventory item.
-     *    SKUs already computed above for the collision check; reuse. */
-    const variants = sizes.map((size, idx) => ({
-      title: SIZE_LABELS[size],
+    /* 2. Build variants on the shared inventory item — one per variant
+     *    def in the profile. SKUs already computed above; reuse by idx. */
+    const variants = variantDefs.map((v, idx) => ({
+      title: v.label,
       sku: proposedSkus[idx],
-      options: { Size: SIZE_LABELS[size] },
-      prices: [{ amount: tp[size], currency_code: "usd" }],
+      options: { Size: v.label },
+      prices: [{ amount: (tp as any)[v.sizeKey], currency_code: "usd" }],
       manage_inventory: true,
       /* Weight in grams — required for the storefront margin calc to
-       * render (cost/gram math). Also feeds ShipStation when wired. */
-      weight: SIZE_GRAMS[size],
+       * render (cost/gram math). Also feeds ShipStation when wired.
+       * Optional per profile — categories without a meaningful weight
+       * (drinks etc.) leave this undefined. */
+      ...(v.grams !== undefined ? { weight: v.grams } : {}),
       metadata: {
         tier_linked: true,
         tier_key: row.tier,
-        size_key: size,
+        size_key: v.sizeKey,
       },
       inventory_items: [{
         inventory_item_id: inventoryItemId,
-        required_quantity: SIZE_QP_MULTIPLIER[size],
+        required_quantity: v.multiplier,
       }],
     }))
 
-    /* 3. Create the product with the 3 variants in one workflow. */
+    /* 3. Create the product with the variants in one workflow. */
     const { result: productResult } = await createProductsWorkflow(container).run({
       input: {
         products: [{
           title: row.strainName,
           handle,
           status: ProductStatus.PUBLISHED,
-          category_ids: [ctx.tierCategoryIds[row.tier]],
-          options: [{ title: "Size", values: sizes.map((s) => SIZE_LABELS[s]) }],
+          category_ids: [ctx.subcategoryIds[row.tier]],
+          options: [{ title: "Size", values: variantDefs.map((v) => v.label) }],
           variants,
           sales_channels: [{ id: ctx.salesChannelId }],
         }],
