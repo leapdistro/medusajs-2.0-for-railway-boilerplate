@@ -1,6 +1,6 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 /**
  * Pre-Roll Receiving — manual-entry-only page for receiving pre-roll
@@ -17,13 +17,17 @@ import { useCallback, useMemo, useState } from "react"
  * variant per strain with required_quantity=1 (1 box = 1 pool unit).
  */
 
-/* Mirrors PREROLL_PROFILE.subcategories[].variants in receiving-profiles.ts.
- * Kept here as a local copy so the UI can show subcategory-specific
- * box-count hints next to quantity/cost/price labels. */
-const SUBCATEGORIES = [
-  { key: "thc-a",     label: "THC-A",     variantLabel: "30 ct Box" },
-  { key: "hashholes", label: "Hashholes", variantLabel: "15 ct Box" },
-] as const
+/* Subcategories fetched from GET /admin/receiving/profile/pre-roll on
+ * mount so the dropdown stays in sync with PREROLL_PROFILE.subcategories
+ * (receiving-profiles.ts is the single source of truth). Adding a new
+ * subcategory there picks up here on next page load — no UI edit. */
+type SubcategoryOption = {
+  key: string
+  label: string
+  /** First variant's label — used as a UI hint when surfacing the
+   *  box size next to the subcategory selection. */
+  variantLabel?: string
+}
 
 const STRAIN_TYPES = ["Indica", "Sativa", "Hybrid"] as const
 const BEST_FOR = [
@@ -37,7 +41,7 @@ const EFFECTS = [
   "Grounded", "Creative", "Social", "Calm",
 ] as const
 
-type Subcategory = (typeof SUBCATEGORIES)[number]["key"]
+type Subcategory = string
 type StrainType = (typeof STRAIN_TYPES)[number]
 type BestFor = (typeof BEST_FOR)[number]["key"]
 
@@ -62,9 +66,9 @@ type Row = {
   upc: string
 }
 
-const blankRow = (): Row => ({
+const blankRow = (defaultSubcategory: string = ""): Row => ({
   strainName: "",
-  subcategory: "thc-a",
+  subcategory: defaultSubcategory,
   strainType: "",
   bestFor: "",
   effects: [],
@@ -82,12 +86,42 @@ const PreRollReceivingPage = () => {
   const [invoiceNumber, setInvoiceNumber] = useState("")
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [shippingTotal, setShippingTotal] = useState(0)
+  const [subcats, setSubcats] = useState<SubcategoryOption[] | null>(null)
+  const [profileError, setProfileError] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([blankRow()])
   const [saving, setSaving] = useState(false)
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null)
   const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
   const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
   const [pushingToQbo, setPushingToQbo] = useState(false)
+
+  /* Pull profile subcategories from the backend so the dropdown stays
+   * in sync with PREROLL_PROFILE — no hardcoded duplicate in the UI. */
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/receiving/profile/pre-roll", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const subs = (j?.profile?.subcategories ?? []) as Array<{
+          key: string
+          label: string
+          variants?: Array<{ label: string }>
+        }>
+        const opts: SubcategoryOption[] = subs.map((s) => ({
+          key: s.key,
+          label: s.label,
+          variantLabel: s.variants?.[0]?.label,
+        }))
+        setSubcats(opts)
+        /* Seed the first row's subcategory once profile data lands. */
+        if (opts.length > 0) {
+          setRows((cur) => cur.map((r, i) => (i === 0 && !r.subcategory ? { ...r, subcategory: opts[0].key } : r)))
+        }
+      })
+      .catch((e) => { if (!cancelled) setProfileError(e?.message ?? "Failed to load profile") })
+    return () => { cancelled = true }
+  }, [])
 
   const computedTotal = useMemo(() => {
     const subtotal = rows.reduce((s, r) => s + (r.quantityBoxes || 0) * (r.costPerBox || 0), 0)
@@ -113,7 +147,7 @@ const PreRollReceivingPage = () => {
     setRows((cur) => cur.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
   }, [])
 
-  const addRow = () => setRows((cur) => [...cur, blankRow()])
+  const addRow = () => setRows((cur) => [...cur, blankRow(subcats?.[0]?.key ?? "")])
   const deleteRow = (idx: number) => setRows((cur) => cur.filter((_, i) => i !== idx))
 
   const onPickCoa = async (idx: number, file: File | null) => {
@@ -347,17 +381,25 @@ const PreRollReceivingPage = () => {
 
       {/* Rows */}
       <div className="flex flex-col gap-4">
+        {profileError ? (
+          <Text size="small" style={{ color: "#B91C1C" }}>
+            Failed to load Pre-Roll profile: {profileError}
+          </Text>
+        ) : !subcats ? (
+          <Text size="small" className="text-ui-fg-muted">Loading subcategories…</Text>
+        ) : null}
         {rows.map((row, idx) => (
           <RowCard
             key={idx}
             row={row}
             idx={idx}
+            subcats={subcats ?? []}
             onChange={(patch) => updateRow(idx, patch)}
             onDelete={rows.length > 1 ? () => deleteRow(idx) : undefined}
             onPickCoa={(file) => onPickCoa(idx, file)}
           />
         ))}
-        <Button variant="secondary" onClick={addRow} className="self-start">
+        <Button variant="secondary" onClick={addRow} className="self-start" disabled={!subcats || subcats.length === 0}>
           + Add Row
         </Button>
       </div>
@@ -377,10 +419,11 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
 const RowCard: React.FC<{
   row: Row
   idx: number
+  subcats: SubcategoryOption[]
   onChange: (patch: Partial<Row>) => void
   onDelete?: () => void
   onPickCoa: (file: File | null) => void
-}> = ({ row, idx, onChange, onDelete, onPickCoa }) => {
+}> = ({ row, idx, subcats, onChange, onDelete, onPickCoa }) => {
   const EFFECT_MAX = 2
   const toggleEffect = (effect: string) => {
     if (row.effects.includes(effect)) {
@@ -406,11 +449,13 @@ const RowCard: React.FC<{
           <Input value={row.strainName} onChange={(e: any) => onChange({ strainName: e.target.value })} />
         </Field>
         <Field label="Subcategory">
-          <Select value={row.subcategory} onValueChange={(v) => onChange({ subcategory: v as Subcategory })}>
-            <Select.Trigger><Select.Value /></Select.Trigger>
+          <Select value={row.subcategory} onValueChange={(v) => onChange({ subcategory: v })}>
+            <Select.Trigger><Select.Value placeholder={subcats.length === 0 ? "—" : undefined} /></Select.Trigger>
             <Select.Content>
-              {SUBCATEGORIES.map((s) => (
-                <Select.Item key={s.key} value={s.key}>{s.label}</Select.Item>
+              {subcats.map((s) => (
+                <Select.Item key={s.key} value={s.key}>
+                  {s.label}{s.variantLabel ? ` · ${s.variantLabel}` : ""}
+                </Select.Item>
               ))}
             </Select.Content>
           </Select>
