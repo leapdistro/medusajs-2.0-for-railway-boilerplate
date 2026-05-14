@@ -45,14 +45,21 @@ const TruckIcon = () => (
  * settings shape. Type/best-for/effects are imported lists from the
  * mbs-attributes module (single source of truth there). Mirrored here as
  * string literals to avoid coupling the admin bundle to a server module. */
-const TIER_OPTIONS = [
+/* Tier options used to be hardcoded; now fetched live from
+ * GET /admin/receiving/profile/flower so adding a new Flower
+ * subcategory in Medusa admin auto-appears in the receiving
+ * dropdown — no code change required. Bootstrap defaults shipped
+ * here cover the standard 5 tiers + any in-flight render before
+ * the fetch completes. TierKey widened to string (was a union)
+ * since dynamic categories produce arbitrary keys. */
+const DEFAULT_TIER_OPTIONS: Array<{ key: string; label: string }> = [
   { key: "classic", label: "Classic" },
   { key: "exotic",  label: "Exotic"  },
   { key: "super",   label: "Super"   },
   { key: "snow",    label: "Snow"    },
   { key: "rapper",  label: "Rapper"  },
-] as const
-type TierKey = typeof TIER_OPTIONS[number]["key"]
+]
+type TierKey = string
 
 const STRAIN_TYPE_OPTIONS = ["Indica", "Sativa", "Hybrid"] as const
 type StrainType = typeof STRAIN_TYPE_OPTIONS[number]
@@ -442,13 +449,16 @@ const ReviewView: React.FC<{
   fileName: string
   tokens: { in: number; out: number }
   tierPrices: TierPriceMap | null
+  /* Tier options sourced live from the profile endpoint at page level —
+   * lets new Medusa categories under "Flower" auto-appear in dropdowns. */
+  tierOptions: Array<{ key: string; label: string }>
   /* When resuming, the draft's persisted rows replace the freshly-extracted
    * defaults. coaFile is always null for restored rows (operator re-attaches). */
   initialRows?: ReviewRow[]
   /* If set, Save Draft updates this draft. Otherwise, first save creates one. */
   initialDraftId?: string | null
   onRestart: () => void
-}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, initialRows, initialDraftId, onRestart }) => {
+}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, initialRows, initialDraftId, onRestart }) => {
   const [invoice, setInvoice] = useState<ExtractedInvoice>(initialInvoice)
   const [rows, setRows] = useState<ReviewRow[]>(() => initialRows ?? makeRows(initialInvoice))
   const [saving, setSaving] = useState(false)
@@ -1053,7 +1063,7 @@ const ReviewView: React.FC<{
             {selected.size} selected
           </Text>
           <span style={{ color: "#888", fontSize: 12 }}>Apply to selected:</span>
-          <BulkSelect placeholder="Tier" options={TIER_OPTIONS.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ tier: v as TierKey })} />
+          <BulkSelect placeholder="Tier" options={tierOptions.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ tier: v as TierKey })} />
           <BulkSelect placeholder="Type" options={STRAIN_TYPE_OPTIONS.map((o) => ({ value: o, label: o }))} onPick={(v) => bulkApply({ strainType: v as StrainType })} />
           <BulkSelect placeholder="Best For" options={BEST_FOR_OPTIONS.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ bestFor: v as BestFor })} />
           <span style={{ flex: 1 }} />
@@ -1150,7 +1160,7 @@ const ReviewView: React.FC<{
                     <Select value={row.tier ?? ""} onValueChange={(v) => updateRow(i, { tier: v as TierKey })}>
                       <Select.Trigger><Select.Value placeholder="—" /></Select.Trigger>
                       <Select.Content>
-                        {TIER_OPTIONS.map((o) => (
+                        {tierOptions.map((o) => (
                           <Select.Item key={o.key} value={o.key}>{o.label}</Select.Item>
                         ))}
                       </Select.Content>
@@ -1712,6 +1722,11 @@ const ReceivingPage = () => {
     draftId?: string | null
   } | null>(null)
   const [tierPrices, setTierPrices] = useState<TierPriceMap | null>(null)
+  /* Dynamic tier options — pulled from /admin/receiving/profile/flower
+   * which merges FLOWER_PROFILE.subcategories with live Medusa categories
+   * under "Flower". Adding a new tier category in Medusa admin shows up
+   * here on next page load — no code edit. */
+  const [tierOptions, setTierOptions] = useState<Array<{ key: string; label: string }>>(DEFAULT_TIER_OPTIONS)
 
   /* Fetch tier prices once on mount so the review table can show
    * suggested-sell columns. Falls back to null silently — admin can
@@ -1729,6 +1744,22 @@ const ReceivingPage = () => {
     return () => { cancelled = true }
   }, [])
 
+  /* Dynamic tier dropdown options — merged profile + live Medusa
+   * categories. Falls back to DEFAULT_TIER_OPTIONS if the fetch fails
+   * so the page still works offline / mid-deploy. */
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/receiving/profile/flower", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const subs = (j?.profile?.subcategories ?? []) as Array<{ key: string; label: string }>
+        if (subs.length > 0) setTierOptions(subs.map((s) => ({ key: s.key, label: s.label })))
+      })
+      .catch(() => { /* defaults already set */ })
+    return () => { cancelled = true }
+  }, [])
+
   return (
     <Container className="flex flex-col gap-6 p-6">
       <Heading level="h1">Receiving</Heading>
@@ -1738,6 +1769,7 @@ const ReceivingPage = () => {
           fileName={extracted.fileName}
           tokens={extracted.tokens}
           tierPrices={tierPrices}
+          tierOptions={tierOptions}
           initialRows={extracted.initialRows}
           initialDraftId={extracted.draftId ?? null}
           onRestart={() => setExtracted(null)}
