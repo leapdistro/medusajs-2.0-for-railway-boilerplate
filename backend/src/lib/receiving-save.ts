@@ -64,6 +64,9 @@ export type SaveRow = {
   coaOriginalName: string | null
   thcaPercent: string | null
   totalCannabinoidsPercent: string | null
+  /** UPC barcode — only sent by profiles where fields.upc === true
+   *  (Pre-Rolls and its subcategories). Lands on variant.barcode. */
+  upc?: string | null
 }
 
 export type TierKey = "classic" | "exotic" | "super" | "snow" | "rapper"
@@ -421,6 +424,9 @@ export async function saveOneRow(
        * Optional per profile — categories without a meaningful weight
        * (drinks etc.) leave this undefined. */
       ...(v.grams !== undefined ? { weight: v.grams } : {}),
+      /* UPC → native Medusa variant.barcode field. Only set when the
+       * profile enables UPC (pre-rolls today; flower leaves it null). */
+      ...(ctx.profile.fields.upc && row.upc ? { barcode: row.upc } : {}),
       metadata: {
         tier_linked: true,
         tier_key: row.tier,

@@ -70,6 +70,10 @@ export type ProfileFields = {
   cannabinoids: boolean
   /** COA PDF upload required for compliance */
   coaRequired: boolean
+  /** UPC barcode text input — when true, receiving form shows a UPC
+   *  field per row and saves to variant.barcode. PDP shows "UPC: XXXX"
+   *  under product title. Pre-Rolls + any future subcat under it. */
+  upc: boolean
 }
 
 export type ReceivingProfile = {
@@ -126,6 +130,7 @@ export const FLOWER_PROFILE: ReceivingProfile = {
     effects: true,
     cannabinoids: true,
     coaRequired: true,
+    upc: false,
   },
   pricingModel: "tier",
   unitLabel: { singular: "QP", plural: "QPs" },
@@ -165,6 +170,9 @@ export const PREROLL_PROFILE: ReceivingProfile = {
     effects: true,
     cannabinoids: true,
     coaRequired: true,
+    /* Pre-Rolls (and future subcategories under it) get a UPC field
+     * on the receiving form + UPC display on the storefront PDP. */
+    upc: true,
   },
   /* Each row carries its own price (operator types it). No tier table. */
   pricingModel: "flat",

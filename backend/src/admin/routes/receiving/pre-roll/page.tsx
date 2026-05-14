@@ -59,6 +59,7 @@ type Row = {
   coa: CoaState
   thcaPercent: string
   totalCannabinoidsPercent: string
+  upc: string
 }
 
 const blankRow = (): Row => ({
@@ -73,6 +74,7 @@ const blankRow = (): Row => ({
   coa: { state: "idle" },
   thcaPercent: "",
   totalCannabinoidsPercent: "",
+  upc: "",
 })
 
 const PreRollReceivingPage = () => {
@@ -166,6 +168,7 @@ const PreRollReceivingPage = () => {
           coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
           thcaPercent: r.thcaPercent.trim() || null,
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
+          upc: r.upc.trim() || null,
         })),
       }
       const res = await fetch("/admin/receiving/save", {
@@ -494,25 +497,34 @@ const RowCard: React.FC<{
           </div>
         </Field>
 
-        <Field label="COA (PDF, required)">
-          {row.coa.state === "ready" ? (
-            <div className="flex items-center gap-2">
-              <Badge color="green">✓ {row.coa.originalName}</Badge>
-              <Button variant="transparent" size="small" onClick={() => onChange({ coa: { state: "idle" } })}>
-                Replace
-              </Button>
-            </div>
-          ) : row.coa.state === "uploading" ? (
-            <Text size="small" className="text-ui-fg-muted">Uploading…</Text>
-          ) : row.coa.state === "error" ? (
-            <div className="flex items-center gap-2">
-              <Text size="small" style={{ color: "#B91C1C" }}>{row.coa.message}</Text>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="COA (PDF, required)">
+            {row.coa.state === "ready" ? (
+              <div className="flex items-center gap-2">
+                <Badge color="green">✓ {row.coa.originalName}</Badge>
+                <Button variant="transparent" size="small" onClick={() => onChange({ coa: { state: "idle" } })}>
+                  Replace
+                </Button>
+              </div>
+            ) : row.coa.state === "uploading" ? (
+              <Text size="small" className="text-ui-fg-muted">Uploading…</Text>
+            ) : row.coa.state === "error" ? (
+              <div className="flex items-center gap-2">
+                <Text size="small" style={{ color: "#B91C1C" }}>{row.coa.message}</Text>
+                <input type="file" accept="application/pdf" onChange={(e) => onPickCoa(e.target.files?.[0] ?? null)} />
+              </div>
+            ) : (
               <input type="file" accept="application/pdf" onChange={(e) => onPickCoa(e.target.files?.[0] ?? null)} />
-            </div>
-          ) : (
-            <input type="file" accept="application/pdf" onChange={(e) => onPickCoa(e.target.files?.[0] ?? null)} />
-          )}
-        </Field>
+            )}
+          </Field>
+          <Field label="UPC (barcode)">
+            <Input
+              value={row.upc}
+              onChange={(e: any) => onChange({ upc: e.target.value })}
+              placeholder="e.g. 850012345678"
+            />
+          </Field>
+        </div>
       </div>
     </div>
   )
