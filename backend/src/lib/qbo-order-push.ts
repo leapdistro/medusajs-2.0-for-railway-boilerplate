@@ -54,7 +54,10 @@ export async function pushOrderToQbo(
       "id", "display_id", "currency_code", "total", "subtotal", "shipping_total",
       "metadata", "created_at",
       "customer.id", "customer.email", "customer.phone", "customer.metadata",
-      "items.id", "items.title", "items.quantity", "items.unit_price", "items.total",
+      /* Medusa v2 line items expose quantity + unit_price; line total is
+       * computed downstream (order summary). We compute qty × unit_price
+       * ourselves and stay in source-currency dollars throughout. */
+      "items.id", "items.title", "items.quantity", "items.unit_price",
       "items.variant_sku", "items.variant_id", "items.product_title",
     ],
     filters: { id: orderId },
@@ -131,17 +134,24 @@ export async function pushOrderToQbo(
       missing.push(`${item.product_title ?? item.title ?? "untitled"} (SKU ${baseSku})`)
       continue
     }
-    /* unit_price + total are in cents (Medusa convention); convert to
-     * dollars for QBO. Use the per-line total / qty to get the
-     * effective discounted unit price. */
+    /* Medusa v2 unit_price is already in source-currency dollars
+     * (e.g., USD), not cents, and reflects the discounted/effective
+     * price (Medusa's pricing engine resolves promotions to the
+     * stored value). Quantity is a plain integer. */
     const qty = Number(item.quantity ?? 0)
-    const totalCents = Number(item.total ?? 0)
-    const unitDollars = qty > 0 ? totalCents / qty / 100 : 0
+    const unitPrice = Number(item.unit_price ?? 0)
+    if (qty <= 0 || unitPrice <= 0) {
+      return {
+        ok: false,
+        code: "API_ERROR",
+        error: `Line "${item.product_title ?? item.title ?? "untitled"}" has invalid data (qty=${qty}, unit_price=${unitPrice}). Check the order in Medusa admin.`,
+      }
+    }
     lines.push({
       itemId: found.id,
       itemName: found.name,
       qty,
-      unitPrice: round2(unitDollars),
+      unitPrice: round2(unitPrice),
       description: item.product_title ?? item.title ?? undefined,
     })
   }
