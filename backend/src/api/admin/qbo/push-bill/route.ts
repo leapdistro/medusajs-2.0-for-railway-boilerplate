@@ -10,7 +10,11 @@ import {
 import { QBO_CONNECTION_MODULE } from "../../../../modules/qbo-connection"
 import { RECEIVING_HISTORY_MODULE } from "../../../../modules/receiving-history"
 
-const TIER_LABEL: Record<string, string> = {
+/* Legacy label map — only used as a fallback when line_results lacks
+ * `tierLabel` (pre-2026-05-14 receivings). New receivings carry their
+ * own subcategory display label so any profile (flower / pre-roll /
+ * future) lands with the right text on QBO Item + line descriptions. */
+const LEGACY_TIER_LABEL: Record<string, string> = {
   classic: "Classic",
   exotic: "Exotic",
   super: "Super",
@@ -94,10 +98,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     type LineResult = {
       strainName: string
       tier?: string
+      tierLabel?: string                  // subcategory display label from receiving-save
+      poolUnitLabel?: string              // multiplier-1 variant label (QP / 30 ct Box / ...)
       action: "created" | "restocked" | "failed"
       qtyQps: number
       landedPerQp: number
-      sellPrices?: { qp: number; half: number; lb: number } | null
+      sellPrices?: Record<string, number> | null
       baseSku?: string                    // size-stripped SKU, set as QBO Item.Sku
     }
     const lineResults = (record.line_results ?? []) as LineResult[]
@@ -108,15 +114,28 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const billLines = []
     for (const line of usable) {
-      const tierLabel = (line.tier && TIER_LABEL[line.tier]) || "Untiered"
+      /* tierLabel from line_results is the right value for ANY profile
+       * (flower / pre-roll / future). Fall back to LEGACY_TIER_LABEL
+       * for pre-2026-05-14 receivings that didn't persist it. */
+      const tierLabel =
+        line.tierLabel
+        ?? (line.tier && LEGACY_TIER_LABEL[line.tier])
+        ?? line.tier
+        ?? "Untiered"
+      const poolUnit = line.poolUnitLabel ?? "unit"
       const itemName = `${line.strainName} · ${tierLabel}`
+      /* Pick a per-pool-unit sell price for the Item default: prefer the
+       * multiplier-1 variant's price, falling back to the first one. */
+      const sellPriceForDefault = line.sellPrices
+        ? Object.values(line.sellPrices)[0] ?? undefined
+        : undefined
       const item = await findOrCreateItem(qbo, conn, itemName, accounts, {
         sku: line.baseSku,
         purchaseCost: line.landedPerQp,
-        salePrice: line.sellPrices?.qp,
+        salePrice: sellPriceForDefault,
         preferredVendor: { id: vendor.id, name: vendor.displayName },
-        purchaseDesc: `${line.strainName} · ${tierLabel} · QP unit (landed cost)`,
-        salesDesc: `${line.strainName} · ${tierLabel} · per QP`,
+        purchaseDesc: `${line.strainName} · ${tierLabel} · ${poolUnit} (landed cost)`,
+        salesDesc: `${line.strainName} · ${tierLabel} · per ${poolUnit}`,
         invStartDate: record.invoice_date.slice(0, 10),
       })
       billLines.push({
@@ -124,7 +143,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         itemName: item.name,
         qty: line.qtyQps,
         rate: line.landedPerQp,
-        description: `Flower · QP unit · landed cost (shipping capitalized)`,
+        description: `${line.strainName} · ${tierLabel} · per ${poolUnit} · landed cost (shipping capitalized)`,
       })
     }
 

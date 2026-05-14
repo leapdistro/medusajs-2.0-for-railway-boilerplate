@@ -188,12 +188,22 @@ export async function pushOrderToQbo(
         error: `Line "${item.product_title ?? item.title ?? "untitled"}" has invalid data (qty=${qty}, unit_price=${unitPrice}). Check the order in Medusa admin.`,
       }
     }
+    /* Description shows what the BUYER ordered in the variant they
+     * picked — e.g., "1 × LB" or "2 × 30 ct Box". The Qty/Rate columns
+     * are in pool units (variantQty × multiplier), so without this
+     * description an operator reading the invoice would see "4 QPs"
+     * without knowing the buyer ordered a single LB. */
+    const productName = item.product_title ?? item.title ?? ""
+    const variantTitle = item.title && item.title !== productName ? item.title : null
+    const description = variantTitle
+      ? `${productName} · ${variantQty} × ${variantTitle}`
+      : `${productName} · ${variantQty} × unit`
     lines.push({
       itemId: found.id,
       itemName: found.name,
       qty,
       unitPrice: round2(unitPrice),
-      description: item.product_title ?? item.title ?? undefined,
+      description,
     })
   }
   if (missing.length > 0) {

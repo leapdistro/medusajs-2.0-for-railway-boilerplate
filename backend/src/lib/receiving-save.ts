@@ -77,6 +77,14 @@ export type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: numbe
 export type SaveRowResult = {
   strainName: string
   tier: string                               // subcategory key — preserved for QBO push
+  /** Subcategory display label ("Super", "THC-A", "Hashholes", ...) —
+   *  used by QBO push for human-readable Item names + line descriptions
+   *  without each consumer needing a hardcoded label map. */
+  tierLabel?: string
+  /** Label of the multiplier-1 variant — the pool unit. "QP" for flower,
+   *  "30 ct Box" / "15 ct Box" for pre-rolls. Used by QBO push for
+   *  per-pool-unit phrasing on receiving Bill line descriptions. */
+  poolUnitLabel?: string
   action: "created" | "restocked" | "failed"
   productId?: string
   productHandle?: string
@@ -264,9 +272,28 @@ export async function saveOneRow(
     }
   }
 
+  /* Resolve display labels for the QBO push reader: subcategory label
+   * (Super / THC-A / ...) + pool-unit label (QP / 30 ct Box / ...).
+   * Best-effort — if a subcategory is missing from the profile (rare),
+   * fall back to the raw key. */
+  let tierLabel: string | undefined
+  let poolUnitLabel: string | undefined
+  try {
+    tierLabel = getSubcategory(ctx.profile, row.tier).label
+  } catch {
+    tierLabel = row.tier
+  }
+  try {
+    const variants = getVariantsForRow(ctx.profile, row.tier)
+    const poolUnit = variants.find((v) => v.multiplier === 1) ?? variants[0]
+    poolUnitLabel = poolUnit?.label
+  } catch { /* leave undefined */ }
+
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
     tier: row.tier,
+    tierLabel,
+    poolUnitLabel,
     action: "failed",
     qtyQps: totalQps,
     landedPerQp,
