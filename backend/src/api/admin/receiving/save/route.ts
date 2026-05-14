@@ -8,6 +8,7 @@ import {
   type TierKey,
   type TierPriceMap,
 } from "../../../../lib/receiving-save"
+import { getProfile, type ProfileKey } from "../../../../lib/receiving-profiles"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 import { RECEIVING_HISTORY_MODULE } from "../../../../modules/receiving-history"
 import { RECEIVING_DRAFTS_MODULE } from "../../../../modules/receiving-drafts"
@@ -52,6 +53,10 @@ type Body = {
   computedTotal?: number
   rows?: SaveRow[]
   draftId?: string | null
+  /* Receiving profile — defaults to "flower" for backward compat with
+   * the existing flower-only receiving page. Pre-roll receiving sends
+   * "pre-roll" to switch the variant/category/pricing-model logic. */
+  profileKey?: string
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
@@ -67,23 +72,37 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  /* 1. Tier prices (from mbs-settings). Hard-fail if missing — Save
-   *    button shouldn't have been enabled without them, but defend. */
-  const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const tierPrices = (await settings.getSetting("flower_tier_prices")) as TierPriceMap | null
-  if (!tierPrices) {
-    res.status(500).json({
-      ok: false,
-      error: "flower_tier_prices not configured. Run `pnpm seed:settings` or set them in MBS Settings → Tier Prices.",
-    })
+  /* 1. Resolve the receiving profile (default "flower" for backward compat). */
+  const profileKey = (body.profileKey ?? "flower") as ProfileKey
+  let profile
+  try {
+    profile = getProfile(profileKey)
+  } catch (e: any) {
+    res.status(400).json({ ok: false, error: e?.message ?? "Unknown profile" })
     return
   }
 
-  /* 2. Build save context (resolves categories/channel/location once). */
+  /* 2. Tier prices (only relevant when profile.pricingModel === "tier").
+   *    For "flat" pricing (pre-rolls), rows carry their own sellPrice
+   *    and tierPrices is unused — pass an empty map. */
+  const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
+  let tierPrices: TierPriceMap | null = null
+  if (profile.pricingModel === "tier") {
+    tierPrices = (await settings.getSetting("flower_tier_prices")) as TierPriceMap | null
+    if (!tierPrices) {
+      res.status(500).json({
+        ok: false,
+        error: "flower_tier_prices not configured. Run `pnpm seed:settings` or set them in MBS Settings → Tier Prices.",
+      })
+      return
+    }
+  }
+
+  /* 3. Build save context (resolves categories/channel/location once). */
   const shipPerLb = computeShipPerLb(body.rows, body.shippingTotal ?? 0)
   let ctx
   try {
-    ctx = await buildSaveContext(req.scope, shipPerLb, tierPrices)
+    ctx = await buildSaveContext(req.scope, shipPerLb, tierPrices ?? ({} as TierPriceMap), profile)
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message ?? "Save context failed" })
     return

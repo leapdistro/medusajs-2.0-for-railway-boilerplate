@@ -766,8 +766,13 @@ const ReviewView: React.FC<{
         draftId: draftId ?? undefined,
         rows: rows.map((r) => ({
           strainName: r.strainName.trim(),
-          quantityLb: r.quantityLb,
-          unitPricePerLb: r.unitPricePerLb,
+          /* Serialize to the backend's canonical SaveRow shape (Slice R3
+           * of receiving generalization, 2026-05-14). Flower ReviewRow
+           * stores values as `quantityLb`/`unitPricePerLb` locally;
+           * backend treats them as input-unit-quantity / input-unit-price
+           * which works the same for lb (flower) and box (pre-roll). */
+          quantity: r.quantityLb,
+          unitPrice: r.unitPricePerLb,
           tier: r.tier,
           strainType: r.strainType,
           bestFor: r.bestFor,

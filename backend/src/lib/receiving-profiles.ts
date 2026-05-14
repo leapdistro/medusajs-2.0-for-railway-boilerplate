@@ -81,6 +81,14 @@ export type ReceivingProfile = {
   /** UI labels for the pool unit ("QP"/"QPs" for flower, "Box"/"Boxes" for pre-rolls). Used in
    *  receiving-history table headers + admin widgets. */
   unitLabel: { singular: string; plural: string }
+  /** UI label for the operator's input quantity unit — what they type per row.
+   *  Flower: "lb" (operator buys by the pound, system multiplies to QPs).
+   *  Pre-rolls: "box" (1 box of input = 1 box of pool). */
+  inputUnitLabel: { singular: string; plural: string }
+  /** Multiplier from the operator-typed input unit → pool unit. Flower: 4
+   *  (1 lb = 4 QPs). Pre-rolls: 1 (1 box = 1 box). Drives both the pool
+   *  stocked-quantity write and the landed-cost-per-pool-unit math. */
+  inputToPoolMultiplier: number
 }
 
 /* ─── Flower ─── */
@@ -114,6 +122,8 @@ export const FLOWER_PROFILE: ReceivingProfile = {
   },
   pricingModel: "tier",
   unitLabel: { singular: "QP", plural: "QPs" },
+  inputUnitLabel: { singular: "lb", plural: "lbs" },
+  inputToPoolMultiplier: 4,
 }
 
 /* ─── Pre-Rolls ─── */
@@ -143,6 +153,8 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   /* Each row carries its own price (operator types it). No tier table. */
   pricingModel: "flat",
   unitLabel: { singular: "Box", plural: "Boxes" },
+  inputUnitLabel: { singular: "box", plural: "boxes" },
+  inputToPoolMultiplier: 1,
 }
 
 /* ─── Registry ─── */

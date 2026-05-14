@@ -36,11 +36,27 @@ import { FLOWER_PROFILE, getSubcategory, getVariantDef, type ReceivingProfile } 
 
 /* ---- Public types — match what the admin page sends ---- */
 
+/**
+ * One row in the receiving review grid → one product save attempt.
+ *
+ * Field naming notes (Slice R3/R4, 2026-05-14):
+ *   - `quantity` is in the profile's INPUT unit (lb for flower, box for pre-roll).
+ *     Multiplied by profile.inputToPoolMultiplier to get pool units (QPs for
+ *     flower, boxes for pre-roll).
+ *   - `unitPrice` is cost per input unit ($/lb for flower, $/box for pre-roll).
+ *   - `sellPrice` only used when profile.pricingModel === "flat" (pre-rolls).
+ *     For "tier" pricing (flower), variants get prices from the tier table.
+ *   - `tier` is a misleading name for non-flower profiles — generically it's
+ *     the subcategory key (classic/exotic/super/... for flower, thc-a/hashholes
+ *     for pre-rolls). Kept as `tier` for now to avoid a huge rename cascade;
+ *     internally treated as a subcategory key.
+ */
 export type SaveRow = {
   strainName: string
-  quantityLb: number
-  unitPricePerLb: number  // raw cost per lb from invoice (not landed)
-  tier: TierKey
+  quantity: number
+  unitPrice: number
+  sellPrice?: number
+  tier: string
   strainType: "Indica" | "Sativa" | "Hybrid"
   bestFor: "day" | "evening" | "night"
   effects: string[]
@@ -57,17 +73,17 @@ export type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: numbe
 
 export type SaveRowResult = {
   strainName: string
-  tier: TierKey                              // preserved so QBO push can build tier-aware item names
+  tier: string                               // subcategory key — preserved for QBO push
   action: "created" | "restocked" | "failed"
   productId?: string
   productHandle?: string
   inventoryItemId?: string
-  /** Base SKU (size-stripped) for this strain+tier. Used as QBO Item SKU.
-   *  Variant SKUs append `-qp` / `-half` / `-lb`. */
+  /** Base SKU (size-stripped) for this strain+subcategory. Used as QBO Item SKU.
+   *  Variant SKUs append the size suffix. */
   baseSku?: string
-  qtyQps: number
-  landedPerQp: number
-  sellPrices: { qp: number; half: number; lb: number } | null
+  qtyQps: number                             // pool units (QPs for flower, boxes for pre-roll). Kept name for backward compat with the order push reader.
+  landedPerQp: number                        // landed cost per pool unit. Kept name for backward compat.
+  sellPrices: Record<string, number> | null  // keyed by variant sizeKey; null if pricing unavailable
   error?: string
 }
 
@@ -205,10 +221,45 @@ export async function saveOneRow(
    * the create with a duplicate-handle error and the operator can
    * rename. */
   const handle = strainSlug
-  const totalQps = Math.round(row.quantityLb * 4)
-  const landedPerLb = (row.unitPricePerLb || 0) + ctx.shipPerLb
-  const landedPerQp = landedPerLb / 4
-  const tp = ctx.tierPrices[row.tier]
+  /* Profile-aware pool math (Slice R3/R4, 2026-05-14):
+   *   - row.quantity is in INPUT units (lb for flower, boxes for pre-roll).
+   *   - ctx.shipPerLb is now profile-aware (shipping ÷ total input units),
+   *     keeping the legacy field name for backward compat.
+   *   - pool unit = INPUT × profile.inputToPoolMultiplier (4 for flower,
+   *     1 for pre-rolls). The fields qtyQps/landedPerQp keep their names
+   *     for backward compat with the QBO order push reader. */
+  const inputToPool = ctx.profile.inputToPoolMultiplier
+  const totalQps = Math.round((row.quantity || 0) * inputToPool)
+  const landedPerInputUnit = (row.unitPrice || 0) + ctx.shipPerLb
+  const landedPerQp = inputToPool > 0 ? landedPerInputUnit / inputToPool : landedPerInputUnit
+
+  /* Variant prices: branch by profile.pricingModel. "tier" looks up in
+   * ctx.tierPrices[subcategoryKey]. "flat" applies row.sellPrice to the
+   * single variant. */
+  let sellPrices: Record<string, number> | null = null
+  let priceError: string | null = null
+  if (ctx.profile.pricingModel === "tier") {
+    const tp = ctx.tierPrices[row.tier as TierKey]
+    if (!tp) {
+      priceError = `No tier price configured for "${row.tier}".`
+    } else {
+      sellPrices = { qp: tp.qp, half: tp.half, lb: tp.lb }
+    }
+  } else {
+    const sp = row.sellPrice
+    if (!sp || sp <= 0) {
+      priceError = `Sell price required for ${ctx.profile.displayName} row (per ${ctx.profile.inputUnitLabel.singular}).`
+    } else {
+      sellPrices = {}
+      for (const v of ctx.profile.variants) {
+        /* Single-variant categories (pre-rolls): all variants get the
+         * same operator-typed sell price. Multi-variant flat-pricing
+         * categories aren't supported yet — they'd need per-variant
+         * price columns in the review grid. */
+        sellPrices[v.sizeKey] = sp
+      }
+    }
+  }
 
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
@@ -216,15 +267,18 @@ export async function saveOneRow(
     action: "failed",
     qtyQps: totalQps,
     landedPerQp,
-    sellPrices: tp ? { qp: tp.qp, half: tp.half, lb: tp.lb } : null,
+    sellPrices,
   }
 
-  if (!tp) {
-    return { ...baseResult, error: `No tier price configured for "${row.tier}".` }
+  if (priceError) {
+    return { ...baseResult, error: priceError }
   }
   if (!row.coaUrl) {
     return { ...baseResult, error: "COA URL is required to save (compliance)." }
   }
+  /* Build a per-variant price map for the create path that supports
+   * non-flower variant keys ("30pk" for pre-rolls). */
+  const tp = sellPrices ?? {}
 
   try {
     const query = container.resolve(ContainerRegistrationKeys.QUERY)
@@ -357,7 +411,7 @@ export async function saveOneRow(
       title: v.label,
       sku: proposedSkus[idx],
       options: { Size: v.label },
-      prices: [{ amount: (tp as any)[v.sizeKey], currency_code: "usd" }],
+      prices: [{ amount: tp[v.sizeKey] ?? 0, currency_code: "usd" }],
       manage_inventory: true,
       /* Weight in grams — required for the storefront margin calc to
        * render (cost/gram math). Also feeds ShipStation when wired.
@@ -440,9 +494,11 @@ export async function saveOneRow(
   }
 }
 
-/* Helper: shipping spread — same calc as the admin page. */
-export function computeShipPerLb(rows: { quantityLb: number }[], shippingTotal: number): number {
-  const totalLb = rows.reduce((s, r) => s + (r.quantityLb || 0), 0)
-  if (totalLb <= 0) return 0
-  return shippingTotal / totalLb
+/* Helper: shipping spread across input units (lb for flower, box for
+ * pre-roll). Kept name `computeShipPerLb` for backward-compat with the
+ * save route; semantically it's now "ship per input unit." */
+export function computeShipPerLb(rows: { quantity: number }[], shippingTotal: number): number {
+  const total = rows.reduce((s, r) => s + (r.quantity || 0), 0)
+  if (total <= 0) return 0
+  return shippingTotal / total
 }
