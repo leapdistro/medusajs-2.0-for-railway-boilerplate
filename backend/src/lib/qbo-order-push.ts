@@ -63,6 +63,12 @@ export async function pushOrderToQbo(
       "items.id", "items.title", "items.quantity", "items.raw_quantity",
       "items.unit_price", "items.detail.quantity",
       "items.variant_sku", "items.variant_id", "items.product_title",
+      /* variant.inventory_items[].required_quantity is the pool-unit
+       * multiplier per variant (QP=1, Half=2, LB=4 for flower). Used
+       * to convert order-line variant count → pool-unit count for the
+       * QBO invoice so QBO inventory math matches Medusa. */
+      "items.variant.metadata",
+      "items.variant.inventory_items.required_quantity",
     ],
     filters: { id: orderId },
   })
@@ -146,13 +152,24 @@ export async function pushOrderToQbo(
      * source). Cancel-fulfillment workflows can zero out `quantity`
      * while leaving raw_quantity intact. */
     const rawQty = item.raw_quantity?.value ?? item.raw_quantity
-    const qty = Number(
+    const variantQty = Number(
       (item.quantity != null && Number(item.quantity) > 0 ? item.quantity : null)
         ?? (item.detail?.quantity ?? null)
         ?? rawQty
         ?? 0,
     )
-    const unitPrice = Number(item.unit_price ?? 0)
+    const variantUnitPrice = Number(item.unit_price ?? 0)
+
+    /* Convert variant units → pool units so QBO inventory math
+     * matches Medusa. variant.inventory_items[0].required_quantity
+     * is the multiplier: QP=1, Half=2, LB=4 for flower. Defensive
+     * fallback to 1 if the relation isn't loaded. The fix preserves
+     * the line total: qty × unit = (qty × multiplier) × (unit / multiplier). */
+    const reqQtyRaw = item.variant?.inventory_items?.[0]?.required_quantity
+    const multiplier = Number(reqQtyRaw ?? 1) || 1
+    const qty = variantQty * multiplier
+    const unitPrice = multiplier > 1 ? variantUnitPrice / multiplier : variantUnitPrice
+
     if (qty <= 0 || unitPrice <= 0) {
       /* Surface the raw item shape so we can diagnose v2 query quirks
        * if the multi-source fallback still misses. */
