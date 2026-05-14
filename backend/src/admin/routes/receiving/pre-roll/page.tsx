@@ -17,9 +17,12 @@ import { useCallback, useMemo, useState } from "react"
  * variant per strain with required_quantity=1 (1 box = 1 pool unit).
  */
 
+/* Mirrors PREROLL_PROFILE.subcategories[].variants in receiving-profiles.ts.
+ * Kept here as a local copy so the UI can show subcategory-specific
+ * box-count hints next to quantity/cost/price labels. */
 const SUBCATEGORIES = [
-  { key: "thc-a", label: "THC-A" },
-  { key: "hashholes", label: "Hashholes" },
+  { key: "thc-a",     label: "THC-A",     variantLabel: "30 ct Box" },
+  { key: "hashholes", label: "Hashholes", variantLabel: "15 ct Box" },
 ] as const
 
 const STRAIN_TYPES = ["Indica", "Sativa", "Hybrid"] as const
@@ -375,6 +378,8 @@ const RowCard: React.FC<{
   onDelete?: () => void
   onPickCoa: (file: File | null) => void
 }> = ({ row, idx, onChange, onDelete, onPickCoa }) => {
+  const subcatMeta = SUBCATEGORIES.find((s) => s.key === row.subcategory)
+  const boxHint = subcatMeta ? ` — ${subcatMeta.variantLabel}` : ""
   const toggleEffect = (effect: string) => {
     onChange({
       effects: row.effects.includes(effect)
@@ -426,14 +431,14 @@ const RowCard: React.FC<{
             </Select.Content>
           </Select>
         </Field>
-        <Field label="Quantity (boxes)">
+        <Field label={`Quantity (boxes${boxHint})`}>
           <Input
             type="number"
             value={row.quantityBoxes || ""}
             onChange={(e: any) => onChange({ quantityBoxes: Number(e.target.value) || 0 })}
           />
         </Field>
-        <Field label="Cost / Box">
+        <Field label={`Cost / Box${boxHint}`}>
           <Input
             type="number"
             value={row.costPerBox || ""}
@@ -441,7 +446,7 @@ const RowCard: React.FC<{
           />
         </Field>
 
-        <Field label="Sell Price / Box">
+        <Field label={`Sell Price / Box${boxHint}`}>
           <Input
             type="number"
             value={row.sellPricePerBox || ""}

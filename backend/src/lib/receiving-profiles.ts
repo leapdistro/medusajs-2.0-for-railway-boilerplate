@@ -42,6 +42,13 @@ export type SubcategoryDef = {
   medusaName: string
   /** Human label in admin UI. */
   label: string
+  /** Optional per-subcategory variant override. When set, overrides
+   *  profile.variants for products in this subcategory. Used when
+   *  subcategories diverge on packaging (e.g., Pre-Rolls THC-A is
+   *  30 ct boxes while Hashholes is 15 ct boxes). When unset, falls
+   *  back to profile.variants (flower's QP/Half/LB are shared across
+   *  all tier subcategories). */
+  variants?: VariantDef[]
 }
 
 /** Where the variant selling price comes from. */
@@ -133,16 +140,25 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   displayName: "Pre-Rolls",
   parentCategoryName: "Pre-Rolls",
   subcategories: [
-    /* THC-A vs Hashholes — matches seed-preroll-categories.ts. */
-    { key: "thc-a",     medusaName: "THC-A",     label: "THC-A" },
-    { key: "hashholes", medusaName: "Hashholes", label: "Hashholes" },
+    /* Per-subcategory variants: THC-A boxes hold 30 individual pre-rolls;
+     * Hashholes boxes hold 15 tubes (2 hashholes per tube). Pool counts
+     * in BOXES for both — operator orders + sells boxes, multiplier=1. */
+    {
+      key: "thc-a",
+      medusaName: "THC-A",
+      label: "THC-A",
+      variants: [{ sizeKey: "30pk", label: "30 ct Box", multiplier: 1 }],
+    },
+    {
+      key: "hashholes",
+      medusaName: "Hashholes",
+      label: "Hashholes",
+      variants: [{ sizeKey: "15pk", label: "15 ct Box", multiplier: 1 }],
+    },
   ],
-  variants: [
-    /* Only one variant: a 30 ct box. Pool counts in boxes (one box per
-     * unit, no per-pre-roll math). multiplier=1 keeps the QBO push
-     * conversion a no-op. */
-    { sizeKey: "30pk", label: "30 ct Box", multiplier: 1 },
-  ],
+  /* Empty fallback — every Pre-Roll subcategory must declare its own
+   * variants. Receiving-save will throw if it tries to use this. */
+  variants: [],
   fields: {
     strainType: true,
     bestFor: true,
@@ -184,4 +200,20 @@ export function getVariantDef(profile: ReceivingProfile, sizeKey: string): Varia
   const v = profile.variants.find((vd) => vd.sizeKey === sizeKey)
   if (!v) throw new Error(`Variant "${sizeKey}" not configured on profile "${profile.key}"`)
   return v
+}
+
+/** Resolve the active variants for a row: subcategory override (if any)
+ *  takes precedence over profile.variants. Throws if neither is set. */
+export function getVariantsForRow(
+  profile: ReceivingProfile,
+  subcategoryKey: string,
+): VariantDef[] {
+  const sub = getSubcategory(profile, subcategoryKey)
+  const variants = sub.variants && sub.variants.length > 0 ? sub.variants : profile.variants
+  if (variants.length === 0) {
+    throw new Error(
+      `No variants configured for "${profile.key}" subcategory "${subcategoryKey}". Set on the subcategory or profile.`,
+    )
+  }
+  return variants
 }

@@ -6,7 +6,7 @@ import {
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { MBS_ATTRIBUTES_MODULE } from "../modules/mbs-attributes"
 import { baseSku, generateSku } from "./sku"
-import { FLOWER_PROFILE, getSubcategory, getVariantDef, type ReceivingProfile } from "./receiving-profiles"
+import { FLOWER_PROFILE, getSubcategory, getVariantDef, getVariantsForRow, type ReceivingProfile } from "./receiving-profiles"
 
 /**
  * Slice 2C — receiving save orchestrator.
@@ -251,7 +251,7 @@ export async function saveOneRow(
       priceError = `Sell price required for ${ctx.profile.displayName} row (per ${ctx.profile.inputUnitLabel.singular}).`
     } else {
       sellPrices = {}
-      for (const v of ctx.profile.variants) {
+      for (const v of getVariantsForRow(ctx.profile, row.tier)) {
         /* Single-variant categories (pre-rolls): all variants get the
          * same operator-typed sell price. Multi-variant flat-pricing
          * categories aren't supported yet — they'd need per-variant
@@ -373,7 +373,10 @@ export async function saveOneRow(
      * product is a real collision (e.g. "Gold Rose Runtz" abbrevs the same
      * as "Gold Rose Runner"). Fail this row with a descriptive message;
      * the operator renames the strain and re-saves. */
-    const variantDefs = ctx.profile.variants
+    /* Per-subcategory variant resolution — Pre-Rolls THC-A uses
+     * 30 ct boxes while Hashholes uses 15 ct boxes. Flower's tiers
+     * all share the QP/Half/LB variants via profile.variants fallback. */
+    const variantDefs = getVariantsForRow(ctx.profile, row.tier)
     const skuParts = {
       category: ctx.profile.parentCategoryName,
       subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
