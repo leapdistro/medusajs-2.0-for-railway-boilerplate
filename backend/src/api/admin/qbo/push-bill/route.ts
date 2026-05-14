@@ -101,10 +101,16 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       tierLabel?: string                  // subcategory display label from receiving-save
       poolUnitLabel?: string              // multiplier-1 variant label (QP / 30 ct Box / ...)
       action: "created" | "restocked" | "failed"
-      qtyQps: number
-      landedPerQp: number
+      qtyQps: number                      // POOL units (QPs for flower, boxes for pre-roll)
+      landedPerQp: number                 // landed cost per pool unit
       sellPrices?: Record<string, number> | null
       baseSku?: string                    // size-stripped SKU, set as QBO Item.Sku
+      /* Input-unit fields drive QBO Item UoM: flower tracked in lb,
+       * pre-rolls tracked in box. inputToPoolMultiplier=4 for flower
+       * (4 QPs per lb) and 1 for pre-rolls. */
+      inputToPoolMultiplier?: number
+      inputUnitLabel?: string             // "lb" / "box"
+      inputUnitSellPrice?: number         // per-lb sell price for flower; per-box for pre-rolls
     }
     const lineResults = (record.line_results ?? []) as LineResult[]
     const usable = lineResults.filter((l) => l.action !== "failed" && l.qtyQps > 0 && l.landedPerQp > 0)
@@ -122,28 +128,42 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         ?? (line.tier && LEGACY_TIER_LABEL[line.tier])
         ?? line.tier
         ?? "Untiered"
-      const poolUnit = line.poolUnitLabel ?? "unit"
       const itemName = `${line.strainName} · ${tierLabel}`
-      /* Pick a per-pool-unit sell price for the Item default: prefer the
-       * multiplier-1 variant's price, falling back to the first one. */
-      const sellPriceForDefault = line.sellPrices
-        ? Object.values(line.sellPrices)[0] ?? undefined
-        : undefined
+
+      /* QBO Item is tracked in INPUT units (lb for flower, box for
+       * pre-rolls). Convert pool-unit qty/rate → input-unit before
+       * pushing. inputToPoolMultiplier=1 (pre-rolls + legacy receivings
+       * without the field) is a no-op. */
+      const multiplier = line.inputToPoolMultiplier && line.inputToPoolMultiplier > 0
+        ? line.inputToPoolMultiplier
+        : 1
+      const inputUnit = line.inputUnitLabel ?? line.poolUnitLabel ?? "unit"
+      const billQty = line.qtyQps / multiplier
+      const billRate = line.landedPerQp * multiplier
+
+      /* Item.UnitPrice default = per-input-unit sell price (LB price for
+       * flower, per-box for pre-rolls). Falls back to first sellPrice
+       * value when missing (legacy data). */
+      const sellPriceForDefault =
+        line.inputUnitSellPrice
+        ?? (line.sellPrices ? Object.values(line.sellPrices)[0] : undefined)
+        ?? undefined
+
       const item = await findOrCreateItem(qbo, conn, itemName, accounts, {
         sku: line.baseSku,
-        purchaseCost: line.landedPerQp,
+        purchaseCost: billRate,
         salePrice: sellPriceForDefault,
         preferredVendor: { id: vendor.id, name: vendor.displayName },
-        purchaseDesc: `${line.strainName} · ${tierLabel} · ${poolUnit} (landed cost)`,
-        salesDesc: `${line.strainName} · ${tierLabel} · per ${poolUnit}`,
+        purchaseDesc: `${line.strainName} · ${tierLabel} · ${inputUnit} (landed cost)`,
+        salesDesc: `${line.strainName} · ${tierLabel} · per ${inputUnit}`,
         invStartDate: record.invoice_date.slice(0, 10),
       })
       billLines.push({
         itemId: item.id,
         itemName: item.name,
-        qty: line.qtyQps,
-        rate: line.landedPerQp,
-        description: `${line.strainName} · ${tierLabel} · per ${poolUnit} · landed cost (shipping capitalized)`,
+        qty: billQty,
+        rate: billRate,
+        description: `${line.strainName} · ${tierLabel} · per ${inputUnit} · landed cost (shipping capitalized)`,
       })
     }
 

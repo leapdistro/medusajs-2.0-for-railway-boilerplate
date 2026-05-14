@@ -95,6 +95,16 @@ export type SaveRowResult = {
   qtyQps: number                             // pool units (QPs for flower, boxes for pre-roll). Kept name for backward compat with the order push reader.
   landedPerQp: number                        // landed cost per pool unit. Kept name for backward compat.
   sellPrices: Record<string, number> | null  // keyed by variant sizeKey; null if pricing unavailable
+  /** Pool units per operator-input unit. Flower=4 (4 QPs per lb received),
+   *  Pre-Rolls=1 (1 box in = 1 box pool). QBO Item is tracked in INPUT
+   *  units (lb for flower, box for pre-rolls), so push uses these to
+   *  convert pool numbers back to operator-meaningful units on Bills. */
+  inputToPoolMultiplier?: number
+  /** Singular input-unit label ("lb", "box") for descriptions. */
+  inputUnitLabel?: string
+  /** Sell price per INPUT unit for the QBO Item's UnitPrice default.
+   *  For flower: the LB-variant price. For pre-rolls: the only variant. */
+  inputUnitSellPrice?: number
   error?: string
 }
 
@@ -273,11 +283,18 @@ export async function saveOneRow(
   }
 
   /* Resolve display labels for the QBO push reader: subcategory label
-   * (Super / THC-A / ...) + pool-unit label (QP / 30 ct Box / ...).
+   * (Super / THC-A / ...) + pool-unit label (QP / 30 ct Box / ...) +
+   * input-unit metadata for LB-tracking QBO Items.
    * Best-effort — if a subcategory is missing from the profile (rare),
    * fall back to the raw key. */
   let tierLabel: string | undefined
   let poolUnitLabel: string | undefined
+  /* Input-unit fields drive the QBO Item's UoM. For flower: 1 lb input
+   * = 4 QPs pool, so QBO Item tracked in lb. For pre-rolls: 1 box in =
+   * 1 box pool, no conversion needed. */
+  const inputToPoolMultiplier = ctx.profile.inputToPoolMultiplier
+  const inputUnitLabel = ctx.profile.inputUnitLabel?.singular
+  let inputUnitSellPrice: number | undefined
   try {
     tierLabel = getSubcategory(ctx.profile, row.tier).label
   } catch {
@@ -287,7 +304,14 @@ export async function saveOneRow(
     const variants = getVariantsForRow(ctx.profile, row.tier)
     const poolUnit = variants.find((v) => v.multiplier === 1) ?? variants[0]
     poolUnitLabel = poolUnit?.label
-  } catch { /* leave undefined */ }
+    /* Find the variant whose multiplier matches inputToPoolMultiplier
+     * (LB for flower, only-variant for pre-rolls) — its sellPrice is
+     * what QBO's Item.UnitPrice should default to. */
+    const inputVariant = variants.find((v) => v.multiplier === inputToPoolMultiplier) ?? poolUnit
+    if (inputVariant && sellPrices) {
+      inputUnitSellPrice = sellPrices[inputVariant.sizeKey]
+    }
+  } catch { /* leave optional fields undefined */ }
 
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
@@ -298,6 +322,9 @@ export async function saveOneRow(
     qtyQps: totalQps,
     landedPerQp,
     sellPrices,
+    inputToPoolMultiplier,
+    inputUnitLabel,
+    inputUnitSellPrice,
   }
 
   if (priceError) {

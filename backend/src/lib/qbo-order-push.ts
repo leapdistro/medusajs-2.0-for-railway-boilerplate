@@ -66,9 +66,17 @@ export async function pushOrderToQbo(
       /* variant.inventory_items[].required_quantity is the pool-unit
        * multiplier per variant (QP=1, Half=2, LB=4 for flower). Used
        * to convert order-line variant count → pool-unit count for the
-       * QBO invoice so QBO inventory math matches Medusa. */
+       * QBO invoice so QBO inventory math matches Medusa.
+       *
+       * variant.product.variants.* lets us walk ALL of the product's
+       * variants (not just the one on this order line) so we can find
+       * the input-unit multiplier (max required_quantity across the
+       * product = LB for flower since LB.required_quantity=4). */
       "items.variant.metadata",
       "items.variant.inventory_items.required_quantity",
+      "items.variant.product.id",
+      "items.variant.product.variants.id",
+      "items.variant.product.variants.inventory_items.required_quantity",
     ],
     filters: { id: orderId },
   })
@@ -132,6 +140,11 @@ export async function pushOrderToQbo(
    *    can push a receiving (or manually create the QBO item) first. */
   const lines = []
   const missing: string[] = []
+  /* Per-product cache of inputToPoolMultiplier (= max
+   * required_quantity across the product's variants). Lazy-computed on
+   * first line that references the product. Single-variant pre-rolls
+   * resolve to 1 → conversions are no-ops. */
+  const inputToPoolByProduct = new Map<string, number>()
   for (const item of order.items ?? []) {
     const vSku = item.variant_sku as string | null
     if (!vSku) {
@@ -160,15 +173,54 @@ export async function pushOrderToQbo(
     )
     const variantUnitPrice = Number(item.unit_price ?? 0)
 
-    /* Convert variant units → pool units so QBO inventory math
-     * matches Medusa. variant.inventory_items[0].required_quantity
-     * is the multiplier: QP=1, Half=2, LB=4 for flower. Defensive
-     * fallback to 1 if the relation isn't loaded. The fix preserves
-     * the line total: qty × unit = (qty × multiplier) × (unit / multiplier). */
+    /* Convert variant units → QBO Item's input unit (lb for flower,
+     * box for pre-rolls).
+     *
+     * Two multipliers in play:
+     *   variantToPool = THIS variant's required_quantity (1/2/4 for
+     *                   flower QP/Half/LB; 1 for pre-roll box).
+     *   inputToPool   = max required_quantity across all of this
+     *                   product's variants (4 for flower since LB
+     *                   variant has required_quantity=4; 1 for
+     *                   pre-rolls since there's a single variant).
+     *
+     * QBO Qty = variantQty × variantToPool / inputToPool
+     *   1 LB     = 1 × 4 / 4 = 1.0  lb
+     *   1 Half   = 1 × 2 / 4 = 0.5  lb
+     *   1 QP     = 1 × 1 / 4 = 0.25 lb
+     *   1 30ct Box = 1 × 1 / 1 = 1.0 box
+     *
+     * QBO Rate = variantUnitPrice × inputToPool / variantToPool
+     *   1 LB @ $500   → Rate = 500 × 4/4 = $500/lb
+     *   1 Half @ $300 → Rate = 300 × 4/2 = $600/lb (volume premium)
+     *   1 QP @ $200   → Rate = 200 × 4/1 = $800/lb (more premium)
+     * Line total = qty × rate is unchanged (math preserved per-line).
+     */
     const reqQtyRaw = item.variant?.inventory_items?.[0]?.required_quantity
-    const multiplier = Number(reqQtyRaw ?? 1) || 1
-    const qty = variantQty * multiplier
-    const unitPrice = multiplier > 1 ? variantUnitPrice / multiplier : variantUnitPrice
+    const variantToPool = Number(reqQtyRaw ?? 1) || 1
+    /* inputToPool = max required_quantity across all variants of this
+     * product. Cached per-product via a small map so we don't recompute
+     * for every line. */
+    const product = (item.variant as any)?.product
+    const productKey = String(product?.id ?? item.product_title ?? "")
+    if (!inputToPoolByProduct.has(productKey)) {
+      /* Walk ALL of the product's variants — not just the one on this
+       * line — so we find the LB variant's required_quantity=4 even
+       * for orders that only include a QP variant. Falls back to
+       * variantToPool if the product relation didn't load (shouldn't
+       * happen with the graph query above, but defensive). */
+      const productVariants = (product?.variants ?? []) as Array<{
+        inventory_items?: Array<{ required_quantity?: number }>
+      }>
+      const allReqQtys = productVariants
+        .flatMap((v) => (v.inventory_items ?? []).map((ii) => Number(ii?.required_quantity ?? 1)))
+        .filter((n) => Number.isFinite(n) && n > 0)
+      const max = allReqQtys.length > 0 ? Math.max(...allReqQtys) : variantToPool
+      inputToPoolByProduct.set(productKey, max)
+    }
+    const inputToPool = inputToPoolByProduct.get(productKey) ?? 1
+    const qty = (variantQty * variantToPool) / inputToPool
+    const unitPrice = (variantUnitPrice * inputToPool) / variantToPool
 
     if (qty <= 0 || unitPrice <= 0) {
       /* Surface the raw item shape so we can diagnose v2 query quirks
