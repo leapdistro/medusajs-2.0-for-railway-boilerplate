@@ -133,7 +133,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         ?? (line.tier && LEGACY_TIER_LABEL[line.tier])
         ?? line.tier
         ?? "Untiered"
-      const itemName = `${line.strainName} · ${tierLabel}`
+      /* Primary item name: clean strain name. Fallback to suffixed
+       * "Strain · Subcategory" only if QBO rejects with a duplicate-name
+       * error (same strain already exists in a DIFFERENT category).
+       * Category is set via ParentRef so the operator sees
+       * "Flower:Rapper:Wedding Cake" instead of redundant
+       * "Flower:Rapper:Wedding Cake · Rapper". */
+      const primaryName = line.strainName
+      const fallbackName = `${line.strainName} · ${tierLabel}`
 
       /* QBO Item is tracked in INPUT units (lb for flower, box for
        * pre-rolls). Convert pool-unit qty/rate → input-unit before
@@ -166,13 +173,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         }
       }
 
-      const item = await findOrCreateItem(qbo, conn, itemName, accounts, {
+      const item = await findOrCreateItem(qbo, conn, primaryName, accounts, {
+        fallbackName,
         sku: line.baseSku,
         purchaseCost: billRate,
         salePrice: sellPriceForDefault,
         preferredVendor: { id: vendor.id, name: vendor.displayName },
-        purchaseDesc: `${line.strainName} · ${tierLabel} · ${inputUnit} (landed cost)`,
-        salesDesc: `${line.strainName} · ${tierLabel} · per ${inputUnit}`,
+        purchaseDesc: `${line.strainName} · ${inputUnit} (landed cost)`,
+        salesDesc: `${line.strainName} · per ${inputUnit}`,
         invStartDate: record.invoice_date.slice(0, 10),
         parentCategoryId,
       })

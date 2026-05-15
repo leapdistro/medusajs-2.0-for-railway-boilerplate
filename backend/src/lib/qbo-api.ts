@@ -223,6 +223,14 @@ export async function findOrCreateItem(
   itemName: string,
   accounts: { inventoryAsset: AccountRef; incomeAccount: AccountRef; cogsAccount: AccountRef },
   defaults?: {
+    /** Disambiguated name to retry with if QBO rejects `itemName` as
+     *  a duplicate. Used to keep clean strain-only names where possible
+     *  ("Wedding Cake") and only add a tier suffix ("Wedding Cake · Rapper")
+     *  when an item with the same strain exists in a different category.
+     *  When parentCategoryId is set, find-phase also scopes to that
+     *  category so an existing same-named item in a different category
+     *  doesn't get incorrectly returned. */
+    fallbackName?: string
     sku?: string                        // QBO Item SKU (matches Medusa base SKU for cross-ref)
     purchaseCost?: number               // landed cost / QP (Cost field in QBO UI)
     salePrice?: number                  // selling price (Sales Price/Rate in QBO UI)
@@ -243,7 +251,15 @@ export async function findOrCreateItem(
   const safe = itemName.replace(/'/g, "''")
   const query = `select * from Item where Name = '${safe}'`
   const found = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
-  const existing = found?.QueryResponse?.Item?.[0]
+  const candidates = (found?.QueryResponse?.Item ?? []) as any[]
+  /* When parentCategoryId is set (Items mapped to a QBO Category), only
+   * accept an existing item that lives under THAT category — otherwise
+   * a "Wedding Cake" in a different tier would be returned incorrectly.
+   * Without a parent constraint, accept any same-named item (legacy
+   * behavior). */
+  const existing = defaults?.parentCategoryId
+    ? candidates.find((c) => String(c?.ParentRef?.value ?? "") === defaults.parentCategoryId)
+    : candidates[0]
   if (existing) {
     /* If the caller wants an earlier InvStartDate than the item already
      * has (e.g., a past-dated invoice for an item created today), push
@@ -313,7 +329,25 @@ export async function findOrCreateItem(
   if (defaults?.purchaseDesc) body.PurchaseDesc = defaults.purchaseDesc
   if (defaults?.salesDesc) body.Description = defaults.salesDesc
 
-  const created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
+  let created
+  try {
+    created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
+  } catch (e: any) {
+    /* QBO rejects duplicate Item.Name globally (error code 6240 or
+     * generic "Duplicate Name Exists Error"). If the caller supplied a
+     * fallbackName (disambiguated form like "Wedding Cake · Rapper"),
+     * retry once with that name. This lets us TRY the clean strain
+     * name first and only fall back to the suffixed form when an item
+     * with the same strain exists in a different category. */
+    const msg = String(e?.message ?? "")
+    const isDuplicate = /duplicate name/i.test(msg) || /6240/.test(msg)
+    if (isDuplicate && defaults?.fallbackName && defaults.fallbackName !== itemName) {
+      body.Name = defaults.fallbackName
+      created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
+    } else {
+      throw e
+    }
+  }
   const item = created?.Item
   if (!item?.Id) throw new Error(`Item create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
   return { id: String(item.Id), name: item.Name, created: true }
