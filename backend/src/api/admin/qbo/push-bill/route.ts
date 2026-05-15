@@ -6,6 +6,7 @@ import {
   findOrCreateItem,
   findOrCreateVendor,
   getDefaultAccounts,
+  resolveCategoryChain,
 } from "../../../../lib/qbo-api"
 import { QBO_CONNECTION_MODULE } from "../../../../modules/qbo-connection"
 import { RECEIVING_HISTORY_MODULE } from "../../../../modules/receiving-history"
@@ -111,6 +112,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       inputToPoolMultiplier?: number
       inputUnitLabel?: string             // "lb" / "box"
       inputUnitSellPrice?: number         // per-lb sell price for flower; per-box for pre-rolls
+      /** Medusa category hierarchy ["Flower", "Super"] / ["Pre-Rolls", "THC-A"]
+       *  — used to find-or-create matching QBO Categories so the Item
+       *  lands in the right Sales > Products & Services group. */
+      categoryPath?: string[]
     }
     const lineResults = (record.line_results ?? []) as LineResult[]
     const usable = lineResults.filter((l) => l.action !== "failed" && l.qtyQps > 0 && l.landedPerQp > 0)
@@ -149,6 +154,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         ?? (line.sellPrices ? Object.values(line.sellPrices)[0] : undefined)
         ?? undefined
 
+      /* Resolve (or create) the QBO Category chain that mirrors Medusa.
+       * Non-blocking: if resolving fails, the Item still creates — it
+       * just lands at QBO root without a Category. */
+      let parentCategoryId: string | undefined
+      if (line.categoryPath && line.categoryPath.length > 0) {
+        try {
+          parentCategoryId = await resolveCategoryChain(qbo, conn, line.categoryPath)
+        } catch (e: any) {
+          logger.warn(`[qbo/push-bill] category resolve failed for ${line.strainName}: ${e?.message}`)
+        }
+      }
+
       const item = await findOrCreateItem(qbo, conn, itemName, accounts, {
         sku: line.baseSku,
         purchaseCost: billRate,
@@ -157,6 +174,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         purchaseDesc: `${line.strainName} · ${tierLabel} · ${inputUnit} (landed cost)`,
         salesDesc: `${line.strainName} · ${tierLabel} · per ${inputUnit}`,
         invStartDate: record.invoice_date.slice(0, 10),
+        parentCategoryId,
       })
       billLines.push({
         itemId: item.id,

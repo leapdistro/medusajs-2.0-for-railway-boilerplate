@@ -105,6 +105,10 @@ export type SaveRowResult = {
   /** Sell price per INPUT unit for the QBO Item's UnitPrice default.
    *  For flower: the LB-variant price. For pre-rolls: the only variant. */
   inputUnitSellPrice?: number
+  /** Medusa category hierarchy [parent, leaf] — e.g. ["Flower", "Super"]
+   *  or ["Pre-Rolls", "THC-A"]. QBO push uses this to nest the Item
+   *  under matching Categories in QBO's Products & Services tree. */
+  categoryPath?: string[]
   error?: string
 }
 
@@ -313,6 +317,16 @@ export async function saveOneRow(
     }
   } catch { /* leave optional fields undefined */ }
 
+  /* Category hierarchy for QBO Category mirroring. Profile gives us the
+   * parent name + subcategory medusaName. */
+  let subcategoryMedusaName: string | undefined
+  try {
+    subcategoryMedusaName = getSubcategory(ctx.profile, row.tier).medusaName
+  } catch { /* leave undefined */ }
+  const categoryPath: string[] = subcategoryMedusaName
+    ? [ctx.profile.parentCategoryName, subcategoryMedusaName]
+    : [ctx.profile.parentCategoryName]
+
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
     tier: row.tier,
@@ -325,6 +339,7 @@ export async function saveOneRow(
     inputToPoolMultiplier,
     inputUnitLabel,
     inputUnitSellPrice,
+    categoryPath,
   }
 
   if (priceError) {

@@ -233,6 +233,10 @@ export async function findOrCreateItem(
      *  Bill with "Transaction date is prior to start date for inventory
      *  item" when the invoice is dated before today. */
     invStartDate?: string
+    /** QBO Category id to nest this Item under (Sales > Products and
+     *  Services Category column). Mirrors the Medusa product_category
+     *  hierarchy. Set on creation only — existing items aren't re-parented. */
+    parentCategoryId?: string
   },
 ): Promise<{ id: string; name: string; created: boolean }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
@@ -297,6 +301,10 @@ export async function findOrCreateItem(
   if (defaults?.sku) body.Sku = defaults.sku.slice(0, 100) // QBO Sku limit is 100 chars
   if (defaults?.purchaseCost != null) body.PurchaseCost = round2(defaults.purchaseCost)
   if (defaults?.salePrice != null) body.UnitPrice = round2(defaults.salePrice)
+  if (defaults?.parentCategoryId) {
+    body.ParentRef = { value: defaults.parentCategoryId }
+    body.SubItem = true
+  }
   if (defaults?.preferredVendor) {
     /* QBO API field name is `PrefVendorRef` (not `PreferredVendorRef`),
      * even though the UI label is "Preferred Vendor". */
@@ -370,6 +378,70 @@ function round2(n: number): number {
  */
 export function baseFromVariantSku(variantSku: string): string {
   return variantSku.replace(/-[^-]+$/, "")
+}
+
+/* ─── Item Category find-or-create (Type: Category) ─── */
+
+/**
+ * QBO Item Categories are internally Items with Type="Category" — they
+ * group product Items in the Sales > Products and Services list and on
+ * reports (Sales by Category, etc.). Each real Item picks one via
+ * ParentRef. Up to two levels (parent + child).
+ *
+ * Name uniqueness: QBO enforces global uniqueness across ALL Items
+ * including Categories. So a Category "Super" and a regular Item "Super"
+ * can't coexist. Our setup uses strain·subcat names ("Strain · Super")
+ * which never collide with raw subcategory names.
+ */
+export async function findOrCreateItemCategory(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  name: string,
+  parentId?: string,
+): Promise<{ id: string; name: string; created: boolean }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const safe = name.replace(/'/g, "''")
+  const found = await qboFetch(
+    fresh,
+    `/query?query=${encodeURIComponent(`select * from Item where Name = '${safe}' and Type = 'Category'`)}`,
+  )
+  const existing = found?.QueryResponse?.Item?.[0]
+  if (existing) {
+    return { id: String(existing.Id), name: existing.Name, created: false }
+  }
+
+  const body: any = {
+    Name: name,
+    Type: "Category",
+  }
+  if (parentId) {
+    body.ParentRef = { value: parentId }
+    body.SubItem = true
+  }
+  const created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
+  const item = created?.Item
+  if (!item?.Id) throw new Error(`Item Category create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
+  return { id: String(item.Id), name: item.Name, created: true }
+}
+
+/**
+ * Resolve a category chain (parent name → ... → leaf name) into the
+ * leaf Category's QBO id, creating each level if missing. Empty chain
+ * returns undefined (item lives at QBO root).
+ */
+export async function resolveCategoryChain(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  names: string[],
+): Promise<string | undefined> {
+  const cleaned = names.map((n) => n.trim()).filter((n) => n.length > 0)
+  if (cleaned.length === 0) return undefined
+  let parentId: string | undefined
+  for (const n of cleaned) {
+    const cat = await findOrCreateItemCategory(qbo, conn, n, parentId)
+    parentId = cat.id
+  }
+  return parentId
 }
 
 /* ─── Item lookup by SKU (read-only — for invoice push) ─── */
