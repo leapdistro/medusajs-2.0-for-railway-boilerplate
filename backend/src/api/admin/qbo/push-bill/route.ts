@@ -181,7 +181,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         itemName: item.name,
         qty: billQty,
         rate: billRate,
-        description: `${line.strainName} · ${tierLabel} · per ${inputUnit} · landed cost (shipping capitalized)`,
+        /* Subcategory already appears in QBO's Item column (Category
+         * prefix). Skipping the redundant `· {tierLabel}` here. */
+        description: `${line.strainName} · per ${inputUnit} · landed cost (shipping capitalized)`,
       })
     }
 
