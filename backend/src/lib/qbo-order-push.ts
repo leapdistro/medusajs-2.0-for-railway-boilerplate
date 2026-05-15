@@ -63,6 +63,10 @@ export async function pushOrderToQbo(
       "items.id", "items.title", "items.quantity", "items.raw_quantity",
       "items.unit_price", "items.detail.quantity",
       "items.variant_sku", "items.variant_id", "items.product_title",
+      /* variant.title is the authoritative variant label ("LB", "½",
+       * "QP", "30 ct Box"). items.title may have been cart-derived
+       * differently — prefer variant.title for invoice descriptions. */
+      "items.variant.title",
       /* variant.inventory_items[].required_quantity is the pool-unit
        * multiplier per variant (QP=1, Half=2, LB=4 for flower). Used
        * to convert order-line variant count → pool-unit count for the
@@ -244,9 +248,15 @@ export async function pushOrderToQbo(
      * (e.g., "Gold Rose Runtz · 1 × LB"). Subcategory already appears
      * in QBO's Item column (Category:SubCategory:ItemName prefix is
      * auto-prepended by QBO from the Item's ParentRef) — repeating it
-     * here just adds visual noise. */
+     * here just adds visual noise.
+     *
+     * Prefer item.variant.title (authoritative variant label) over
+     * item.title (cart-time, sometimes equals product name). Fall
+     * through to "× unit" only when neither yields a distinct value. */
     const productName = item.product_title ?? item.title ?? ""
-    const variantTitle = item.title && item.title !== productName ? item.title : null
+    const variantTitle =
+      (item.variant?.title && item.variant.title !== productName ? item.variant.title : null)
+      ?? (item.title && item.title !== productName ? item.title : null)
     const variantSegment = variantTitle ? `${variantQty} × ${variantTitle}` : `${variantQty} × unit`
     const description = `${productName} · ${variantSegment}`
     lines.push({
