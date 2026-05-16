@@ -72,15 +72,16 @@ export async function pushOrderToQbo(
        * to convert order-line variant count → pool-unit count for the
        * QBO invoice so QBO inventory math matches Medusa.
        *
-       * variant.product.variants.* lets us walk ALL of the product's
-       * variants (not just the one on this order line) so we can find
-       * the input-unit multiplier (max required_quantity across the
-       * product = LB for flower since LB.required_quantity=4). */
+       * inputToPool (max required_quantity across ALL of a product's
+       * variants) is resolved in a separate shallow product query
+       * below — walking it nested through order→items→variant→product
+       * →variants→inventory_items.required_quantity silently drops the
+       * link-level required_quantity for sibling variants, leaving
+       * inputToPool = 1 so each QP got deducted as 1 lb instead of
+       * 0.25 lb. */
       "items.variant.metadata",
       "items.variant.inventory_items.required_quantity",
       "items.variant.product.id",
-      "items.variant.product.variants.id",
-      "items.variant.product.variants.inventory_items.required_quantity",
     ],
     filters: { id: orderId },
   })
@@ -145,10 +146,34 @@ export async function pushOrderToQbo(
   const lines = []
   const missing: string[] = []
   /* Per-product cache of inputToPoolMultiplier (= max
-   * required_quantity across the product's variants). Lazy-computed on
-   * first line that references the product. Single-variant pre-rolls
-   * resolve to 1 → conversions are no-ops. */
+   * required_quantity across the product's variants). Pre-populated via
+   * a shallow `product` graph query: walking required_quantity through
+   * order→items→variant→product→variants→inventory_items silently drops
+   * the link field for sibling variants (Medusa v2 link-walk quirk), so
+   * we query it directly from the product entity instead — the same
+   * pattern works in inspect-products.ts and /store/mbs/products.
+   * Single-variant pre-rolls resolve to 1 → conversions are no-ops. */
   const inputToPoolByProduct = new Map<string, number>()
+  const productIds = Array.from(
+    new Set(
+      ((order.items ?? []) as any[])
+        .map((it) => it.variant?.product?.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  )
+  if (productIds.length > 0) {
+    const { data: prods } = await query.graph({
+      entity: "product",
+      fields: ["id", "variants.inventory_items.required_quantity"],
+      filters: { id: productIds },
+    })
+    for (const p of prods as any[]) {
+      const reqs = ((p.variants ?? []) as any[])
+        .flatMap((v: any) => (v.inventory_items ?? []).map((ii: any) => Number(ii?.required_quantity ?? 1)))
+        .filter((n: number) => Number.isFinite(n) && n > 0)
+      inputToPoolByProduct.set(String(p.id), reqs.length > 0 ? Math.max(...reqs) : 1)
+    }
+  }
   for (const item of order.items ?? []) {
     const vSku = item.variant_sku as string | null
     if (!vSku) {
@@ -202,27 +227,19 @@ export async function pushOrderToQbo(
      */
     const reqQtyRaw = item.variant?.inventory_items?.[0]?.required_quantity
     const variantToPool = Number(reqQtyRaw ?? 1) || 1
-    /* inputToPool = max required_quantity across all variants of this
-     * product. Cached per-product via a small map so we don't recompute
-     * for every line. */
-    const product = (item.variant as any)?.product
-    const productKey = String(product?.id ?? item.product_title ?? "")
-    if (!inputToPoolByProduct.has(productKey)) {
-      /* Walk ALL of the product's variants — not just the one on this
-       * line — so we find the LB variant's required_quantity=4 even
-       * for orders that only include a QP variant. Falls back to
-       * variantToPool if the product relation didn't load (shouldn't
-       * happen with the graph query above, but defensive). */
-      const productVariants = (product?.variants ?? []) as Array<{
-        inventory_items?: Array<{ required_quantity?: number }>
-      }>
-      const allReqQtys = productVariants
-        .flatMap((v) => (v.inventory_items ?? []).map((ii) => Number(ii?.required_quantity ?? 1)))
-        .filter((n) => Number.isFinite(n) && n > 0)
-      const max = allReqQtys.length > 0 ? Math.max(...allReqQtys) : variantToPool
-      inputToPoolByProduct.set(productKey, max)
+    /* inputToPool was pre-populated above. Falls back to variantToPool
+     * (qty = variantQty, a no-op conversion) only if the product wasn't
+     * in the shallow query result — which would mean the product was
+     * deleted between order placement and push, an edge case worth a
+     * log line. */
+    const productId = String((item.variant as any)?.product?.id ?? "")
+    const resolvedInputToPool = inputToPoolByProduct.get(productId)
+    if (resolvedInputToPool === undefined) {
+      logger.warn(
+        `[qbo-order-push] inputToPool missing for product ${productId} (line "${item.product_title ?? item.title}") — falling back to variantToPool, QBO qty may be off`,
+      )
     }
-    const inputToPool = inputToPoolByProduct.get(productKey) ?? 1
+    const inputToPool = resolvedInputToPool ?? variantToPool
     const qty = (variantQty * variantToPool) / inputToPool
     const unitPrice = (variantUnitPrice * inputToPool) / variantToPool
 
