@@ -42,12 +42,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const customer = list?.[0]
   if (!customer) return res.status(404).json({ ok: false, message: "Customer not found" })
 
+  /* Medusa v2's updateCustomers MERGES the metadata payload rather than
+   * replacing it — `delete nextMeta.payment_terms` produces a JSON
+   * object without the key, but the merge leaves the existing DB key
+   * untouched. Explicit `null` works (the merge stores the null and
+   * downstream comparisons against "net15" correctly return false).
+   * Found 2026-05-17 when the toggle UI reported success but never
+   * flipped because the metadata still read "net15" on refetch. */
   const nextMeta = { ...(customer.metadata ?? {}) } as Record<string, any>
-  if (requested === null) {
-    delete nextMeta.payment_terms
-  } else {
-    nextMeta.payment_terms = requested
-  }
+  nextMeta.payment_terms = requested
 
   try {
     await customerService.updateCustomers(customer.id, { metadata: nextMeta })
