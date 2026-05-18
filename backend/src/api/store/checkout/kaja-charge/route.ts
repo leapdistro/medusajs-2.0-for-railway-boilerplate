@@ -1,6 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { completeCartWorkflow } from "@medusajs/medusa/core-flows"
+import { capturePaymentWorkflow, completeCartWorkflow } from "@medusajs/medusa/core-flows"
 import { chargeWithOpaqueData, voidTransaction } from "../../../../lib/kaja-authnet"
 
 /**
@@ -153,6 +153,40 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   } catch (e: any) {
     logger.warn(`[kaja-charge] could not stamp metadata on order ${orderId}: ${e?.message}`)
+  }
+
+  /* 5. Capture the Medusa payment so admin doesn't show a misleading
+   *    "Capture Payment" button. The actual money was captured via
+   *    Authorize.net's authCaptureTransaction above; this is purely a
+   *    state-sync inside Medusa. pp_system_default's capturePayment is
+   *    a no-op — it just flips the local payment record from
+   *    "authorized" to "captured" so the order shows Paid in admin.
+   *
+   *    Non-fatal: the order + charge are both already finalized; this
+   *    is cosmetic. If multiple payments exist (split-pay scenario,
+   *    not currently used), capture each. */
+  try {
+    const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+    const { data: orders } = await query.graph({
+      entity: "order",
+      fields: ["id", "payment_collections.payments.id", "payment_collections.payments.captured_at"],
+      filters: { id: orderId },
+    })
+    const paymentIds: string[] = (((orders as any[])[0]?.payment_collections ?? []) as any[])
+      .flatMap((pc) => (pc?.payments ?? []) as any[])
+      .filter((p) => p?.id && !p.captured_at)
+      .map((p) => String(p.id))
+
+    for (const pid of paymentIds) {
+      await capturePaymentWorkflow(req.scope).run({
+        input: { payment_id: pid, amount },
+      })
+    }
+    if (paymentIds.length > 0) {
+      logger.info(`[kaja-charge] captured ${paymentIds.length} Medusa payment(s) for order ${orderId}`)
+    }
+  } catch (e: any) {
+    logger.warn(`[kaja-charge] Medusa payment capture sync failed for order ${orderId}: ${e?.message} (cosmetic — money already captured externally)`)
   }
 
   logger.info(`[kaja-charge] cart ${cartId} → order ${orderId} (display=${displayId}) · $${amount.toFixed(2)} via transId ${charge.transId}`)
