@@ -178,6 +178,113 @@ export async function voidTransaction(transId: string): Promise<{ ok: boolean; e
   }
 }
 
+/**
+ * Refund a previously-captured (and potentially settled) transaction.
+ * Authorize.net allows partial refunds — pass amount < original to
+ * refund just a portion. After settlement, this is the only way to
+ * reverse money (voidTransaction stops working). The card's last 4
+ * are required for settled refunds per Authorize.net's API.
+ */
+export async function refundTransaction(args: {
+  refTransId: string
+  amount: number
+  /** Required for settled refunds — last 4 of the card from the original txn. */
+  cardLast4?: string
+}): Promise<{ ok: boolean; refundTransId?: string; error?: string }> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body: any = {
+    createTransactionRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      transactionRequest: {
+        transactionType: "refundTransaction",
+        amount: args.amount.toFixed(2),
+        refTransId: args.refTransId,
+        ...(args.cardLast4
+          ? { payment: { creditCard: { cardNumber: args.cardLast4, expirationDate: "XXXX" } } }
+          : {}),
+      },
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const txn = json?.transactionResponse
+    const code = String(txn?.responseCode ?? "")
+    if (code === "1") return { ok: true, refundTransId: String(txn.transId) }
+    const err = txn?.errors?.error?.[0]
+    return { ok: false, error: err?.errorText ?? json?.messages?.message?.[0]?.text ?? "refund failed" }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during refund" }
+  }
+}
+
+/**
+ * Capture a transaction previously authorized via authOnlyTransaction.
+ * Only used when running in auth-at-checkout / capture-at-fulfillment
+ * mode (B2B textbook). Today's default is authCaptureTransaction (one
+ * step) so this helper is here for the option-flip later.
+ */
+export async function priorAuthCapture(args: {
+  refTransId: string
+  amount: number
+}): Promise<{ ok: boolean; transId?: string; error?: string }> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body: any = {
+    createTransactionRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      transactionRequest: {
+        transactionType: "priorAuthCaptureTransaction",
+        amount: args.amount.toFixed(2),
+        refTransId: args.refTransId,
+      },
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const txn = json?.transactionResponse
+    const code = String(txn?.responseCode ?? "")
+    if (code === "1") return { ok: true, transId: String(txn.transId) }
+    const err = txn?.errors?.error?.[0]
+    return { ok: false, error: err?.errorText ?? json?.messages?.message?.[0]?.text ?? "capture failed" }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during capture" }
+  }
+}
+
+/**
+ * Get current status of a transaction. Useful for reconciliation +
+ * retrievePayment in the provider lifecycle.
+ */
+export async function getTransactionDetails(transId: string): Promise<{
+  ok: boolean
+  status?: string         // e.g. "authorizedPendingCapture", "capturedPendingSettlement", "settledSuccessfully", "voided", "refundSettledSuccessfully"
+  amount?: number
+  cardLast4?: string
+  error?: string
+}> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body: any = {
+    getTransactionDetailsRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      transId,
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const t = json?.transaction
+    if (!t) {
+      return { ok: false, error: json?.messages?.message?.[0]?.text ?? "transaction not found" }
+    }
+    return {
+      ok: true,
+      status: t.transactionStatus,
+      amount: Number(t.authAmount ?? t.settleAmount ?? 0),
+      cardLast4: t.payment?.creditCard?.cardNumber?.replace(/[^\d]/g, "").slice(-4),
+    }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during getTransactionDetails" }
+  }
+}
+
 function addressToAuthNet(a: BillingAddress) {
   return {
     firstName: (a.firstName ?? "").slice(0, 50),

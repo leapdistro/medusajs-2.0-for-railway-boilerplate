@@ -132,19 +132,32 @@ const medusaConfig = {
         ]
       }
     }] : []),
-    ...(STRIPE_API_KEY && STRIPE_WEBHOOK_SECRET ? [{
+    /* Payment module — registers all configured external providers
+     * (KAJA / Authorize.net, optionally Stripe). pp_system_default is
+     * always available out of the box; no need to list it here. */
+    ...((process.env.KAJA_API_LOGIN_ID && process.env.KAJA_TRANSACTION_KEY)
+        || (STRIPE_API_KEY && STRIPE_WEBHOOK_SECRET) ? [{
       key: Modules.PAYMENT,
       resolve: '@medusajs/payment',
       options: {
         providers: [
-          {
+          ...(process.env.KAJA_API_LOGIN_ID && process.env.KAJA_TRANSACTION_KEY ? [{
+            resolve: './src/modules/kaja-authnet',
+            id: 'kaja-authnet',
+            options: {
+              /* Reserved for future auth_only mode. Default is one-step
+               * authCaptureTransaction (money moves on Pay click). */
+              captureMode: process.env.KAJA_CAPTURE_MODE || 'auth_capture',
+            },
+          }] : []),
+          ...(STRIPE_API_KEY && STRIPE_WEBHOOK_SECRET ? [{
             resolve: '@medusajs/payment-stripe',
             id: 'stripe',
             options: {
               apiKey: STRIPE_API_KEY,
               webhookSecret: STRIPE_WEBHOOK_SECRET,
             },
-          },
+          }] : []),
         ],
       },
     }] : [])
