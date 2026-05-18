@@ -143,7 +143,11 @@ const medusaConfig = {
         providers: [
           ...(process.env.KAJA_API_LOGIN_ID && process.env.KAJA_TRANSACTION_KEY ? [{
             resolve: './src/modules/kaja-authnet',
-            id: 'kaja-authnet',
+            /* No `id:` field — Medusa builds the container key as
+             * `pp_${identifier}${id ? `_${id}` : ""}`. Setting id here
+             * would yield `pp_kaja-authnet_kaja-authnet`. Omitting it
+             * leaves the clean `pp_kaja-authnet` key. Provider's
+             * static identifier in service.ts is the only id source. */
             options: {
               /* Reserved for future auth_only mode. Default is one-step
                * authCaptureTransaction (money moves on Pay click). */
