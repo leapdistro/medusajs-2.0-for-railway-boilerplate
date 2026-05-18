@@ -127,12 +127,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   /* 4. Stamp the Order so qbo-order-push reads the txn id on fulfillment.
-   * Non-fatal — if this fails the order still exists, operator can edit
-   * metadata in admin. */
+   *    Also captures display_id here — completeCartWorkflow's result
+   *    doesn't include the auto-incremented display_id (only the id),
+   *    so we read it from the order record itself. Non-fatal — if the
+   *    stamp fails the order still exists; operator can edit metadata
+   *    in admin. The display_id read still succeeds in that case. */
   try {
     const orderService: any = req.scope.resolve(Modules.ORDER)
     const [order] = await orderService.listOrders({ id: [orderId] }, { take: 1 })
     if (order) {
+      if (order.display_id != null) displayId = Number(order.display_id)
       await orderService.updateOrders(orderId, {
         metadata: {
           ...(order.metadata ?? {}),
