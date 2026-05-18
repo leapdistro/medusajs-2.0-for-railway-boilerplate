@@ -1,6 +1,6 @@
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { DetailWidgetProps } from "@medusajs/framework/types"
-import { Container, Heading, Select, Text, toast } from "@medusajs/ui"
+import { Container, Heading, Switch, Text, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
 
 type CustomerLite = {
@@ -10,12 +10,16 @@ type CustomerLite = {
 }
 
 /**
- * Customer payment terms — controls whether this customer pays via
- * KAJA at checkout (default) or via check on Net 15 terms (operator
- * decision per customer). Stored on customer.metadata.payment_terms.
+ * Customer payment terms — Net 15 is a privilege admin grants to
+ * specific approved buyers. Default for everyone else is credit card
+ * at checkout (handled by KAJA / Authorize.net in Step 3).
  *
- * The QBO push subscriber reads this at fulfillment time to decide
- * Invoice shape: PAID + KAJA Payment, or UNPAID + SalesTerm Net 15.
+ * Stored on customer.metadata.payment_terms === "net15" (or absent).
+ * The QBO push subscriber and storefront checkout both read this:
+ *   - "net15"        → Net 15 path: Invoice in QBO with SalesTermRef=Net 15,
+ *                      UNPAID; storefront checkout shows "no card needed"
+ *   - null / absent  → Credit card path: KAJA charges at checkout;
+ *                      QBO Payment posts on fulfillment marked PAID
  */
 const CustomerPaymentTermsWidget = ({ data }: DetailWidgetProps<CustomerLite>) => {
   const [customer, setCustomer] = useState<CustomerLite | null>(null)
@@ -27,6 +31,7 @@ const CustomerPaymentTermsWidget = ({ data }: DetailWidgetProps<CustomerLite>) =
     try {
       const res = await fetch(`/admin/customers/${data.id}?fields=id,email,metadata`, {
         credentials: "include",
+        cache: "no-store",
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
@@ -40,11 +45,11 @@ const CustomerPaymentTermsWidget = ({ data }: DetailWidgetProps<CustomerLite>) =
 
   useEffect(() => { refresh() }, [refresh])
 
-  const currentTerms = (customer?.metadata?.payment_terms ?? "default") as "default" | "net15"
+  const isNet15 = customer?.metadata?.payment_terms === "net15"
 
-  const onChange = async (next: string) => {
+  const onToggle = async (checked: boolean) => {
     if (!customer?.id) return
-    const requested = next === "default" ? null : next
+    const requested = checked ? "net15" : null
     setBusy(true)
     try {
       const res = await fetch(`/admin/customers/${customer.id}/payment-terms`, {
@@ -57,12 +62,12 @@ const CustomerPaymentTermsWidget = ({ data }: DetailWidgetProps<CustomerLite>) =
       if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`)
       toast.success(
         requested === "net15"
-          ? "Payment terms set to Net 15 — Check"
-          : "Payment terms reset to default (KAJA Credit Card)"
+          ? "Net 15 enabled — customer will be invoiced (no card at checkout)"
+          : "Net 15 disabled — customer pays by card at checkout"
       )
       await refresh()
     } catch (e: any) {
-      toast.error("Could not update terms: " + (e?.message ?? "unknown"))
+      toast.error("Could not update: " + (e?.message ?? "unknown"))
     } finally {
       setBusy(false)
     }
@@ -87,20 +92,16 @@ const CustomerPaymentTermsWidget = ({ data }: DetailWidgetProps<CustomerLite>) =
         <div>
           <Heading level="h2">Payment Terms</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            How this customer pays. KAJA = card charged at checkout (most buyers).
-            Net 15 = invoice mailed, customer pays by check within 15 days.
+            Default: customer pays by card at checkout (KAJA / Credit Card). Enable
+            Net 15 only for approved buyers who pay by check within 15 days.
+          </Text>
+          <Text size="small" className="text-ui-fg-muted" style={{ marginTop: 6 }}>
+            Current: <strong>{isNet15 ? "Net 15 — invoiced by check" : "Credit card at checkout"}</strong>
           </Text>
         </div>
-        <div style={{ minWidth: 240 }}>
-          <Select value={currentTerms} onValueChange={onChange} disabled={busy}>
-            <Select.Trigger>
-              <Select.Value placeholder="Choose terms" />
-            </Select.Trigger>
-            <Select.Content>
-              <Select.Item value="default">KAJA Credit Card (default)</Select.Item>
-              <Select.Item value="net15">Net 15 — Check</Select.Item>
-            </Select.Content>
-          </Select>
+        <div className="flex items-center gap-2" style={{ minWidth: 180, justifyContent: "flex-end" }}>
+          <Text size="small">Net 15</Text>
+          <Switch checked={isNet15} onCheckedChange={onToggle} disabled={busy} />
         </div>
       </div>
     </Container>
