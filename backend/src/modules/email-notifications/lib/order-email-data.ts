@@ -8,18 +8,22 @@ import { MBS_SETTINGS_MODULE } from "../../mbs-settings"
 import { EmailTemplates } from "../templates"
 
 /* Friendly labels for payment provider IDs. Mirrors the storefront's
- * PROVIDER_LABELS map (src/lib/cart.ts). When we add KAJA, add a row
- * here AND on the storefront. */
+ * PROVIDER_LABELS map (src/lib/cart.ts). When we add a new provider,
+ * add a row here AND on the storefront so admin emails + storefront
+ * checkout / order pages render the same human-readable name. */
 const PROVIDER_LABELS: Record<string, string> = {
   pp_system_default: "Check / Wire / Net Terms",
-  // pp_kaja: "Card or ACH",
+  "pp_kaja-authnet": "Credit Card",
 }
 
 /* Provider IDs that need a separate "Payment Instructions" email
- * (because the buyer has to do something out-of-band to pay). KAJA-style
- * card/ACH providers go here as `false` once added. */
+ * (because the buyer has to do something out-of-band to pay). Card
+ * providers like kaja-authnet capture at checkout — no instructions
+ * needed; false (or absent) keeps them out of the Payment Instructions
+ * path. */
 const PROVIDER_NEEDS_INSTRUCTIONS: Record<string, boolean> = {
   pp_system_default: true,
+  "pp_kaja-authnet": false,
 }
 
 export type ContactInfo = {
