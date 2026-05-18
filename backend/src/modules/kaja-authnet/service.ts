@@ -69,6 +69,43 @@ function pickData(input: { data?: Record<string, unknown> | null }): SessionData
 }
 
 /**
+ * BigNumber-aware amount coercion. Medusa v2 passes monetary amounts as
+ * BigNumberInput which can be a plain number, a string, or a BigNumber
+ * instance (object). `Number(bigNumber)` returns NaN because BigNumber
+ * doesn't implement Symbol.toPrimitive — so naive casts fail silently
+ * with $0 amounts that trip downstream "amount is zero/invalid" checks.
+ *
+ * Caught 2026-05-18 on the first refund attempt — refundPayment's
+ * `Number(input.amount)` cast yielded NaN → threw "Refund amount must
+ * be positive" even though admin sent a real refund total.
+ */
+function toAmount(value: unknown): number {
+  if (value == null) return 0
+  if (typeof value === "number") return value
+  if (typeof value === "string") return Number(value)
+  if (typeof value === "object") {
+    const o = value as Record<string, unknown>
+    /* BigNumber exposes `.numeric` (cached number) when constructed
+     * from a number, or `.value` raw string. Try both. */
+    if (typeof o.numeric === "number") return o.numeric
+    if (typeof o.value === "string") return Number(o.value)
+    if (typeof o.toNumber === "function") {
+      const fn = o.toNumber as () => unknown
+      const n = fn.call(o)
+      if (typeof n === "number") return n
+    }
+    /* Last resort — JSON serialization. BigNumber.toJSON returns
+     * the raw string form. */
+    if (typeof (o as { toJSON?: () => unknown }).toJSON === "function") {
+      const j = (o as { toJSON: () => unknown }).toJSON()
+      if (typeof j === "number") return j
+      if (typeof j === "string") return Number(j)
+    }
+  }
+  return Number(value)
+}
+
+/**
  * KAJA / Authorize.net payment provider — Medusa v2 module that lets
  * Medusa drive Authorize.net through the standard payment lifecycle:
  *
@@ -105,7 +142,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
      * external id) and stash the amount. No external call yet — the
      * opaque token arrives later via updatePayment, and the real
      * Authorize.net charge happens at authorize-time. */
-    const amount = Number(input.amount ?? 0)
+    const amount = toAmount(input.amount)
     const sessionId = `kaja_sess_${cryptoRandom()}`
     const data: SessionData = { amount, status: "pending" }
     return { id: sessionId, status: "pending", data: data as Record<string, unknown> }
@@ -119,10 +156,14 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
     /* Merge incoming opaqueData (or any other overrides) onto the
      * cached session. The cart's amount may have changed since
      * initiatePayment — refresh it. */
+    const nextAmount =
+      input.amount != null ? toAmount(input.amount)
+      : incoming.amount != null ? toAmount(incoming.amount)
+      : prev.amount ?? 0
     const merged: SessionData = {
       ...prev,
       ...incoming,
-      amount: Number(input.amount ?? incoming.amount ?? prev.amount ?? 0),
+      amount: nextAmount,
     }
     return { status: "pending", data: merged as Record<string, unknown> }
   }
@@ -137,7 +178,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
         "Payment token missing — storefront must call updatePayment with opaqueData before authorize",
       )
     }
-    const amount = Number(data.amount ?? 0)
+    const amount = toAmount(data.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Payment amount is zero or invalid")
     }
@@ -211,7 +252,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
     if (!data.trans_id) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "No transId on payment session — cannot refund")
     }
-    const amount = Number(input.amount ?? 0)
+    const amount = toAmount(input.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Refund amount must be positive")
     }
