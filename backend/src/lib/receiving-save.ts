@@ -500,6 +500,14 @@ export async function saveOneRow(
         tier_linked: true,
         tier_key: row.tier,
         size_key: v.sizeKey,
+        /* Per-unit / margin-calc canonical override. Storefront's
+         * src/lib/per-unit.ts hits these first (path #1) before falling
+         * through to weight (path #2 — flower) or label regex (path #3).
+         * For flower, omit — weight (113/227/454g) drives "g" / count
+         * derivation. For pre-rolls and any future category that sets
+         * them on the profile, write through. */
+        ...(v.unitLabel ? { unit_label: v.unitLabel } : {}),
+        ...(v.unitsPerVariant ? { units_per_variant: v.unitsPerVariant } : {}),
       },
       inventory_items: [{
         inventory_item_id: inventoryItemId,

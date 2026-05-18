@@ -30,8 +30,18 @@ export type VariantDef = {
   /** required_quantity on the variant→inventory_item link. Pool consumption per variant unit.
    *  Flower QP=1 / Half=2 / LB=4; Pre-Rolls 30 ct Box=1 (one variant = one box). */
   multiplier: number
-  /** Variant weight in grams. Drives margin calc + ShipStation. Undefined when not applicable. */
+  /** Variant weight in grams. Drives margin calc + ShipStation. Undefined when not applicable.
+   *  When set, the storefront's per-unit helper derives unit_label="g" and count=grams without
+   *  needing the metadata fields below. */
   grams?: number
+  /** Per-unit / margin-calc fields. Stamped onto variant.metadata at receiving-save time so the
+   *  storefront's per-unit helper (src/lib/per-unit.ts) hits its canonical override path
+   *  (#1) instead of falling through to label regex parsing (#3). Required for pre-rolls
+   *  where there's no `grams` to derive from. Skip for flower — `grams` drives it.
+   *
+   *  Example: { unitLabel: "pc", unitsPerVariant: 30 } for a 30-count pre-roll box. */
+  unitLabel?: string
+  unitsPerVariant?: number
 }
 
 /** A sub-category the operator picks per row. Resolves to a Medusa product_category by name. */
@@ -152,13 +162,28 @@ export const PREROLL_PROFILE: ReceivingProfile = {
       key: "thc-a",
       medusaName: "THC-A",
       label: "THC-A",
-      variants: [{ sizeKey: "30pk", label: "30 ct Box", multiplier: 1 }],
+      variants: [{
+        sizeKey: "30pk",
+        label: "30 ct Box",
+        multiplier: 1,
+        /* Margin calc / per-unit math: 30 pre-rolls per box. */
+        unitLabel: "pc",
+        unitsPerVariant: 30,
+      }],
     },
     {
       key: "hashholes",
       medusaName: "Hashholes",
       label: "Hashholes",
-      variants: [{ sizeKey: "15pk", label: "15 ct Box", multiplier: 1 }],
+      variants: [{
+        sizeKey: "15pk",
+        label: "15 ct Box",
+        multiplier: 1,
+        /* Margin calc / per-unit math: 15 hashholes per box (label
+         * "15 ct" mirrors the count). */
+        unitLabel: "pc",
+        unitsPerVariant: 15,
+      }],
     },
   ],
   /* Empty fallback — every Pre-Roll subcategory must declare its own
