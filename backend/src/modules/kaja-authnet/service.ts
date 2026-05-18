@@ -257,23 +257,80 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Refund amount must be positive")
     }
 
-    /* First try the simple refund. Authorize.net's API rejects refunds
-     * on settled transactions unless you pass the card's last 4 (their
-     * "you must prove you know the card" check). If the first attempt
-     * fails, fetch the transaction details, pull last 4, and retry. */
-    let result = await refundTransaction({ refTransId: data.trans_id, amount })
-    if (!result.ok) {
-      const detail = await getTransactionDetails(data.trans_id)
-      if (detail.ok && detail.cardLast4) {
-        result = await refundTransaction({
-          refTransId: data.trans_id,
-          amount,
-          cardLast4: detail.cardLast4,
-        })
+    /* Authorize.net splits the "reverse this transaction" operation
+     * across two APIs depending on settlement status:
+     *
+     *   PRE-SETTLEMENT  (authorizedPendingCapture, capturedPendingSettlement,
+     *                    underReview, FDS*) → voidTransaction
+     *                    - Full reversal only; no partial unsettled refunds.
+     *   POST-SETTLEMENT (settledSuccessfully)
+     *                  → refundTransaction (partial supported, requires
+     *                    cardLast4 + "XXXX" expiry in the payment block).
+     *
+     * Fetch the transaction's current status from Authorize.net and
+     * dispatch. If unsettled but the operator requested partial, surface
+     * a clear error — the only workable path is "wait for nightly
+     * settlement then refund."
+     */
+    const detail = await getTransactionDetails(data.trans_id)
+    if (!detail.ok) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        `Could not look up transaction status: ${detail.error}`,
+      )
+    }
+
+    const originalAmount = detail.amount ?? 0
+    const isFullRefund = Math.abs(originalAmount - amount) < 0.01
+
+    /* Statuses that allow void (= unsettled). */
+    const VOID_ELIGIBLE = new Set([
+      "authorizedPendingCapture",
+      "capturedPendingSettlement",
+      "underReview",
+      "approvedReview",
+      "FDSPendingReview",
+      "FDSAuthorizedPendingReview",
+    ])
+
+    if (VOID_ELIGIBLE.has(detail.status ?? "")) {
+      if (!isFullRefund) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `This transaction is unsettled (status: ${detail.status}). Authorize.net only allows FULL reversal of unsettled charges via void. Wait for nightly settlement and try again for partial refunds, or refund the full $${originalAmount.toFixed(2)} now.`,
+        )
+      }
+      const voided = await voidTransaction(data.trans_id)
+      if (!voided.ok) {
+        throw new MedusaError(
+          MedusaError.Types.UNEXPECTED_STATE,
+          voided.error ?? "Void failed",
+        )
+      }
+      return {
+        data: {
+          ...data,
+          refund_trans_id: data.trans_id,  // void shares the original trans id
+          status: "canceled" as PaymentSessionStatus,
+        } as Record<string, unknown>,
       }
     }
+
+    /* Settled (or any other post-settlement state) — use refundTransaction.
+     * Authorize.net's XSD requires cardLast4 in the payment block; fall
+     * back to "0000" if the detail fetch didn't surface it, though that's
+     * unusual and may be rejected. */
+    const cardLast4 = detail.cardLast4 || "0000"
+    const result = await refundTransaction({
+      refTransId: data.trans_id,
+      amount,
+      cardLast4,
+    })
     if (!result.ok) {
-      throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, result.error ?? "Refund failed")
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        result.error ?? "Refund failed",
+      )
     }
 
     return {

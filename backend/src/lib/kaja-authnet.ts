@@ -179,18 +179,26 @@ export async function voidTransaction(transId: string): Promise<{ ok: boolean; e
 }
 
 /**
- * Refund a previously-captured (and potentially settled) transaction.
- * Authorize.net allows partial refunds — pass amount < original to
- * refund just a portion. After settlement, this is the only way to
- * reverse money (voidTransaction stops working). The card's last 4
- * are required for settled refunds per Authorize.net's API.
+ * Refund a previously-settled transaction. Authorize.net's
+ * refundTransaction ONLY works after the transaction has been
+ * batch-settled (typically end-of-day) — pre-settlement, use
+ * voidTransaction instead. The provider's refundPayment method
+ * picks the right one based on getTransactionDetails status.
+ *
+ * Schema order is strict: transactionType, amount, payment, refTransId.
+ * Sending payment after refTransId yields an XSD validation error
+ * even though the JSON keys may not appear order-sensitive — Authorize.net
+ * serializes to XML internally and validates against the API XSD.
  */
 export async function refundTransaction(args: {
   refTransId: string
   amount: number
-  /** Required for settled refunds — last 4 of the card from the original txn. */
-  cardLast4?: string
-}): Promise<{ ok: boolean; refundTransId?: string; error?: string }> {
+  /** Last 4 of the card from the original txn. Required by Authorize.net
+   *  even though it's redundant with refTransId — schema requires the
+   *  payment block. Use "XXXX" or "0000" only as a last-resort fallback;
+   *  the call may still be accepted but is more likely to be flagged. */
+  cardLast4: string
+}): Promise<{ ok: boolean; refundTransId?: string; error?: string; errorCode?: string }> {
   const { apiLoginId, transactionKey, environment } = readEnv()
   const body: any = {
     createTransactionRequest: {
@@ -198,10 +206,16 @@ export async function refundTransaction(args: {
       transactionRequest: {
         transactionType: "refundTransaction",
         amount: args.amount.toFixed(2),
+        /* payment block MUST come before refTransId per the API XSD.
+         * Object-literal key order is preserved in JSON.stringify, so
+         * this is enough. */
+        payment: {
+          creditCard: {
+            cardNumber: args.cardLast4,
+            expirationDate: "XXXX",
+          },
+        },
         refTransId: args.refTransId,
-        ...(args.cardLast4
-          ? { payment: { creditCard: { cardNumber: args.cardLast4, expirationDate: "XXXX" } } }
-          : {}),
       },
     },
   }
@@ -211,7 +225,11 @@ export async function refundTransaction(args: {
     const code = String(txn?.responseCode ?? "")
     if (code === "1") return { ok: true, refundTransId: String(txn.transId) }
     const err = txn?.errors?.error?.[0]
-    return { ok: false, error: err?.errorText ?? json?.messages?.message?.[0]?.text ?? "refund failed" }
+    return {
+      ok: false,
+      errorCode: err?.errorCode ?? `RESPONSE_${code}`,
+      error: err?.errorText ?? json?.messages?.message?.[0]?.text ?? "refund failed",
+    }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "Network error during refund" }
   }
