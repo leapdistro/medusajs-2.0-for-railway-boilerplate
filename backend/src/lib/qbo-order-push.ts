@@ -82,6 +82,16 @@ export async function pushOrderToQbo(
       "items.variant.metadata",
       "items.variant.inventory_items.required_quantity",
       "items.variant.product.id",
+      /* Actual payment state on the order — drives the QBO Payment
+       * decision below. We can't trust customer.metadata.payment_terms
+       * alone: an admin can grant a buyer Net 15 yet that buyer's
+       * older order was paid by card. Read the payment record. */
+      "payment_collections.payments.id",
+      "payment_collections.payments.provider_id",
+      "payment_collections.payments.amount",
+      "payment_collections.payments.captured_at",
+      "payment_collections.payments.canceled_at",
+      "payment_collections.payments.data",
     ],
     filters: { id: orderId },
   })
@@ -130,9 +140,47 @@ export async function pushOrderToQbo(
     }
   }
 
-  /* 2. Look up the QBO SalesTerm id when customer is Net 15. */
+  /* 2a. Inspect the order's actual payment record(s) — drives both the
+   *     SalesTermRef decision (below) and the Payment-create decision
+   *     (later). The customer's payment_terms flag is a "policy"; the
+   *     order's payment is what actually happened. A Net 15 customer
+   *     who paid by card needs a Payment posted; a non-Net-15 customer
+   *     paying by check (admin-recorded) doesn't.
+   *
+   *     Match rule: a captured, non-canceled kaja-authnet payment with
+   *     a trans_id on session data == real card capture. Falls back
+   *     to order.metadata.kaja_transaction_id / payment_ref for orders
+   *     placed via the legacy /store/checkout/kaja-charge route before
+   *     the provider cutover (2026-05-18). */
+  type OrderPayment = {
+    id?: string
+    provider_id?: string | null
+    amount?: number | { value?: string } | null
+    captured_at?: string | null
+    canceled_at?: string | null
+    data?: Record<string, any> | null
+  }
+  const orderPayments: OrderPayment[] = ((order.payment_collections ?? []) as Array<{ payments?: OrderPayment[] }>)
+    .flatMap((pc) => pc?.payments ?? [])
+  const cardPayment = orderPayments.find(
+    (p) => p?.provider_id === "pp_kaja-authnet"
+      && !!p?.captured_at
+      && !p?.canceled_at
+      && typeof p?.data?.trans_id === "string",
+  )
+  const cardTransId =
+    (cardPayment?.data?.trans_id as string | undefined)
+      ?? (order.metadata?.kaja_transaction_id as string | undefined)
+      ?? (order.metadata?.payment_ref as string | undefined)
+      ?? undefined
+  const cardAuthCode = cardPayment?.data?.auth_code as string | undefined
+
+  /* 2b. SalesTermRef = Net 15 only when the customer is marked Net 15
+   *     AND there's no card capture on this order. Otherwise the
+   *     invoice would say "Net 15" even though we're about to mark it
+   *     paid — confusing for the buyer's records. */
   let salesTermId: string | null = null
-  if (customerMeta.payment_terms === "net15") {
+  if (customerMeta.payment_terms === "net15" && !cardPayment && !cardTransId) {
     try {
       salesTermId = await findQboTermIdByName(qbo, conn, "Net 15")
     } catch (e: any) {
@@ -337,25 +385,31 @@ export async function pushOrderToQbo(
     return { ok: false, code: "API_ERROR", error: `Invoice create failed: ${e?.message}` }
   }
 
-  /* 6. KAJA-paid path: close the invoice with a Payment so QBO marks
-   *    it PAID. Net 15 path skips this — operator records the check
-   *    payment manually when it arrives. */
+  /* 6. Card-paid path: close the invoice with a Payment so QBO marks
+   *    it PAID. The decision is driven by the ACTUAL order payment
+   *    (`cardPayment` / `cardTransId` resolved above) — NOT the
+   *    customer's `payment_terms` flag. A Net-15-flagged customer who
+   *    paid by card still needs a Payment posted; that flag is a
+   *    "what they're allowed to do later" policy, not "what this
+   *    specific order did."
+   *
+   *    No card payment → invoice stays UNPAID. Operator records the
+   *    check / wire / manual payment in QBO when it arrives (or marks
+   *    it manually). */
   let paymentId: string | undefined
-  if (customerMeta.payment_terms !== "net15") {
+  if (cardPayment || cardTransId) {
     try {
       const paymentMethodId = await findPaymentMethodIdByName(qbo, conn, "Credit Card").catch(() => null)
-      const kajaRef =
-        (order.metadata?.kaja_transaction_id as string | undefined)
-          ?? (order.metadata?.payment_ref as string | undefined)
-          ?? undefined
       const payment = await createPayment(qbo, conn, {
         customerId: qboCustomerId,
         invoiceId: invoice.id,
         amount: invoice.totalAmt,
         txnDate,
         paymentMethodId: paymentMethodId ?? undefined,
-        refNum: kajaRef,
-        privateNote: `Auto-payment for Medusa order ${order.display_id ?? order.id}`,
+        refNum: cardTransId,
+        privateNote: cardAuthCode
+          ? `Auto-payment for Medusa order ${order.display_id ?? order.id} · auth ${cardAuthCode}`
+          : `Auto-payment for Medusa order ${order.display_id ?? order.id}`,
       })
       paymentId = payment.id
     } catch (e: any) {
