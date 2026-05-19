@@ -8,17 +8,29 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
  * adapter calls THIS endpoint instead.
  *
  * Optional query params:
- *   - handle: string  → return only the product matching this handle
+ *   - handle: string  → return only product(s) matching this handle.
+ *                       Accepts a single value ("blue-dream") or a
+ *                       comma-separated list ("blue-dream,og-kush")
+ *                       for batch existence/availability lookups
+ *                       (used by /account/orders/[id] to determine
+ *                       which line items still link to a live PDP).
  *   - status: string  → defaults to "published"; pass "all" to include drafts
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  const handle = req.query.handle as string | undefined
+  const handleParam = req.query.handle as string | undefined
   const statusParam = (req.query.status as string | undefined) ?? "published"
 
   const filters: Record<string, unknown> = {}
-  if (handle) filters.handle = handle
+  if (handleParam) {
+    if (handleParam.includes(",")) {
+      const handles = handleParam.split(",").map((s) => s.trim()).filter(Boolean)
+      filters.handle = handles
+    } else {
+      filters.handle = handleParam
+    }
+  }
   if (statusParam !== "all") filters.status = statusParam
 
   const { data: products } = await query.graph({
