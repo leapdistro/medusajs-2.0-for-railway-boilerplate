@@ -469,6 +469,121 @@ export async function getCustomerProfile(
   }
 }
 
+export type CreatePaymentProfileResult =
+  | { ok: true; customerPaymentProfileId: string; validationDirectResponse?: string }
+  | { ok: false; error: string; code?: string }
+
+/**
+ * Create a CIM Payment Profile (saved card) on an existing Customer
+ * Profile. Uses the Accept.js opaqueData token — raw PAN never reaches
+ * us. validationMode "liveMode" runs Authorize.net's standard $0.01
+ * auth+void against the card to verify it's chargeable before storing;
+ * "none" skips that verification (faster, but stores cards that may
+ * fail at first real charge). Default is "liveMode" — we'd rather
+ * catch a bad card now than at checkout.
+ *
+ * The billTo address is required by most Authorize.net merchant
+ * accounts with AVS enabled — we use the buyer's saved default billing
+ * address. If they have none on file yet, we still attempt the call
+ * with a minimal billTo (firstName/lastName) and let Authorize.net
+ * decide whether to accept.
+ */
+export async function createCustomerPaymentProfile(args: {
+  customerProfileId: string
+  opaqueData: OpaqueData
+  billTo: BillingAddress
+  validationMode?: "none" | "testMode" | "liveMode"
+}): Promise<CreatePaymentProfileResult> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const validationMode =
+    args.validationMode ?? (environment === "production" ? "liveMode" : "testMode")
+  const body: any = {
+    createCustomerPaymentProfileRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      customerProfileId: args.customerProfileId,
+      paymentProfile: {
+        billTo: addressToAuthNet(args.billTo),
+        payment: {
+          opaqueData: {
+            dataDescriptor: args.opaqueData.dataDescriptor,
+            dataValue: args.opaqueData.dataValue,
+          },
+        },
+      },
+      validationMode,
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const id = json?.customerPaymentProfileId
+    if (id) {
+      return {
+        ok: true,
+        customerPaymentProfileId: String(id),
+        validationDirectResponse: json?.validationDirectResponse,
+      }
+    }
+    const err = json?.messages?.message?.[0]
+    return {
+      ok: false,
+      code: err?.code,
+      error: err?.text ?? "Could not save card",
+    }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during createCustomerPaymentProfile" }
+  }
+}
+
+export type GetPaymentProfileResult =
+  | { ok: true; card: SavedCard }
+  | { ok: false; error: string; code?: string }
+
+/**
+ * Fetch a single CIM Payment Profile so we can return the normalized
+ * SavedCard shape (cardType + last4) after a create. The create
+ * response itself only gives us the new customerPaymentProfileId, not
+ * the card metadata — fetching after the fact is the documented pattern
+ * for surfacing the saved card to the buyer.
+ */
+export async function getCustomerPaymentProfile(args: {
+  customerProfileId: string
+  customerPaymentProfileId: string
+}): Promise<GetPaymentProfileResult> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body = {
+    getCustomerPaymentProfileRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      customerProfileId: args.customerProfileId,
+      customerPaymentProfileId: args.customerPaymentProfileId,
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const profile = json?.paymentProfile
+    const cc = profile?.payment?.creditCard
+    if (!profile?.customerPaymentProfileId || !cc) {
+      const err = json?.messages?.message?.[0]
+      return {
+        ok: false,
+        code: err?.code,
+        error: err?.text ?? "Payment profile not found",
+      }
+    }
+    const masked: string = typeof cc.cardNumber === "string" ? cc.cardNumber : ""
+    return {
+      ok: true,
+      card: {
+        id: String(profile.customerPaymentProfileId),
+        cardType: String(cc.cardType ?? "Card"),
+        last4: masked.replace(/\D+/g, "").slice(-4),
+        expirationDate: cc.expirationDate ?? null,
+      },
+    }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during getCustomerPaymentProfile" }
+  }
+}
+
 /**
  * Remove a saved card (CIM Payment Profile) from a customer's CIM
  * profile. The CIM Customer Profile itself remains (cheap to keep,
