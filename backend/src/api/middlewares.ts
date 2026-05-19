@@ -37,6 +37,17 @@ const coaUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024, files: 50 },
 })
 
+/**
+ * Customer document upload — buyer re-uploads their EIN doc or Resale
+ * Certificate from /account. Single file per request (the route
+ * dispatches based on a `kind` form field). Same 10 MB ceiling as the
+ * apply flow's individual doc uploads.
+ */
+const customerDocUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+})
+
 export default defineMiddlewares({
   routes: [
     {
@@ -64,6 +75,15 @@ export default defineMiddlewares({
       middlewares: [
         coaUpload.fields([
           { name: "coas", maxCount: 50 },
+        ]),
+      ],
+    },
+    {
+      matcher: "/store/mbs/customers/me/documents",
+      method: "POST",
+      middlewares: [
+        customerDocUpload.fields([
+          { name: "file", maxCount: 1 },
         ]),
       ],
     },
