@@ -42,7 +42,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   if (!cimProfileId) {
     /* No CIM profile yet → buyer has no saved cards. POST below lazy-
      * creates the profile when the buyer adds their first card. */
-    return res.json({ ok: true, cards: [] as SavedCard[] })
+    return res.json({ ok: true, cards: [] as SavedCard[], cim_profile_id: null })
   }
 
   const result = await getCustomerProfile(cimProfileId)
@@ -52,10 +52,14 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     /* Fail open — return empty list rather than 500ing the account page.
      * Buyer can re-add cards via the next checkout if the CIM record
      * is somehow broken; admin can spot-check. */
-    return res.json({ ok: true, cards: [] as SavedCard[] })
+    return res.json({ ok: true, cards: [] as SavedCard[], cim_profile_id: cimProfileId })
   }
 
-  return res.json({ ok: true, cards: result.cards })
+  /* Surface cim_profile_id back to the storefront — the checkout flow
+   * needs it on session.data so the payment provider can charge a
+   * saved card without resolving the customer module from DI (would
+   * blow up against the awilix cradle). */
+  return res.json({ ok: true, cards: result.cards, cim_profile_id: cimProfileId })
 }
 
 /**
