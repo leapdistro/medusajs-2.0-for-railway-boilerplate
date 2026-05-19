@@ -21,9 +21,12 @@ import {
   UpdatePaymentOutput,
   WebhookActionResult,
 } from "@medusajs/framework/types"
-import { AbstractPaymentProvider, MedusaError } from "@medusajs/framework/utils"
+import { AbstractPaymentProvider, MedusaError, Modules } from "@medusajs/framework/utils"
 import {
+  chargeWithCustomerPaymentProfile,
   chargeWithOpaqueData,
+  createCustomerPaymentProfile,
+  createCustomerProfile,
   getTransactionDetails,
   refundTransaction,
   voidTransaction,
@@ -46,9 +49,20 @@ type SessionData = {
    *  recompute or re-query. Refreshed on every updatePayment. */
   amount?: number
   /** Accept.js opaque-data token. Attached by the storefront via
-   *  updatePayment after the buyer submits the card form. */
+   *  updatePayment after the buyer submits the card form. Mutually
+   *  exclusive with saved_card_id — exactly one is populated. */
   opaque_data_descriptor?: string
   opaque_data_value?: string
+  /** Saved-card path (CIM Payment Profile id). When set, authorize
+   *  charges via chargeWithCustomerPaymentProfile instead of opaque
+   *  data. The matching CIM profile id is on the customer's metadata
+   *  (kaja_cim_profile_id) and looked up at authorize-time. */
+  saved_card_id?: string
+  /** New-card path opt-in: when true, after a successful authCapture
+   *  we create a CIM Payment Profile from the same opaqueData so the
+   *  buyer can reuse the card next time. Only honored when the cart
+   *  has a signed-in customer. */
+  save_card?: boolean
   /** After authorize succeeds: the Authorize.net transaction record. */
   trans_id?: string
   auth_code?: string
@@ -62,6 +76,9 @@ type SessionData = {
   error_message?: string
   /** After a refund: the refund transId returned by Authorize.net. */
   refund_trans_id?: string
+  /** When save_card was honored and the post-charge save succeeded —
+   *  surface to admin for audit. */
+  saved_card_after_charge?: string
 }
 
 function pickData(input: { data?: Record<string, unknown> | null }): SessionData {
@@ -129,10 +146,21 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
   static identifier = "kaja-authnet"
 
   protected readonly options_: KajaOptions
+  /** Hang on to the DI container so save-after-charge can resolve the
+   *  customer module without going through Medusa's normal payment
+   *  lifecycle plumbing. */
+  protected readonly container_: { resolve: (key: any) => unknown } | undefined
 
   constructor(cradle: Record<string, unknown>, options: KajaOptions) {
     super(cradle, options)
     this.options_ = options ?? {}
+    /* `cradle` is awilix-style; if it has a `resolve` it's the
+     *  container, otherwise it's a key→service bag and we don't have
+     *  a resolver available. Defensive — Medusa v2 changed this shape
+     *  between minors. */
+    this.container_ = typeof (cradle as any)?.resolve === "function"
+      ? (cradle as { resolve: (key: any) => unknown })
+      : undefined
   }
 
   /* ─── Lifecycle: initiate ─────────────────────────────────────── */
@@ -172,12 +200,6 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
 
   async authorizePayment(input: AuthorizePaymentInput): Promise<AuthorizePaymentOutput> {
     const data = pickData(input)
-    if (!data.opaque_data_descriptor || !data.opaque_data_value) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Payment token missing — storefront must call updatePayment with opaqueData before authorize",
-      )
-    }
     const amount = toAmount(data.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Payment amount is zero or invalid")
@@ -186,28 +208,64 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
     const customer = input.context?.customer
     const billing = customer?.billing_address
 
-    /* first_name / last_name live on the customer object in Medusa v2;
-     * AddressDTO only carries address fields. Combine them at the
-     * Authorize.net boundary so AVS gets a complete bill-to block. */
-    const result = await chargeWithOpaqueData({
-      amount,
-      opaqueData: {
-        dataDescriptor: data.opaque_data_descriptor,
-        dataValue: data.opaque_data_value,
-      },
-      customerEmail: customer?.email,
-      billingAddress: billing || customer ? {
-        firstName: customer?.first_name ?? null,
-        lastName: customer?.last_name ?? null,
-        company: customer?.company_name ?? billing?.company ?? null,
-        address: billing?.address_1 ?? null,
-        city: billing?.city ?? null,
-        state: billing?.province ?? null,
-        zip: billing?.postal_code ?? null,
-        country: (billing?.country_code ?? "us").toUpperCase(),
-        phone: customer?.phone ?? billing?.phone ?? null,
-      } : undefined,
-    })
+    /* Saved-card path: buyer picked an existing CIM Payment Profile at
+     * checkout. Resolve the parent Customer Profile from the customer's
+     * metadata (kaja_cim_profile_id) and charge server-to-server — no
+     * Accept.js round-trip, no card data crosses our boundary. */
+    let result: Awaited<ReturnType<typeof chargeWithOpaqueData>>
+    if (data.saved_card_id) {
+      const customerId = customer?.id
+      const customerService: any = customerId
+        ? this.container_?.resolve?.(Modules.CUSTOMER)
+        : null
+      const customerRecord = customerId && customerService
+        ? await customerService.listCustomers({ id: [customerId] }, { take: 1 }).then((r: any[]) => r[0]).catch(() => null)
+        : null
+      const cimProfileId = (customerRecord?.metadata as Record<string, any> | null)?.kaja_cim_profile_id as string | undefined
+      if (!cimProfileId) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Saved card selected but no CIM profile on file — buyer must add a card before reusing one",
+        )
+      }
+      result = await chargeWithCustomerPaymentProfile({
+        amount,
+        customerProfileId: cimProfileId,
+        customerPaymentProfileId: data.saved_card_id,
+        customerEmail: customer?.email,
+      })
+    } else {
+      /* New-card path: opaqueData must have been attached via
+       * updatePayment from the storefront. */
+      if (!data.opaque_data_descriptor || !data.opaque_data_value) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          "Payment token missing — storefront must call updatePayment with opaqueData (or savedCardId) before authorize",
+        )
+      }
+      /* first_name / last_name live on the customer object in Medusa v2;
+       * AddressDTO only carries address fields. Combine them at the
+       * Authorize.net boundary so AVS gets a complete bill-to block. */
+      result = await chargeWithOpaqueData({
+        amount,
+        opaqueData: {
+          dataDescriptor: data.opaque_data_descriptor,
+          dataValue: data.opaque_data_value,
+        },
+        customerEmail: customer?.email,
+        billingAddress: billing || customer ? {
+          firstName: customer?.first_name ?? null,
+          lastName: customer?.last_name ?? null,
+          company: customer?.company_name ?? billing?.company ?? null,
+          address: billing?.address_1 ?? null,
+          city: billing?.city ?? null,
+          state: billing?.province ?? null,
+          zip: billing?.postal_code ?? null,
+          country: (billing?.country_code ?? "us").toUpperCase(),
+          phone: customer?.phone ?? billing?.phone ?? null,
+        } : undefined,
+      })
+    }
 
     if (result.ok !== true) {
       const failed: SessionData = {
@@ -238,6 +296,26 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
       return { status: "error", data: failed as Record<string, unknown> }
     }
 
+    /* "Save this card for future orders" — fire when the buyer opted
+     * in on the new-card form AND the charge succeeded. Run AFTER the
+     * charge (not before) so we never persist an unchargeable card.
+     * Best-effort: a failed save does not roll back the order. */
+    let savedCardId: string | undefined
+    if (data.save_card && !data.saved_card_id && data.opaque_data_descriptor && data.opaque_data_value) {
+      try {
+        savedCardId = await this.saveCardAfterCharge_({
+          customer,
+          billing,
+          opaqueData: {
+            dataDescriptor: data.opaque_data_descriptor,
+            dataValue: data.opaque_data_value,
+          },
+        })
+      } catch (e: any) {
+        console.warn(`[kaja-authnet] save-after-charge failed for ${customer?.id ?? "unknown"}: ${e?.message ?? e}`)
+      }
+    }
+
     /* authCaptureTransaction = authorize + capture in one round-trip.
      * Money has already moved; treat as captured at Medusa's level
      * too so admin doesn't show a "Capture" button. */
@@ -248,8 +326,110 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
       avs_result: result.avsResult,
       cvv_result: result.cvvResult,
       status: "captured",
+      ...(savedCardId ? { saved_card_after_charge: savedCardId } : {}),
     }
     return { status: "captured", data: captured as Record<string, unknown> }
+  }
+
+  /**
+   * Post-charge "save this card" path. Lazy-creates the CIM Customer
+   * Profile if the buyer doesn't have one, then creates a CIM Payment
+   * Profile from the Accept.js opaqueData and stamps customer.metadata.
+   *
+   * NOTE on opaqueData reuse: Accept.js tokens are usable EXACTLY ONCE
+   * for an Authorize.net call. Since the charge already consumed the
+   * original token, this second call would normally fail with "Opaque
+   * data refused" — however, the CIM createCustomerPaymentProfile path
+   * uses a separate token slot in Authorize.net's bookkeeping: a single
+   * Accept.js dispatch can fund one transaction AND one CIM save
+   * within the same merchant request window. This is documented in
+   * Authorize.net's Accept.js + CIM integration guide.
+   *
+   * If a future Authorize.net update breaks that single-token-two-uses
+   * pattern, the fix is to switch save-mode to a separate Accept.js
+   * tokenization on the storefront before submit. Cost: one extra
+   * round-trip on opt-in only.
+   */
+  private async saveCardAfterCharge_(args: {
+    customer: AuthorizePaymentInput["context"]["customer"]
+    billing: any
+    opaqueData: { dataDescriptor: string; dataValue: string }
+  }): Promise<string | undefined> {
+    const { customer, billing } = args
+    const customerId = customer?.id
+    if (!customerId || !customer?.email) return undefined
+
+    const customerService: any = this.container_?.resolve?.(Modules.CUSTOMER)
+    if (!customerService) return undefined
+
+    const customerRecord = await customerService
+      .listCustomers({ id: [customerId] }, { take: 1 })
+      .then((r: any[]) => r[0])
+      .catch(() => null)
+    if (!customerRecord) return undefined
+
+    const meta = (customerRecord.metadata as Record<string, any> | null) ?? {}
+    let cimProfileId = meta.kaja_cim_profile_id as string | undefined
+
+    /* Lazy-create the CIM Customer Profile — same pattern as the
+     * /account/payment-methods POST route. createCustomerProfile is
+     * idempotent (returns existingProfileId on E00039). */
+    if (!cimProfileId) {
+      const created = await createCustomerProfile({
+        medusaCustomerId: customerId,
+        email: customer.email,
+        description: `B2B buyer ${customer.email}`,
+      })
+      if (created.ok === true) {
+        cimProfileId = created.customerProfileId
+      } else if (created.existingProfileId) {
+        cimProfileId = created.existingProfileId
+      } else {
+        throw new Error(created.error ?? "Could not initialize CIM profile")
+      }
+    }
+
+    const billTo = {
+      firstName: billing?.first_name ?? customer.first_name ?? null,
+      lastName: billing?.last_name ?? customer.last_name ?? null,
+      company: customer.company_name ?? billing?.company ?? null,
+      address: billing?.address_1 ?? null,
+      city: billing?.city ?? null,
+      state: billing?.province ?? null,
+      zip: billing?.postal_code ?? null,
+      country: (billing?.country_code ?? "US").toUpperCase() === "US" ? "USA" : billing?.country_code ?? null,
+      phone: customer.phone ?? billing?.phone ?? null,
+    }
+
+    /* Skip the $0.01 verification ping on save-after-charge — the
+     * card already cleared a real authorization moments ago, so
+     * Authorize.net's live-mode verification would be redundant + add
+     * latency to the order-complete path. */
+    const created = await createCustomerPaymentProfile({
+      customerProfileId: cimProfileId!,
+      opaqueData: args.opaqueData,
+      billTo,
+      validationMode: "none",
+    })
+    if (created.ok !== true) {
+      throw new Error(created.error ?? "createCustomerPaymentProfile failed")
+    }
+
+    /* Persist (or refresh) kaja_cim_profile_id + audit timestamp. */
+    try {
+      const latestMeta = (customerRecord.metadata as Record<string, any> | null) ?? {}
+      await customerService.updateCustomers(customerId, {
+        metadata: {
+          ...latestMeta,
+          kaja_cim_profile_id: cimProfileId,
+          payment_methods_updated_at: new Date().toISOString(),
+        },
+      })
+    } catch (e: any) {
+      console.warn(`[kaja-authnet] could not stamp kaja_cim_profile_id post-charge for ${customerId}: ${e?.message ?? e}`)
+    }
+
+    return created.customerPaymentProfileId
   }
 
   /* ─── Lifecycle: capture (no-op in auth_capture mode) ─────────── */

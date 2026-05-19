@@ -146,6 +146,91 @@ export async function chargeWithOpaqueData(args: ChargeArgs): Promise<ChargeResu
   }
 }
 
+export type ChargeWithProfileArgs = {
+  amount: number
+  customerProfileId: string
+  customerPaymentProfileId: string
+  invoiceNumber?: string
+  customerEmail?: string
+  /** Optional billTo override. Authorize.net uses the billTo stored on
+   *  the CIM payment profile by default — only pass this when the
+   *  shipping/ordering address differs from the saved billing address. */
+  billingAddress?: BillingAddress
+}
+
+/**
+ * Charge a card using a stored CIM Payment Profile (server-to-server,
+ * no Accept.js round-trip). Used when the buyer picks a saved card at
+ * checkout instead of typing a new one. authCaptureTransaction =
+ * authorize + capture in one round-trip (matches chargeWithOpaqueData
+ * — same money-moves-now semantics, just with a different funding
+ * source).
+ *
+ * Schema note: the `profile` block goes inside `transactionRequest`
+ * alongside `amount` and replaces the `payment.opaqueData` block.
+ * The XSD enforces ordering: transactionType, amount, profile, then
+ * order/customer/billTo overrides — JSON.stringify preserves
+ * object-literal key order, which matches the documented shape.
+ */
+export async function chargeWithCustomerPaymentProfile(
+  args: ChargeWithProfileArgs,
+): Promise<ChargeResult> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body: any = {
+    createTransactionRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      ...(args.invoiceNumber ? { refId: args.invoiceNumber.slice(0, 20) } : {}),
+      transactionRequest: {
+        transactionType: "authCaptureTransaction",
+        amount: args.amount.toFixed(2),
+        profile: {
+          customerProfileId: args.customerProfileId,
+          paymentProfile: { paymentProfileId: args.customerPaymentProfileId },
+        },
+        ...(args.invoiceNumber ? { order: { invoiceNumber: args.invoiceNumber.slice(0, 20) } } : {}),
+        ...(args.customerEmail ? { customer: { email: args.customerEmail } } : {}),
+        ...(args.billingAddress ? { billTo: addressToAuthNet(args.billingAddress) } : {}),
+      },
+    },
+  }
+
+  let json: any
+  try {
+    json = await postAuthNet(environment, body)
+  } catch (e: any) {
+    return { ok: false, code: "NETWORK", message: e?.message ?? "Network error" }
+  }
+
+  const txn = json?.transactionResponse
+  if (!txn) {
+    const err = json?.messages?.message?.[0]
+    return {
+      ok: false,
+      code: err?.code ?? "UNKNOWN",
+      message: err?.text ?? "Authorize.net returned no transaction response",
+    }
+  }
+
+  const responseCode = String(txn.responseCode ?? "")
+  if (responseCode !== "1") {
+    const errs = (txn.errors?.error ?? []) as Array<{ errorCode: string; errorText: string }>
+    const first = errs[0]
+    return {
+      ok: false,
+      code: first?.errorCode ?? `RESPONSE_${responseCode}`,
+      message: first?.errorText ?? "Card declined",
+    }
+  }
+
+  return {
+    ok: true,
+    transId: String(txn.transId),
+    authCode: String(txn.authCode ?? ""),
+    avsResult: txn.avsResultCode,
+    cvvResult: txn.cvvResultCode,
+  }
+}
+
 /**
  * Void a previously-captured transaction. Used to roll back when
  * cart.complete() fails AFTER a successful capture, so the customer
