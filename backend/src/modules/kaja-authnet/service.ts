@@ -158,10 +158,22 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
     /* Generate a session id (Medusa uses it as the payment session's
      * external id) and stash the amount. No external call yet — the
      * opaque token arrives later via updatePayment, and the real
-     * Authorize.net charge happens at authorize-time. */
+     * Authorize.net charge happens at authorize-time.
+     *
+     * Defensively merge `input.data` too. If Medusa's POST
+     * /payment-sessions recreates the session instead of updating an
+     * existing one (behavior has varied across v2 minors), the data
+     * field passed by the storefront — including opaque_data_* and
+     * saved_card_id — would otherwise be silently dropped, leaving
+     * authorize with no way to charge. */
     const amount = toAmount(input.amount)
     const sessionId = `kaja_sess_${cryptoRandom()}`
-    const data: SessionData = { amount, status: "pending" }
+    const incoming = (input.data ?? {}) as Partial<SessionData>
+    const data: SessionData = {
+      amount,
+      status: "pending",
+      ...incoming,
+    }
     return { id: sessionId, status: "pending", data: data as Record<string, unknown> }
   }
 
@@ -189,6 +201,12 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
 
   async authorizePayment(input: AuthorizePaymentInput): Promise<AuthorizePaymentOutput> {
     const data = pickData(input)
+    /* Log what the provider sees on the session BEFORE deciding which
+     * path to take. Saved-card vs new-card mode is invisible from the
+     * outside, so without this trace a generic "not authorized" error
+     * could mean any of: missing opaque data, missing cim_profile_id,
+     * zero amount, or a real Authorize.net decline. */
+    console.info(`[kaja-authnet] authorizePayment: amount=${data.amount} hasOpaque=${!!(data.opaque_data_descriptor && data.opaque_data_value)} hasSavedCardId=${!!data.saved_card_id} hasCimProfileId=${!!data.cim_profile_id}`)
     const amount = toAmount(data.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Payment amount is zero or invalid")
