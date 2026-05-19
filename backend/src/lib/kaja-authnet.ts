@@ -315,3 +315,184 @@ function addressToAuthNet(a: BillingAddress) {
     country: (a.country ?? "USA").slice(0, 60),
   }
 }
+
+/* ─── Customer Information Manager (CIM) — saved cards ─────────────── */
+/*
+ * Authorize.net's CIM holds long-term tokenized cards under per-customer
+ * "Customer Profiles." Each profile can carry multiple "Payment
+ * Profiles" (one per saved card). The provider lifecycle's
+ * createAccountHolder + savePaymentMethod + listPaymentMethods +
+ * deletePaymentMethod map onto these helpers.
+ *
+ * Key shape facts:
+ *   - merchantCustomerId field is capped at 20 chars (we pass Medusa's
+ *     customer id truncated; uniqueness is enforced inside Authorize.net
+ *     per merchant account)
+ *   - Card numbers in getCustomerProfile responses come masked as
+ *     "XXXX1234" — we extract the last 4 chars for display
+ *   - expirationDate comes back as "XXXX" unless we pass
+ *     unmaskExpirationDate: true (which requires special permission on
+ *     some Authorize.net accounts); for the buyer-facing list we don't
+ *     need it — last 4 + card type is enough.
+ */
+
+export type SavedCard = {
+  /** Authorize.net CIM customerPaymentProfileId — opaque to us, used
+   *  as the "saved card id" everywhere the storefront refers to a
+   *  specific stored card. */
+  id: string
+  /** Card network as Authorize.net labels it: "Visa", "Mastercard",
+   *  "AmericanExpress", "Discover", etc. Storefront uses this to render
+   *  the right brand logo. */
+  cardType: string
+  /** Last 4 digits of the masked card number. */
+  last4: string
+  /** "MM/YYYY" when unmasked, "XXXX" otherwise. Optional — Slice A
+   *  doesn't request unmask permission. */
+  expirationDate?: string | null
+}
+
+export type CreateCustomerProfileResult =
+  | { ok: true; customerProfileId: string }
+  | { ok: false; error: string; code?: string; existingProfileId?: string }
+
+/**
+ * Create a CIM Customer Profile. Idempotent in spirit: if Authorize.net
+ * rejects with "merchantCustomerId already exists" (error E00039), we
+ * surface the existing profile id so the caller can stamp it without
+ * re-creating. The merchantCustomerId is Medusa's customer id truncated
+ * to 20 chars (CIM hard limit) — short ULID prefix is unique enough
+ * within a single merchant account.
+ */
+export async function createCustomerProfile(args: {
+  medusaCustomerId: string
+  email: string
+  description?: string
+}): Promise<CreateCustomerProfileResult> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  /* Authorize.net hard caps merchantCustomerId at 20 chars. Medusa's
+   * cust_<ULID> id is 31 chars — slice the trailing 20 (most-entropy
+   * portion). Collisions are theoretically possible but vanishingly
+   * unlikely across one merchant's customer base. */
+  const merchantCustomerId = args.medusaCustomerId.slice(-20)
+  const body = {
+    createCustomerProfileRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      profile: {
+        merchantCustomerId,
+        description: (args.description ?? "B2B wholesale buyer").slice(0, 255),
+        email: args.email.slice(0, 255),
+      },
+      validationMode: "none",
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const id = json?.customerProfileId
+    if (id) return { ok: true, customerProfileId: String(id) }
+    /* Duplicate-customer error path: Authorize.net returns the existing
+     * profile id in customerProfileId even on failure when the
+     * merchantCustomerId is already taken. Surface it so the caller
+     * can stamp + recover transparently. */
+    const err = json?.messages?.message?.[0]
+    const code = err?.code as string | undefined
+    const existingId = json?.customerProfileId as string | undefined
+    return {
+      ok: false,
+      code,
+      error: err?.text ?? "Could not create customer profile",
+      existingProfileId: existingId,
+    }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during createCustomerProfile" }
+  }
+}
+
+export type GetCustomerProfileResult =
+  | { ok: true; customerProfileId: string; cards: SavedCard[] }
+  | { ok: false; error: string; code?: string }
+
+/**
+ * Fetch a CIM Customer Profile and return its saved cards in the
+ * normalized SavedCard shape. Returns an empty cards array if the
+ * profile exists but has no payment profiles attached.
+ */
+export async function getCustomerProfile(
+  customerProfileId: string,
+): Promise<GetCustomerProfileResult> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body = {
+    getCustomerProfileRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      customerProfileId,
+      /* Don't request unmaskExpirationDate — that permission isn't
+       * universally granted on Authorize.net accounts, and the buyer-
+       * facing list doesn't need real expiry to render "Visa •••• 4242". */
+      includeIssuerInfo: false,
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const profile = json?.profile
+    if (!profile?.customerProfileId) {
+      const err = json?.messages?.message?.[0]
+      return {
+        ok: false,
+        code: err?.code,
+        error: err?.text ?? "Customer profile not found",
+      }
+    }
+    const rawProfiles = Array.isArray(profile.paymentProfiles) ? profile.paymentProfiles : []
+    const cards: SavedCard[] = []
+    for (const p of rawProfiles) {
+      const cc = p?.payment?.creditCard
+      if (!cc) continue
+      const masked: string = typeof cc.cardNumber === "string" ? cc.cardNumber : ""
+      /* Mask shape from Authorize.net is "XXXX1234" — last 4 chars are
+       * the real digits. Defensively strip any non-digit so weird
+       * masks ("****1234") still parse. */
+      const last4 = masked.replace(/\D+/g, "").slice(-4)
+      cards.push({
+        id: String(p.customerPaymentProfileId ?? ""),
+        cardType: String(cc.cardType ?? "Card"),
+        last4,
+        expirationDate: cc.expirationDate ?? null,
+      })
+    }
+    return {
+      ok: true,
+      customerProfileId: String(profile.customerProfileId),
+      cards,
+    }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during getCustomerProfile" }
+  }
+}
+
+/**
+ * Remove a saved card (CIM Payment Profile) from a customer's CIM
+ * profile. The CIM Customer Profile itself remains (cheap to keep,
+ * needed if the buyer adds another card later).
+ */
+export async function deleteCustomerPaymentProfile(args: {
+  customerProfileId: string
+  customerPaymentProfileId: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const { apiLoginId, transactionKey, environment } = readEnv()
+  const body = {
+    deleteCustomerPaymentProfileRequest: {
+      merchantAuthentication: { name: apiLoginId, transactionKey },
+      customerProfileId: args.customerProfileId,
+      customerPaymentProfileId: args.customerPaymentProfileId,
+    },
+  }
+  try {
+    const json = await postAuthNet(environment, body)
+    const resultCode = json?.messages?.resultCode
+    if (resultCode === "Ok") return { ok: true }
+    const err = json?.messages?.message?.[0]
+    return { ok: false, error: err?.text ?? "Could not delete saved card" }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error during deleteCustomerPaymentProfile" }
+  }
+}
