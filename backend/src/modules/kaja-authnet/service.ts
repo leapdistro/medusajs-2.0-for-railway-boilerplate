@@ -216,6 +216,23 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
         error_code: result.code,
         error_message: result.message,
       }
+      /* Tag 3DS-related declines with a distinct prefix so operators
+       * can grep Railway logs for `kaja:3ds` to gauge whether full
+       * 3DS challenge handling is worth implementing later. Storefront
+       * surfaces a 3DS-specific message via the same keyword match. */
+      const m = (result.message ?? "").toLowerCase()
+      const is3DS =
+        m.includes("3d secure") || m.includes("3-d secure") || m.includes("3ds")
+        || m.includes("cardholder authentication")
+        || m.includes("verified by visa") || m.includes("mastercard securecode")
+        || m.includes("strong customer authentication")
+        || m.includes("authentication required")
+        || /\be_wc_19\b/.test(result.message ?? "")
+      if (is3DS) {
+        console.warn(`[kaja-authnet] kaja:3ds decline — code=${result.code} message=${result.message}`)
+      } else {
+        console.warn(`[kaja-authnet] charge declined — code=${result.code} message=${result.message}`)
+      }
       /* Medusa treats "error" status as a hard fail and won't complete
        * the cart. Buyer sees a decline message and can retry. */
       return { status: "error", data: failed as Record<string, unknown> }
