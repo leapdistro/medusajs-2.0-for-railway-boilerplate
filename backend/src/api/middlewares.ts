@@ -87,5 +87,15 @@ export default defineMiddlewares({
         ]),
       ],
     },
+    {
+      /* KAJA / Authorize.net webhook signature verification needs the
+       * exact bytes that were signed — re-serializing req.body to JSON
+       * is unreliable (whitespace + key order can drift), so opt this
+       * route into raw body preservation. The handler reads req.rawBody
+       * (Buffer) to compute the HMAC-SHA512. */
+      matcher: "/hooks/kaja-authnet",
+      method: "POST",
+      bodyParser: { preserveRawBody: true, sizeLimit: "1mb" },
+    },
   ],
 })
