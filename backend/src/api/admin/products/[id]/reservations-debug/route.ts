@@ -9,38 +9,138 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  * Returns every reservation row tied to the product's variants, plus the
  * line item and order each one came from with the order's current status.
  *
+ * The `:id` path param can be a product id, a product handle, or a
+ * variant SKU. Soft-deleted products are included in the search so we
+ * can still inspect reservations against archived products.
+ *
  * Orphaned reservation = row exists, order.status === "canceled". Those
  * are the ones we expected cancelOrderWorkflow to release.
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
-  const productId = req.params.id
-  if (!productId) return res.status(400).json({ error: "missing product id" })
+  const param = req.params.id
+  if (!param) return res.status(400).json({ error: "missing product id / handle / sku" })
 
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
   const inventoryService: any = req.scope.resolve(Modules.INVENTORY)
+  const productService: any = req.scope.resolve(Modules.PRODUCT)
 
-  /* 1. Find the product + its inventory_item ids (variants may share
-   *    one inventory_item via the pool model, or have their own). */
-  const { data: products } = await query.graph({
-    entity: "product",
-    fields: [
-      "id", "title", "handle",
-      "variants.id", "variants.sku", "variants.title",
-      "variants.inventory_items.required_quantity",
-      "variants.inventory_items.inventory.id",
-    ],
-    filters: { id: productId },
-  })
-  const product = (products as any[])?.[0]
-  if (!product) return res.status(404).json({ error: "product not found" })
+  /* 1. Resolve the product. Try in order:
+   *    (a) by id (active products) via query.graph
+   *    (b) by id including soft-deleted via product module listProducts
+   *    (c) by handle
+   *    (d) by variant.sku → product
+   *    For each step we capture what we tried so a 404 explains itself. */
+  const tried: string[] = []
+  let product: any = null
+
+  try {
+    const { data: byId } = await query.graph({
+      entity: "product",
+      fields: [
+        "id", "title", "handle", "deleted_at",
+        "variants.id", "variants.sku", "variants.title",
+        "variants.inventory_items.required_quantity",
+        "variants.inventory_items.inventory.id",
+      ],
+      filters: { id: param },
+    })
+    product = (byId as any[])?.[0] ?? null
+    tried.push(`query.graph id=${param} → ${product ? "hit" : "miss"}`)
+  } catch (e: any) {
+    tried.push(`query.graph id=${param} → ERROR ${e?.message}`)
+  }
+
+  if (!product) {
+    /* Product module's listProducts surfaces soft-deleted rows via
+     * withDeleted in the find-config. query.graph filters them out. */
+    try {
+      const list = await productService.listProducts(
+        { id: [param] },
+        { withDeleted: true, take: 1 },
+      )
+      product = list?.[0] ?? null
+      tried.push(`product.listProducts(id, withDeleted) → ${product ? "hit (possibly deleted)" : "miss"}`)
+    } catch (e: any) {
+      tried.push(`product.listProducts(id) → ERROR ${e?.message}`)
+    }
+  }
+
+  if (!product) {
+    try {
+      const { data: byHandle } = await query.graph({
+        entity: "product",
+        fields: [
+          "id", "title", "handle",
+          "variants.id", "variants.sku", "variants.title",
+          "variants.inventory_items.required_quantity",
+          "variants.inventory_items.inventory.id",
+        ],
+        filters: { handle: param },
+      })
+      product = (byHandle as any[])?.[0] ?? null
+      tried.push(`query.graph handle=${param} → ${product ? "hit" : "miss"}`)
+    } catch (e: any) {
+      tried.push(`query.graph handle=${param} → ERROR ${e?.message}`)
+    }
+  }
+
+  if (!product) {
+    try {
+      const { data: byVariantSku } = await query.graph({
+        entity: "product_variant",
+        fields: [
+          "id", "sku", "product.id", "product.title", "product.handle",
+        ],
+        filters: { sku: param },
+      })
+      const variant = (byVariantSku as any[])?.[0]
+      if (variant?.product?.id) {
+        const { data: byId2 } = await query.graph({
+          entity: "product",
+          fields: [
+            "id", "title", "handle",
+            "variants.id", "variants.sku", "variants.title",
+            "variants.inventory_items.required_quantity",
+            "variants.inventory_items.inventory.id",
+          ],
+          filters: { id: variant.product.id },
+        })
+        product = (byId2 as any[])?.[0] ?? null
+      }
+      tried.push(`query.graph variant.sku=${param} → ${product ? "hit" : "miss"}`)
+    } catch (e: any) {
+      tried.push(`query.graph variant.sku=${param} → ERROR ${e?.message}`)
+    }
+  }
+
+  if (!product) {
+    return res.status(404).json({ error: "product not found", tried })
+  }
+
+  /* If product came from the soft-deleted fallback, re-fetch variants
+   * via the product module so we get them even when archived. */
+  if (!product.variants || product.variants.length === 0) {
+    try {
+      const fullList = await productService.listProducts(
+        { id: [product.id] },
+        { withDeleted: true, take: 1, relations: ["variants", "variants.inventory_items"] },
+      )
+      const full = fullList?.[0]
+      if (full?.variants?.length) product.variants = full.variants
+    } catch { /* fall through */ }
+  }
 
   const invItemIds = new Set<string>()
   const variants = (product.variants ?? []).map((v: any) => {
     const ids: string[] = []
+    /* query.graph nests inventory_items.inventory.id; the product
+     * module's relation path exposes inventory_items[].inventory_item_id
+     * directly. Handle both shapes. */
     for (const ii of v.inventory_items ?? []) {
-      if (ii.inventory?.id) {
-        invItemIds.add(ii.inventory.id)
-        ids.push(ii.inventory.id)
+      const id = ii.inventory?.id ?? ii.inventory_item_id
+      if (id) {
+        invItemIds.add(id)
+        ids.push(id)
       }
     }
     return {
@@ -54,7 +154,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   if (invItemIds.size === 0) {
     return res.json({
-      product: { id: product.id, title: product.title, handle: product.handle },
+      product: { id: product.id, title: product.title, handle: product.handle, deleted_at: product.deleted_at ?? null },
+      lookup_trace: tried,
       variants,
       reservations: [],
       note: "no inventory items linked to this product's variants",
@@ -69,20 +170,18 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   if (reservationRows.length === 0) {
     return res.json({
-      product: { id: product.id, title: product.title, handle: product.handle },
+      product: { id: product.id, title: product.title, handle: product.handle, deleted_at: product.deleted_at ?? null },
+      lookup_trace: tried,
       variants,
       reservations: [],
-      note: "no reservation_item rows found — 'reserved' count may be coming from a different inventory_item",
+      note: "no reservation_item rows found for these inventory_items — 'reserved' count may be coming from elsewhere",
     })
   }
 
-  /* 3. For each reservation, resolve its line item + parent order so
-   *    we can see what state the order is in. line_item_id is nullable
-   *    on the schema (some reservations are detached/manual) — skip
-   *    the lookup if missing. */
+  /* 3. For each reservation, resolve its line item + parent order. */
   const lineItemIds = reservationRows.map((r) => r.line_item_id).filter(Boolean) as string[]
 
-  let lineItemsByID: Record<string, any> = {}
+  const lineItemsByID: Record<string, any> = {}
   if (lineItemIds.length > 0) {
     try {
       const { data: lineItems } = await query.graph({
@@ -90,7 +189,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         fields: [
           "id", "title", "quantity", "variant_id",
           "order.id", "order.display_id", "order.status",
-          "order.canceled_at", "order.metadata",
+          "order.canceled_at",
         ],
         filters: { id: lineItemIds },
       })
@@ -98,8 +197,6 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         lineItemsByID[li.id] = li
       }
     } catch (e: any) {
-      /* If the entity name differs across Medusa minors, fall back to
-       * listing through the order module. */
       try {
         const orderService: any = req.scope.resolve(Modules.ORDER)
         const items = await orderService.listOrderLineItems(
@@ -110,8 +207,6 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           lineItemsByID[li.id] = { ...li, order: null }
         }
       } catch (e2: any) {
-        /* Surface the error in the response so we can adjust the query
-         * without redeploying blind. */
         return res.status(500).json({
           error: "could not resolve line items",
           graph_error: e?.message,
@@ -149,12 +244,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     }
   })
 
-  /* Quick orphan flag for at-a-glance read. */
   const orphaned = reservations.filter((r) => r.order && (r.order.status === "canceled" || r.order.status === "cancelled" || r.order.canceled_at))
   const noOrder = reservations.filter((r) => !r.order)
 
   return res.json({
-    product: { id: product.id, title: product.title, handle: product.handle },
+    product: { id: product.id, title: product.title, handle: product.handle, deleted_at: product.deleted_at ?? null },
+    lookup_trace: tried,
     variants,
     summary: {
       total_reservations: reservations.length,
