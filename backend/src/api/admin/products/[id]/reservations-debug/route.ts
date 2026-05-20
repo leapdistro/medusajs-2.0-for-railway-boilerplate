@@ -186,11 +186,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     try {
       const { data: lineItems } = await query.graph({
         entity: "order_line_item",
-        fields: [
-          "id", "title", "quantity", "variant_id",
-          "order.id", "order.display_id", "order.status",
-          "order.canceled_at",
-        ],
+        fields: ["id", "title", "quantity", "variant_id"],
         filters: { id: lineItemIds },
       })
       for (const li of (lineItems as any[]) ?? []) {
@@ -204,7 +200,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           { take: 500 },
         )
         for (const li of items ?? []) {
-          lineItemsByID[li.id] = { ...li, order: null }
+          lineItemsByID[li.id] = li
         }
       } catch (e2: any) {
         return res.status(500).json({
@@ -217,8 +213,34 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     }
   }
 
+  /* order_line_item → order doesn't walk cleanly via query.graph in
+   * this Medusa v2 version (returns null even when the FK exists).
+   * Query from the order side instead and build a lineItemId → order
+   * map manually. */
+  const orderByLineItemID: Record<string, any> = {}
+  if (lineItemIds.length > 0) {
+    try {
+      const { data: orders } = await query.graph({
+        entity: "order",
+        fields: [
+          "id", "display_id", "status", "canceled_at", "metadata",
+          "items.id",
+        ],
+        filters: { items: { id: lineItemIds } },
+      })
+      for (const o of (orders as any[]) ?? []) {
+        for (const it of o.items ?? []) {
+          if (it?.id) orderByLineItemID[it.id] = o
+        }
+      }
+    } catch (e: any) {
+      /* Fall through; we'll surface partial data. */
+    }
+  }
+
   const reservations = reservationRows.map((r) => {
     const li = r.line_item_id ? lineItemsByID[r.line_item_id] : null
+    const ord = r.line_item_id ? orderByLineItemID[r.line_item_id] : null
     return {
       reservation_id: r.id,
       inventory_item_id: r.inventory_item_id,
@@ -235,11 +257,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         quantity: li.quantity,
         variant_id: li.variant_id ?? null,
       } : null,
-      order: li?.order ? {
-        id: li.order.id,
-        display_id: li.order.display_id,
-        status: li.order.status,
-        canceled_at: li.order.canceled_at ?? null,
+      order: ord ? {
+        id: ord.id,
+        display_id: ord.display_id,
+        status: ord.status,
+        canceled_at: ord.canceled_at ?? null,
+        cancellation_reason_label: ord.metadata?.cancellation_reason_label ?? null,
       } : null,
     }
   })
