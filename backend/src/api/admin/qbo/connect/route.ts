@@ -14,7 +14,7 @@ export async function GET(_req: MedusaRequest, res: MedusaResponse) {
    * parameter so we generate a real one. */
   const state = randomBytes(16).toString("hex")
   try {
-    const url = buildAuthorizeUrl(state)
+    const url = await buildAuthorizeUrl(state)
     res.redirect(url)
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? "QBO not configured" })

@@ -12,11 +12,69 @@
  *
  * Token lifetimes: access ~1 hour, refresh ~100 days (sliding window —
  * each refresh extends both back to full duration).
+ *
+ * Endpoint discovery: Intuit publishes an OpenID Connect discovery
+ * document at https://developer.api.intuit.com/.well-known/openid_configuration
+ * listing the canonical OAuth endpoints (authorization, token, revoke).
+ * We fetch + cache it on first use so endpoint changes from Intuit's side
+ * don't require a redeploy. If discovery is unreachable, we fall back to
+ * the known-stable hardcoded URLs — these haven't changed in years, so the
+ * fallback is safe insurance, not a primary path.
  */
 
-const TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-const REVOKE_ENDPOINT = "https://developer.api.intuit.com/v2/oauth2/tokens/revoke"
-const AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
+const DISCOVERY_URL = "https://developer.api.intuit.com/.well-known/openid_configuration"
+
+const HARDCODED_FALLBACK = {
+  authorize: "https://appcenter.intuit.com/connect/oauth2",
+  token:     "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+  revoke:    "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+} as const
+
+type OAuthEndpoints = {
+  authorize: string
+  token: string
+  revoke: string
+}
+
+/* Process-level cache. Railway redeploys re-prime it; that's the only
+ * "TTL" we need since Intuit rotates these endpoints on the order of
+ * never. In-flight concurrent first-callers share the same Promise to
+ * avoid duplicate discovery fetches at cold start. */
+let cachedEndpoints: OAuthEndpoints | null = null
+let inFlightDiscovery: Promise<OAuthEndpoints> | null = null
+
+async function discoverEndpoints(): Promise<OAuthEndpoints> {
+  if (cachedEndpoints) return cachedEndpoints
+  if (inFlightDiscovery) return inFlightDiscovery
+  inFlightDiscovery = (async () => {
+    try {
+      const res = await fetch(DISCOVERY_URL, { headers: { Accept: "application/json" } })
+      if (res.ok) {
+        const doc = (await res.json()) as {
+          authorization_endpoint?: string
+          token_endpoint?: string
+          revocation_endpoint?: string
+        }
+        if (doc.authorization_endpoint && doc.token_endpoint && doc.revocation_endpoint) {
+          cachedEndpoints = {
+            authorize: doc.authorization_endpoint,
+            token:     doc.token_endpoint,
+            revoke:    doc.revocation_endpoint,
+          }
+          return cachedEndpoints
+        }
+      }
+    } catch { /* fall through to fallback */ }
+    cachedEndpoints = { ...HARDCODED_FALLBACK }
+    return cachedEndpoints
+  })()
+  try {
+    return await inFlightDiscovery
+  } finally {
+    inFlightDiscovery = null
+  }
+}
+
 const SCOPE = "com.intuit.quickbooks.accounting"
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000 // refresh 5 min before expiry
@@ -40,8 +98,9 @@ function getCredentials() {
   return { clientId, clientSecret, redirectUri }
 }
 
-export function buildAuthorizeUrl(state: string): string {
+export async function buildAuthorizeUrl(state: string): Promise<string> {
   const { clientId, redirectUri } = getCredentials()
+  const { authorize } = await discoverEndpoints()
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
@@ -49,17 +108,18 @@ export function buildAuthorizeUrl(state: string): string {
     redirect_uri: redirectUri,
     state,
   })
-  return `${AUTHORIZE_URL}?${params.toString()}`
+  return `${authorize}?${params.toString()}`
 }
 
 export async function exchangeCodeForTokens(code: string): Promise<QboTokens> {
   const { clientId, clientSecret, redirectUri } = getCredentials()
+  const { token: tokenEndpoint } = await discoverEndpoints()
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
     redirect_uri: redirectUri,
   })
-  const res = await fetch(TOKEN_ENDPOINT, {
+  const res = await fetch(tokenEndpoint, {
     method: "POST",
     headers: {
       Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
@@ -77,11 +137,12 @@ export async function exchangeCodeForTokens(code: string): Promise<QboTokens> {
 
 export async function refreshTokens(refreshToken: string): Promise<QboTokens> {
   const { clientId, clientSecret } = getCredentials()
+  const { token: tokenEndpoint } = await discoverEndpoints()
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
   })
-  const res = await fetch(TOKEN_ENDPOINT, {
+  const res = await fetch(tokenEndpoint, {
     method: "POST",
     headers: {
       Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
@@ -99,7 +160,8 @@ export async function refreshTokens(refreshToken: string): Promise<QboTokens> {
 
 export async function revokeToken(token: string): Promise<void> {
   const { clientId, clientSecret } = getCredentials()
-  await fetch(REVOKE_ENDPOINT, {
+  const { revoke: revokeEndpoint } = await discoverEndpoints()
+  await fetch(revokeEndpoint, {
     method: "POST",
     headers: {
       Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
