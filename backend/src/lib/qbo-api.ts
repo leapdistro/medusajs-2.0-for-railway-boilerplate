@@ -205,6 +205,112 @@ export async function findOrCreateCustomer(
   return { id: String(c.Id), displayName: c.DisplayName, created: true }
 }
 
+/* ─── Customer attachment upload (Attachable API) ─── */
+
+/**
+ * Push a file from a public URL (our MinIO bucket today) to QBO and link
+ * it to a Customer as an Attachable. QBO's /upload endpoint is multipart
+ * with TWO parts:
+ *   - file_metadata_0: JSON describing the AttachableRef + filename + MIME
+ *   - file_content_0:  raw file bytes with matching Content-Type
+ *
+ * We can't reuse qboFetch because it pins Content-Type to application/json
+ * — multipart needs FormData to set its own boundary.
+ *
+ * Returns the new Attachable.Id so the caller can stamp it on customer
+ * metadata for idempotency on subsequent approvals.
+ */
+export async function uploadCustomerAttachment(
+  qbo: QboService,
+  connection: QboConnectionRow,
+  args: {
+    customerId: string
+    sourceUrl: string
+    fileName: string
+    note?: string | null
+  },
+): Promise<{ id: string; fileName: string }> {
+  const fresh = await ensureFreshAccessToken(qbo, connection)
+
+  /* 1. Fetch source bytes from the storage URL. The apply route uploads
+   *    via Medusa's file service which currently returns public URLs;
+   *    if the storage backend changes to signed/private URLs later, this
+   *    helper would need a signed-fetch path. */
+  const fileRes = await fetch(args.sourceUrl)
+  if (!fileRes.ok) {
+    throw new Error(`Source file fetch failed for ${args.sourceUrl}: ${fileRes.status}`)
+  }
+  const arrayBuffer = await fileRes.arrayBuffer()
+  const contentType =
+    contentTypeFromUrl(args.sourceUrl) ||
+    fileRes.headers.get("content-type") ||
+    "application/octet-stream"
+
+  /* 2. Build the AttachableRef metadata block. IncludeOnSend=false so the
+   *    EIN / resale cert doesn't auto-attach to outbound invoices — these
+   *    are internal compliance docs, not buyer-facing. */
+  const metadata = {
+    AttachableRef: [
+      {
+        EntityRef: { type: "Customer", value: args.customerId },
+        IncludeOnSend: false,
+      },
+    ],
+    FileName: args.fileName,
+    ContentType: contentType,
+    ...(args.note ? { Note: args.note.slice(0, 2000) } : {}),
+  }
+
+  /* 3. Assemble multipart and POST to /upload. */
+  const form = new FormData()
+  form.append(
+    "file_metadata_0",
+    new Blob([JSON.stringify(metadata)], { type: "application/json" }),
+    "metadata.json",
+  )
+  form.append(
+    "file_content_0",
+    new Blob([arrayBuffer], { type: contentType }),
+    args.fileName,
+  )
+
+  const base = qboApiBase(fresh.environment)
+  const url = `${base}/v3/company/${fresh.realm_id}/upload`
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${fresh.access_token}`,
+      Accept: "application/json",
+      /* Deliberately NO Content-Type — fetch + FormData pick the right
+       * multipart/form-data boundary themselves. Setting one breaks parsing. */
+    },
+    body: form,
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => "")
+    throw new Error(`QBO upload failed: ${res.status} ${body.slice(0, 400)}`)
+  }
+  const json = await res.json()
+  const att = json?.AttachableResponse?.[0]?.Attachable
+  if (!att?.Id) {
+    throw new Error(`QBO upload returned no Attachable: ${JSON.stringify(json).slice(0, 200)}`)
+  }
+  return { id: String(att.Id), fileName: String(att.FileName ?? args.fileName) }
+}
+
+function contentTypeFromUrl(url: string): string | null {
+  const ext = url.split("?")[0].split(".").pop()?.toLowerCase() ?? ""
+  const map: Record<string, string> = {
+    pdf:  "application/pdf",
+    png:  "image/png",
+    jpg:  "image/jpeg",
+    jpeg: "image/jpeg",
+    gif:  "image/gif",
+    webp: "image/webp",
+  }
+  return map[ext] ?? null
+}
+
 /* ─── Item find-or-create (Inventory type) ─── */
 
 type AccountRef = { id: string; name: string }

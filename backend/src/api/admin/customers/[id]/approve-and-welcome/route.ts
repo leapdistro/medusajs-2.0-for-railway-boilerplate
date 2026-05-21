@@ -1,6 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { findOrCreateCustomer, findQboTermIdByName } from "../../../../../lib/qbo-api"
+import { findOrCreateCustomer, findQboTermIdByName, uploadCustomerAttachment } from "../../../../../lib/qbo-api"
 import { QBO_CONNECTION_MODULE } from "../../../../../modules/qbo-connection"
 
 const APPROVED_GROUP_NAME = (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
@@ -187,10 +187,18 @@ async function pushCustomerToQbo(
 
   const meta = (customer.metadata ?? {}) as Record<string, any>
 
-  /* Idempotent — first run sets qbo_customer_id; subsequent approvals
-   * (resend welcome) leave it alone. */
-  if (meta.qbo_customer_id) {
-    return { state: "synced", qboCustomerId: String(meta.qbo_customer_id), created: false }
+  const existingQboId      = String(meta.qbo_customer_id ?? "")        || null
+  const existingEinAtt     = String(meta.qbo_ein_attachment_id ?? "")  || null
+  const existingLicenseAtt = String(meta.qbo_license_attachment_id ?? "") || null
+  const einDocUrl          = String(meta.ein_doc_url ?? "")            || null
+  const licenseDocUrl      = String(meta.license_doc_url ?? "")        || null
+
+  /* Idempotent: skip the whole push if customer is already synced AND
+   * both attachments are uploaded (or both source URLs are missing). */
+  const einAttachmentDone     = !!existingEinAtt     || !einDocUrl
+  const licenseAttachmentDone = !!existingLicenseAtt || !licenseDocUrl
+  if (existingQboId && einAttachmentDone && licenseAttachmentDone) {
+    return { state: "synced", qboCustomerId: existingQboId, created: false }
   }
 
   const businessName = String(meta.business_name ?? "").trim() || customer.email
@@ -216,35 +224,96 @@ async function pushCustomerToQbo(
   }
 
   try {
-    const result = await findOrCreateCustomer(qbo, conn, {
-      businessName,
-      email: customer.email,
-      /* customer.phone is the Medusa top-level field (set from the
-       * apply form's phone input). metadata.phone is not populated. */
-      phone: customer.phone ?? null,
-      addressLine1: meta.address_line1 ?? null,
-      addressLine2: meta.address_line2 ?? null,
-      city: meta.city ?? null,
-      state: meta.state ?? null,
-      zip: meta.zip ?? null,
-      country: meta.country ?? "US",
-      firstName,
-      lastName,
-      contactName,
-      businessTypeLabel,
-      salesTermId,
-      notes: `Wholesale account · approved ${new Date().toISOString().slice(0, 10)}`,
-    })
+    /* (1) Customer create — skip if already synced (attachment-only retry path). */
+    let qboCustomerId = existingQboId
+    let created = false
+    if (!qboCustomerId) {
+      const result = await findOrCreateCustomer(qbo, conn, {
+        businessName,
+        email: customer.email,
+        /* customer.phone is the Medusa top-level field (set from the
+         * apply form's phone input). metadata.phone is not populated. */
+        phone: customer.phone ?? null,
+        addressLine1: meta.address_line1 ?? null,
+        addressLine2: meta.address_line2 ?? null,
+        city: meta.city ?? null,
+        state: meta.state ?? null,
+        zip: meta.zip ?? null,
+        country: meta.country ?? "US",
+        firstName,
+        lastName,
+        contactName,
+        businessTypeLabel,
+        salesTermId,
+        notes: `Wholesale account · approved ${new Date().toISOString().slice(0, 10)}`,
+      })
+      qboCustomerId = result.id
+      created = result.created
+    }
 
-    /* Stamp the QBO id back on Medusa customer so future invoice pushes
-     * skip the lookup. */
+    /* (2) Attachment push — best-effort, in parallel. Each gets the source
+     *     URL from customer.metadata. Failures log but don't error the push;
+     *     unstamped attachments will retry on the next approve-and-welcome
+     *     run, so a flaky storage host doesn't permanently drop the doc. */
+    const businessSlug = (meta.business_name ?? customer.email).toString().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").slice(0, 40) || "customer"
+    let einAttachmentId = existingEinAtt
+    let licenseAttachmentId = existingLicenseAtt
+
+    const tasks: Promise<void>[] = []
+    if (!einAttachmentId && einDocUrl) {
+      tasks.push(
+        uploadCustomerAttachment(qbo, conn, {
+          customerId: qboCustomerId,
+          sourceUrl: einDocUrl,
+          fileName: `ein-${businessSlug}${fileExt(einDocUrl)}`,
+          note: "EIN document — uploaded during wholesale application",
+        }).then(
+          (r) => { einAttachmentId = r.id },
+          (e: any) => { logger.warn(`[approve-and-welcome] EIN attachment push failed: ${e?.message}`) },
+        ),
+      )
+    }
+    if (!licenseAttachmentId && licenseDocUrl) {
+      tasks.push(
+        uploadCustomerAttachment(qbo, conn, {
+          customerId: qboCustomerId,
+          sourceUrl: licenseDocUrl,
+          fileName: `resale-cert-${businessSlug}${fileExt(licenseDocUrl)}`,
+          note: "Resale certificate — uploaded during wholesale application",
+        }).then(
+          (r) => { licenseAttachmentId = r.id },
+          (e: any) => { logger.warn(`[approve-and-welcome] resale-cert attachment push failed: ${e?.message}`) },
+        ),
+      )
+    }
+    if (tasks.length > 0) await Promise.allSettled(tasks)
+
+    /* (3) Stamp the QBO id + attachment ids back on Medusa customer.
+     *     Only set qbo_attachments_pushed_at when nothing's left to do
+     *     (both files succeeded OR both were absent) — otherwise a missing
+     *     attachment will keep retrying. */
+    const allAttachmentsDone =
+      (!!einAttachmentId || !einDocUrl) &&
+      (!!licenseAttachmentId || !licenseDocUrl)
     await customerService.updateCustomers(customer.id, {
-      metadata: { ...meta, qbo_customer_id: result.id },
+      metadata: {
+        ...meta,
+        qbo_customer_id: qboCustomerId,
+        ...(einAttachmentId     ? { qbo_ein_attachment_id: einAttachmentId }         : {}),
+        ...(licenseAttachmentId ? { qbo_license_attachment_id: licenseAttachmentId } : {}),
+        ...(allAttachmentsDone  ? { qbo_attachments_pushed_at: new Date().toISOString() } : {}),
+      },
     })
 
-    return { state: "synced", qboCustomerId: result.id, created: result.created }
+    return { state: "synced", qboCustomerId, created }
   } catch (e: any) {
     logger.warn(`[approve-and-welcome] qbo customer push failed for ${customer.email}: ${e?.message}`)
     return { state: "error", message: e?.message ?? "QBO push failed" }
   }
+}
+
+function fileExt(url: string): string {
+  const m = url.split("?")[0].match(/\.([a-z0-9]+)$/i)
+  return m ? `.${m[1].toLowerCase()}` : ""
 }
