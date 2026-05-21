@@ -60,10 +60,21 @@ async function qboFetch(
       ...(init?.headers ?? {}),
     },
   })
+  /* intuit_tid is Intuit's per-request correlation id. Including it in
+   * thrown errors + a stamped console line lets Intuit support look up
+   * the exact request in their logs when troubleshooting — saves a lot
+   * of back-and-forth on support tickets. */
+  const tid = res.headers.get("intuit_tid") || res.headers.get("Intuit_Tid") || ""
   if (!res.ok) {
     const body = await res.text().catch(() => "")
-    throw new Error(`QBO ${init?.method ?? "GET"} ${path} failed: ${res.status} ${body.slice(0, 400)}`)
+    throw new Error(
+      `QBO ${init?.method ?? "GET"} ${path} failed: ${res.status} intuit_tid=${tid || "n/a"} ${body.slice(0, 400)}`,
+    )
   }
+  /* Successful calls also log the tid at debug-equivalent volume — keep
+   * it cheap (single console.info) so we have correlation ids on every
+   * call without dragging in a structured-log dep. */
+  if (tid) console.info(`[qbo] ${init?.method ?? "GET"} ${path} ok intuit_tid=${tid}`)
   return res.json()
 }
 
@@ -286,15 +297,22 @@ export async function uploadCustomerAttachment(
     },
     body: form,
   })
+  const tid = res.headers.get("intuit_tid") || res.headers.get("Intuit_Tid") || ""
   if (!res.ok) {
     const body = await res.text().catch(() => "")
-    throw new Error(`QBO upload failed: ${res.status} ${body.slice(0, 400)}`)
+    throw new Error(`QBO upload failed: ${res.status} intuit_tid=${tid || "n/a"} ${body.slice(0, 400)}`)
   }
   const json = await res.json()
+  /* QBO's /upload returns 200 OK even when the attachment failed —
+   * Stale Object Error etc. surface as embedded Fault. Caller needs
+   * to see intuit_tid for those too. */
   const att = json?.AttachableResponse?.[0]?.Attachable
   if (!att?.Id) {
-    throw new Error(`QBO upload returned no Attachable: ${JSON.stringify(json).slice(0, 200)}`)
+    throw new Error(
+      `QBO upload returned no Attachable: intuit_tid=${tid || "n/a"} ${JSON.stringify(json).slice(0, 200)}`,
+    )
   }
+  if (tid) console.info(`[qbo] POST /upload ok intuit_tid=${tid}`)
   return { id: String(att.Id), fileName: String(att.FileName ?? args.fileName) }
 }
 
