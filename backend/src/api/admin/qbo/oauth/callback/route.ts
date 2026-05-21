@@ -1,7 +1,8 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { exchangeCodeForTokens, tokensToConnectionFields } from "../../../../../lib/qbo-oauth"
 import { QBO_CONNECTION_MODULE } from "../../../../../modules/qbo-connection"
+import { stateCacheKey } from "../../connect/route"
 
 /**
  * GET /admin/qbo/oauth/callback?code=...&realmId=...&state=...
@@ -20,6 +21,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   const code = String(req.query.code ?? "")
   const realmId = String(req.query.realmId ?? "")
+  const state = String(req.query.state ?? "")
   const error = String(req.query.error ?? "")
   const environment = process.env.QBO_ENVIRONMENT === "production" ? "production" : "sandbox"
 
@@ -30,6 +32,27 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   if (!code || !realmId) {
     return res.redirect(`/app/quickbooks?error=${encodeURIComponent("missing_code_or_realm")}`)
   }
+
+  /* CSRF: the state token must match one we issued from /admin/qbo/connect
+   * and not yet consumed. Consume-once: delete after a hit so a replayed
+   * callback (refreshed browser tab, attacker-cached URL) can't re-bind. */
+  if (!state) {
+    logger.warn("[qbo/callback] rejected: missing state token")
+    return res.redirect(`/app/quickbooks?error=${encodeURIComponent("csrf_missing_state")}`)
+  }
+  const cache = req.scope.resolve(Modules.CACHE) as {
+    get: (k: string) => Promise<unknown>
+    invalidate: (k: string) => Promise<void>
+  }
+  const key = stateCacheKey(state)
+  const cached = await cache.get(key).catch(() => null)
+  if (!cached) {
+    logger.warn(`[qbo/callback] rejected: unknown/expired state ${state.slice(0, 8)}…`)
+    return res.redirect(`/app/quickbooks?error=${encodeURIComponent("csrf_state_mismatch")}`)
+  }
+  /* Consume the state — one-time use prevents replay attacks. ICacheService
+   * names this `invalidate`, not `delete`. */
+  await cache.invalidate(key).catch(() => undefined)
 
   try {
     const tokens = await exchangeCodeForTokens(code)
