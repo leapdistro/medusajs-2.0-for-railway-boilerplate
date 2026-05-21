@@ -251,43 +251,49 @@ async function pushCustomerToQbo(
       created = result.created
     }
 
-    /* (2) Attachment push — best-effort, in parallel. Each gets the source
+    /* (2) Attachment push — best-effort, SEQUENTIAL. Each gets the source
      *     URL from customer.metadata. Failures log but don't error the push;
      *     unstamped attachments will retry on the next approve-and-welcome
-     *     run, so a flaky storage host doesn't permanently drop the doc. */
+     *     run, so a flaky storage host doesn't permanently drop the doc.
+     *
+     *     Why sequential: QBO uses optimistic concurrency on the Customer
+     *     record. Two parallel /upload calls against the same Customer
+     *     collide — the second one returns "Stale Object Error" because
+     *     QBO sees the underlying Customer as modified mid-flight by the
+     *     first attachment's link. Caught 2026-05-21 on smokeydoke. The
+     *     round-trip cost (~1s vs ~0.5s for two parallel) is fine for an
+     *     admin action; correctness > throughput here. */
     const businessSlug = (meta.business_name ?? customer.email).toString().toLowerCase()
       .replace(/[^a-z0-9]+/g, "-").slice(0, 40) || "customer"
     let einAttachmentId = existingEinAtt
     let licenseAttachmentId = existingLicenseAtt
 
-    const tasks: Promise<void>[] = []
     if (!einAttachmentId && einDocUrl) {
-      tasks.push(
-        uploadCustomerAttachment(qbo, conn, {
+      try {
+        const r = await uploadCustomerAttachment(qbo, conn, {
           customerId: qboCustomerId,
           sourceUrl: einDocUrl,
           fileName: `ein-${businessSlug}${fileExt(einDocUrl)}`,
           note: "EIN document — uploaded during wholesale application",
-        }).then(
-          (r) => { einAttachmentId = r.id },
-          (e: any) => { logger.warn(`[approve-and-welcome] EIN attachment push failed: ${e?.message}`) },
-        ),
-      )
+        })
+        einAttachmentId = r.id
+      } catch (e: any) {
+        logger.warn(`[approve-and-welcome] EIN attachment push failed: ${e?.message}`)
+      }
     }
     if (!licenseAttachmentId && licenseDocUrl) {
-      tasks.push(
-        uploadCustomerAttachment(qbo, conn, {
+      try {
+        const r = await uploadCustomerAttachment(qbo, conn, {
           customerId: qboCustomerId,
           sourceUrl: licenseDocUrl,
           fileName: `resale-cert-${businessSlug}${fileExt(licenseDocUrl)}`,
           note: "Resale certificate — uploaded during wholesale application",
-        }).then(
-          (r) => { licenseAttachmentId = r.id },
-          (e: any) => { logger.warn(`[approve-and-welcome] resale-cert attachment push failed: ${e?.message}`) },
-        ),
-      )
+        })
+        licenseAttachmentId = r.id
+      } catch (e: any) {
+        logger.warn(`[approve-and-welcome] resale-cert attachment push failed: ${e?.message}`)
+      }
     }
-    if (tasks.length > 0) await Promise.allSettled(tasks)
 
     /* (3) Stamp the QBO id + attachment ids back on Medusa customer.
      *     Only set qbo_attachments_pushed_at when nothing's left to do
