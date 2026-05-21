@@ -33,7 +33,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
 
   // Pull the customer with their groups so we can check membership.
-  let customer: { id: string; email: string; phone?: string | null; metadata?: Record<string, any> | null; groups?: Array<{ id: string; name: string }> }
+  let customer: {
+    id: string; email: string; phone?: string | null;
+    first_name?: string | null; last_name?: string | null;
+    metadata?: Record<string, any> | null;
+    groups?: Array<{ id: string; name: string }>
+  }
   try {
     const list = await customerService.listCustomers(
       { id: [customerId] },
@@ -159,7 +164,11 @@ type QboPushResult =
 
 async function pushCustomerToQbo(
   req: MedusaRequest,
-  customer: { id: string; email: string; phone?: string | null; metadata?: Record<string, any> | null },
+  customer: {
+    id: string; email: string; phone?: string | null;
+    first_name?: string | null; last_name?: string | null;
+    metadata?: Record<string, any> | null;
+  },
   logger: any,
 ): Promise<QboPushResult> {
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
@@ -185,7 +194,14 @@ async function pushCustomerToQbo(
   }
 
   const businessName = String(meta.business_name ?? "").trim() || customer.email
+  /* GivenName/FamilyName live on the Medusa customer top-level fields
+   * (set from the apply form). Falling back to metadata.contact_name
+   * supports legacy customers pre-name-split who only had a combined
+   * "contact_name" key. */
+  const firstName = String(customer.first_name ?? "").trim() || null
+  const lastName  = String(customer.last_name ?? "").trim() || null
   const contactName = String(meta.contact_name ?? "").trim() || null
+  const businessTypeLabel = String(meta.business_type_label ?? "").trim() || null
 
   /* Map payment_terms → QBO SalesTerm Id. Net 15 → look up by name in
    * the operator's QBO term list. Silent fall-through (terms unset)
@@ -212,7 +228,10 @@ async function pushCustomerToQbo(
       state: meta.state ?? null,
       zip: meta.zip ?? null,
       country: meta.country ?? "US",
+      firstName,
+      lastName,
       contactName,
+      businessTypeLabel,
       salesTermId,
       notes: `Wholesale account · approved ${new Date().toISOString().slice(0, 10)}`,
     })

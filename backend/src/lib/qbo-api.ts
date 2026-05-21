@@ -118,8 +118,15 @@ export type CustomerInput = {
   state?: string | null
   zip?: string | null
   country?: string | null
-  /** Optional contact person name (rendered in Notes for context). */
+  /** Contact person name. Split fields map to QBO's GivenName/FamilyName
+   *  (which power "Title, First Name, Last Name" defaults). Falls back to
+   *  the legacy combined string in Notes when only contactName is set. */
+  firstName?: string | null
+  lastName?: string | null
   contactName?: string | null
+  /** Business category label (Smoke Shop / Dispensary / etc.) — rendered
+   *  in Notes since QBO has no native field for buyer business type. */
+  businessTypeLabel?: string | null
   /** Net 15 / Net 30 / Due on Receipt etc. — Sales Term ID from QBO. */
   salesTermId?: string | null
   notes?: string | null
@@ -161,6 +168,11 @@ export async function findOrCreateCustomer(
     CompanyName: input.businessName.slice(0, 1024),
     PrimaryEmailAddr: { Address: input.email },
   }
+  /* QBO's GivenName / FamilyName are the "Title, First, Last" components
+   * on a Customer. Setting them powers Customer Center's name column +
+   * any merge-field templates that reference {{Customer.Name}}. */
+  if (input.firstName) body.GivenName  = input.firstName.slice(0, 100)
+  if (input.lastName)  body.FamilyName = input.lastName.slice(0, 100)
   if (input.phone) body.PrimaryPhone = { FreeFormNumber: input.phone }
   if (input.addressLine1 || input.city || input.state || input.zip) {
     body.BillAddr = {
@@ -176,8 +188,14 @@ export async function findOrCreateCustomer(
     body.ShipAddr = { ...body.BillAddr }
   }
   if (input.salesTermId) body.SalesTermRef = { value: input.salesTermId }
+  /* Notes carries context that doesn't have a first-class QBO field. */
   const noteParts: string[] = []
-  if (input.contactName) noteParts.push(`Contact: ${input.contactName}`)
+  if (input.businessTypeLabel) noteParts.push(`Business Type: ${input.businessTypeLabel}`)
+  /* Only fall back to combined contactName in Notes when GivenName/
+   * FamilyName aren't set — otherwise it's just visual noise. */
+  if (input.contactName && !input.firstName && !input.lastName) {
+    noteParts.push(`Contact: ${input.contactName}`)
+  }
   if (input.notes) noteParts.push(input.notes)
   if (noteParts.length > 0) body.Notes = noteParts.join(" · ").slice(0, 2000)
 

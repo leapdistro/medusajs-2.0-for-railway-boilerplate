@@ -71,10 +71,12 @@ const CustomerApplicationDocsWidget = ({ data }: DetailWidgetProps<CustomerLite>
   const meta = data?.metadata ?? {}
   const einUrl = typeof meta.ein_doc_url === "string" ? meta.ein_doc_url : ""
   const licenseUrl = typeof meta.license_doc_url === "string" ? meta.license_doc_url : ""
+  const businessTypeLabel = typeof meta.business_type_label === "string" ? meta.business_type_label : ""
 
   /* Hide entirely for customers without uploaded application docs —
    * keeps the page clean for non-application customers (manually-created,
-   * legacy, etc.). */
+   * legacy, etc.). business_type alone isn't enough to render: it shows
+   * up *alongside* the docs when the customer is an applicant. */
   if (!einUrl && !licenseUrl) return null
 
   return (
@@ -85,6 +87,14 @@ const CustomerApplicationDocsWidget = ({ data }: DetailWidgetProps<CustomerLite>
           Files uploaded during this customer's wholesale application.
         </Text>
       </div>
+      {businessTypeLabel && (
+        <div className="flex items-center gap-3 px-6 py-3">
+          <Text size="xsmall" weight="plus" className="text-ui-fg-subtle uppercase tracking-wide">
+            Business Type
+          </Text>
+          <Text size="small">{businessTypeLabel}</Text>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-4 px-6 py-4 md:grid-cols-2">
         {einUrl && <DocCard label="EIN Document" url={einUrl} />}
         {licenseUrl && <DocCard label="Resale Certificate" url={licenseUrl} />}

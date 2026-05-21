@@ -69,6 +69,19 @@ const DEFAULTS: Array<{
     ],
   },
   {
+    key: "business_types",
+    description: "Buyer-selectable business categories on the wholesale application. Used to validate the apply form's business_type field and to render the dropdown options. Operator can add / archive entries in admin settings.",
+    value: [
+      { id: "smoke_shop",   label: "Smoke Shop",   archived: false },
+      { id: "vape_shop",    label: "Vape Shop",    archived: false },
+      { id: "dispensary",   label: "Dispensary",   archived: false },
+      { id: "tobacco_shop", label: "Tobacco Shop", archived: false },
+      { id: "ecommerce",    label: "E-commerce",   archived: false },
+      { id: "wholesale",    label: "Wholesale",    archived: false },
+      { id: "distro",       label: "Distro",       archived: false },
+    ],
+  },
+  {
     key: "flower_tier_prices",
     description: "Default selling prices for Flower variants by tier × size (USD whole dollars). Used by receiving to auto-fill new variant prices when operator picks a tier. Per-variant overrides via standard Medusa admin still work — these are defaults, not enforced.",
     value: {

@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { randomBytes } from "crypto"
+import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 
 /**
  * Wholesale-application submission endpoint (public, gated by publishable
@@ -71,7 +72,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   // ─── (1) Validate text fields ──────────────────────────────────────
   const body = req.body as Record<string, unknown>
   const businessName = pickStr(body.businessName)
-  const contactName  = pickStr(body.contactName)
+  const firstName    = pickStr(body.firstName)
+  const lastName     = pickStr(body.lastName)
+  const businessType = pickStr(body.businessType)
   const email        = pickStr(body.email).toLowerCase()
   const phone        = pickStr(body.phone)
   const address1     = pickStr(body.address1)
@@ -89,7 +92,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const required: { name: string; value: string }[] = [
     { name: "Business name",     value: businessName },
-    { name: "Contact name",      value: contactName },
+    { name: "Business type",     value: businessType },
+    { name: "First name",        value: firstName },
+    { name: "Last name",         value: lastName },
     { name: "Email",             value: email },
     { name: "Phone",             value: phone },
     { name: "Address",           value: address1 },
@@ -109,6 +114,22 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
   if (!einDoc)     return res.status(400).json({ ok: false, message: "EIN document is required" })
   if (!licenseDoc) return res.status(400).json({ ok: false, message: "Resale certificate is required" })
+
+  /* Validate businessType against the live settings list — rejects any
+   * value the form didn't load from /store/mbs/business-types (so a
+   * tampered submission can't stamp an unknown id on the customer). */
+  const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
+  const businessTypeRows = ((await settings.getSetting("business_types", [])) ?? []) as Array<{
+    id: string; label: string; archived?: boolean
+  }>
+  const businessTypeRow = businessTypeRows.find((r) => r.id === businessType && !r.archived)
+  if (!businessTypeRow) {
+    return res.status(400).json({
+      ok: false,
+      message: `Unknown business type "${businessType}". Refresh and pick again.`,
+    })
+  }
+  const businessTypeLabel = businessTypeRow.label
 
   // ─── (2) Customer lookup BEFORE side effects ───────────────────────
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
@@ -188,8 +209,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
      * the issue still isn't addressed). */
     try {
       await customerService.updateCustomers(existingCustomer.id, {
-        first_name: contactName.split(" ")[0] || contactName,
-        last_name:  contactName.split(" ").slice(1).join(" ") || null,
+        first_name: firstName,
+        last_name:  lastName,
         company_name: businessName,
         phone,
         metadata: {
@@ -197,6 +218,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           application_status: "pending_review",
           applied_at: new Date().toISOString(),
           business_name: businessName,
+          business_type_id: businessType,
+          business_type_label: businessTypeLabel,
           ein,
           license,
           address_line1: address1,
@@ -275,14 +298,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           },
           body: JSON.stringify({
             email,
-            first_name: contactName.split(" ")[0] || contactName,
-            last_name:  contactName.split(" ").slice(1).join(" ") || null,
+            first_name: firstName,
+            last_name:  lastName,
             company_name: businessName,
             phone,
             metadata: {
               application_status: "pending_review",
               applied_at: new Date().toISOString(),
               business_name: businessName,
+              business_type_id: businessType,
+              business_type_label: businessTypeLabel,
               ein,
               license,
               address_line1: address1,
@@ -321,11 +346,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       if (customerId) {
         try {
           const customerService: any = req.scope.resolve(Modules.CUSTOMER)
-          const [first, ...rest] = contactName.trim().split(/\s+/)
           await customerService.createCustomerAddresses([{
             customer_id: customerId,
-            first_name: first || contactName,
-            last_name: rest.join(" ") || null,
+            first_name: firstName,
+            last_name: lastName,
             company: businessName,
             phone,
             address_1: address1,
@@ -365,7 +389,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
               ? `Re-application: ${businessName}`
               : `New wholesale application: ${businessName}`,
           },
-          businessName, contactName, email, phone,
+          businessName,
+          businessType: businessTypeLabel,
+          firstName,
+          lastName,
+          /* Legacy templates render {{contactName}} — keep populated to
+           * avoid breaking the email until templates are migrated. */
+          contactName: `${firstName} ${lastName}`.trim(),
+          email, phone,
           address: `${address1}${address2 ? `, ${address2}` : ""}, ${city}, ${state} ${zip}`,
           ein, license, website, volume, heard, message,
           einDocUrl, licenseDocUrl,
@@ -385,7 +416,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
               ? "We received your updated wholesale application"
               : "Your Mind Body Spirit wholesale application",
           },
-          contactName,
+          firstName,
+          lastName,
+          /* See team-email block for why both are sent. */
+          contactName: `${firstName} ${lastName}`.trim(),
           businessName,
         },
       }])
