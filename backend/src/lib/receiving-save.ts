@@ -138,6 +138,11 @@ function asNumber(v: string | number | null | undefined): number | null {
 
 /* ---- Shared invoice context for all rows in one save ---- */
 
+export type ShippingWeights = {
+  flower?: { qp?: number; half?: number; lb?: number }
+  preroll?: Record<string, Record<string, number>>
+}
+
 export type SaveContext = {
   /** Active receiving profile — drives variant axes, subcategory lookups,
    *  pricing model, and field requirements. Defaults to FLOWER_PROFILE
@@ -146,6 +151,12 @@ export type SaveContext = {
   /** $/lb — total invoice shipping ÷ Σ(qty_lb). 0 if no shipping. */
   shipPerLb: number
   tierPrices: TierPriceMap
+  /** Lb-based shipping weights (packaged) per variant size. Resolved once
+   *  per save batch from `mbs_settings.shipping_weights`. Stamped onto
+   *  each new variant's `metadata.shipping_weight_lb` so ShipStation can
+   *  read it without touching the native variant.weight field (which
+   *  carries net grams for the storefront's per-gram math). */
+  shippingWeights: ShippingWeights | null
   /** Sales channel id to attach new products to (resolved once). */
   salesChannelId: string
   /** Stock location id to write inventory levels against (resolved once). */
@@ -158,10 +169,28 @@ export type SaveContext = {
   shippingProfileId: string
 }
 
+/** Lookup helper: tier_key + size_key → packaged shipping weight in lb.
+ *  Tier discriminates flower vs pre-roll subtree. Returns null when no
+ *  matching entry — caller decides whether to throw or skip. */
+export function lookupShippingWeight(
+  weights: ShippingWeights | null,
+  tierKey: string,
+  sizeKey: string,
+): number | null {
+  if (!weights) return null
+  if (tierKey === "classic" || tierKey === "exotic" || tierKey === "super" || tierKey === "snow" || tierKey === "rapper") {
+    const w = (weights.flower as any)?.[sizeKey]
+    return typeof w === "number" && Number.isFinite(w) && w > 0 ? w : null
+  }
+  const w = weights.preroll?.[tierKey]?.[sizeKey]
+  return typeof w === "number" && Number.isFinite(w) && w > 0 ? w : null
+}
+
 export async function buildSaveContext(
   container: any,
   shipPerLb: number,
   tierPrices: TierPriceMap,
+  shippingWeights: ShippingWeights | null,
   profile: ReceivingProfile = FLOWER_PROFILE,
 ): Promise<SaveContext> {
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
@@ -222,6 +251,7 @@ export async function buildSaveContext(
     profile,
     shipPerLb,
     tierPrices,
+    shippingWeights,
     salesChannelId: defaultChannel.id,
     stockLocationId: locations[0].id,
     subcategoryIds,
@@ -508,6 +538,16 @@ export async function saveOneRow(
          * them on the profile, write through. */
         ...(v.unitLabel ? { unit_label: v.unitLabel } : {}),
         ...(v.unitsPerVariant ? { units_per_variant: v.unitsPerVariant } : {}),
+        /* Packaged shipping weight (lb) — read by ShipStation's rate
+         * provider at checkout. Sits beside the native variant.weight
+         * (grams, net flower content) because they're different
+         * concepts; conflating them breaks the storefront's per-gram
+         * pricing display. Skip the stamp silently when the setting
+         * has no matching entry — operator can fill it in via MBS
+         * Settings → Shipping Weights → Apply later. */
+        ...(lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey) !== null
+          ? { shipping_weight_lb: lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey)! }
+          : {}),
       },
       inventory_items: [{
         inventory_item_id: inventoryItemId,

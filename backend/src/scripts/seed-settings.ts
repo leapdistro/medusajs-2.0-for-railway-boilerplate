@@ -82,6 +82,34 @@ const DEFAULTS: Array<{
     ],
   },
   {
+    key: "shipping_weights",
+    description: "Default shipping weights (lb, packaged) per variant size. Used by ShipStation rate quotes at checkout. Receiving stamps variant.metadata.shipping_weight_lb from these values on new variants; admin can bulk-apply to existing variants via MBS Settings → Shipping Weights → Apply to All Variants. Kept separate from the native variant.weight field (which carries net flower content in grams for the storefront's per-gram price math).",
+    value: {
+      /* Flower: packaged weight = flower net + pouch + labels.
+       * QP (0.25 lb net) → ~0.30 lb packaged
+       * Half (0.50 lb net) → ~0.55 lb packaged
+       * LB (1.0 lb net) → ~1.05 lb packaged */
+      flower: {
+        qp:   0.30,
+        half: 0.55,
+        lb:   1.05,
+      },
+      /* Pre-roll: keyed by (subcategory key → variant sizeKey → weight lb).
+       * Subcategory keys match the live receiving profile (slugified
+       * Medusa category names; static profile entries for THC-A + Hashholes
+       * use those exact keys). New subcategories added in Medusa show up
+       * in the admin UI on next load — operator types in the weight there. */
+      preroll: {
+        "thc-a": {
+          "30pk": 0.45,
+        },
+        "hashholes": {
+          "15pk": 0.55,
+        },
+      },
+    },
+  },
+  {
     key: "flower_tier_prices",
     description: "Default selling prices for Flower variants by tier × size (USD whole dollars). Used by receiving to auto-fill new variant prices when operator picks a tier. Per-variant overrides via standard Medusa admin still work — these are defaults, not enforced.",
     value: {

@@ -34,6 +34,7 @@ const TABS = [
   { id: "cancellation_reasons", label: "Cancellation Reasons"  },
   { id: "denial_reasons",       label: "Denial Reasons"        },
   { id: "flower_tier_prices",   label: "Tier Prices"           },
+  { id: "shipping_weights",     label: "Shipping Weights"      },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -135,6 +136,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "flower_tier_prices" && (
               <TierPricesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "shipping_weights" && (
+              <ShippingWeightsForm row={currentRow} onSaved={onSaved} />
             )}
           </>
         )}
@@ -431,6 +435,209 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
       <div>
         <Button variant="primary" onClick={save} isLoading={saving}>Save Tier Prices</Button>
       </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────── Shipping Weights ─────────────────────────── */
+type ShippingWeights = {
+  flower: { qp: number; half: number; lb: number }
+  preroll: Record<string, Record<string, number>>
+}
+
+type PrerollSubcategoryRow = {
+  key: string
+  label: string
+  variants: Array<{ sizeKey: string; label: string }>
+}
+
+const EMPTY_SHIPPING_WEIGHTS: ShippingWeights = {
+  flower: { qp: 0, half: 0, lb: 0 },
+  preroll: {},
+}
+
+const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<ShippingWeights>(EMPTY_SHIPPING_WEIGHTS)
+  const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
+  const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  /* Hydrate from setting once. Merge incoming over the empty shape so
+   * a partial setting (e.g., flower only, no preroll yet) still renders
+   * cleanly. */
+  useEffect(() => {
+    if (!row?.value) return
+    const incoming = row.value as Partial<ShippingWeights>
+    setV({
+      flower: { ...EMPTY_SHIPPING_WEIGHTS.flower, ...(incoming.flower ?? {}) },
+      preroll: { ...(incoming.preroll ?? {}) },
+    })
+  }, [row])
+
+  /* Live-fetch pre-roll subcategories from the receiving profile route.
+   * This is the same source the receiving page uses, so anything added
+   * in Medusa admin shows up here automatically. */
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/receiving/profile/pre-roll", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: { profile?: { subcategories?: PrerollSubcategoryRow[] } }) => {
+        if (cancelled) return
+        setPrerollSubs(j.profile?.subcategories ?? [])
+      })
+      .catch((e: any) => {
+        if (cancelled) return
+        setLoadError(`Could not load pre-roll subcategories: ${e?.message}`)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const setFlower = (key: "qp" | "half" | "lb") => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({ ...p, flower: { ...p.flower, [key]: Number.isFinite(n) ? n : 0 } }))
+  }
+
+  const setPreroll = (subKey: string, sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({
+      ...p,
+      preroll: {
+        ...p.preroll,
+        [subKey]: { ...(p.preroll[subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
+      },
+    }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const next = await saveSetting("shipping_weights", v)
+      onSaved(next)
+      toast.success("Shipping weights saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const apply = async () => {
+    setApplying(true)
+    setConfirmApply(false)
+    try {
+      const res = await fetch("/admin/mbs/settings/shipping-weights/apply", {
+        method: "POST",
+        credentials: "include",
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      toast.success(
+        `${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`,
+      )
+    } catch (e: any) {
+      toast.error(e?.message ?? "Apply failed")
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Default packaged shipping weights (lb) per variant size. Used by ShipStation rate quotes at checkout. New variants created via receiving auto-stamp these values. Click <strong>Apply to All Variants</strong> after saving to overwrite existing variants in bulk.
+      </Text>
+
+      {/* Flower section */}
+      <div>
+        <Heading level="h2" className="mb-2">Flower</Heading>
+        <div className="border">
+          <div className="grid grid-cols-3 border-b">
+            {(["qp", "half", "lb"] as const).map((k) => (
+              <div key={k} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">
+                {k === "qp" ? "QP" : k === "half" ? "½" : "LB"}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-3">
+            {(["qp", "half", "lb"] as const).map((k) => (
+              <div key={k} className="p-1.5 flex items-center gap-1">
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.01}
+                  value={v.flower[k] || ""}
+                  onChange={setFlower(k)}
+                  placeholder="0.00"
+                  className="text-right"
+                />
+                <Text size="xsmall" className="text-ui-fg-subtle">lb</Text>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Pre-roll section */}
+      <div>
+        <Heading level="h2" className="mb-2">Pre-Rolls</Heading>
+        {loadError ? (
+          <Text size="small" className="text-ui-fg-error">{loadError}</Text>
+        ) : prerollSubs.length === 0 ? (
+          <Text size="small" className="text-ui-fg-subtle">Loading pre-roll subcategories…</Text>
+        ) : (
+          <div className="border divide-y">
+            {prerollSubs.map((sub) => (
+              <div key={sub.key} className="px-3 py-3">
+                <Text size="small" weight="plus" className="mb-1.5">{sub.label}</Text>
+                <div className="flex flex-col gap-1.5">
+                  {sub.variants.map((variant) => (
+                    <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
+                      <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          step={0.01}
+                          value={v.preroll[sub.key]?.[variant.sizeKey] || ""}
+                          onChange={setPreroll(sub.key, variant.sizeKey)}
+                          placeholder="0.00"
+                          className="text-right"
+                        />
+                        <Text size="xsmall" className="text-ui-fg-subtle">lb</Text>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t">
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Shipping Weights</Button>
+        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
+          Apply to All Variants
+        </Button>
+      </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Overwrite every matching variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            This will set <code>variant.metadata.shipping_weight_lb</code> on every flower + pre-roll variant whose tier_key / size_key matches the saved settings. Any per-variant overrides will be replaced. Variants without matching settings (custom subcategories not yet weighted, or non-flower / non-pre-roll products) are skipped silently.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
