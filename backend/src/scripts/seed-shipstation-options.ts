@@ -116,13 +116,13 @@ export default async function seedShipStationOptions({ container }: ExecArgs) {
         /* "calculated" tells Medusa to defer pricing to the provider's
          * calculatePrice() call at cart-time. */
         price_type: "calculated" as const,
-        /* Medusa internally prepends `fp_` when looking up fulfillment
-         * providers in the container — pass just the identifier here.
-         * Since medusa-config.js omits `id` for the ShipStation provider,
-         * the resolved container key is `fp_shipstation`. (The seeded
-         * manual provider uses provider_id "manual_manual" because that
-         * registration sets both identifier + id to "manual".) */
-        provider_id: "shipstation",
+        /* Container key = `fp_${identifier}_${id}` for fulfillment
+         * providers. medusa-config.js sets id: "shipstation" on the
+         * registration, mirroring the manual provider's `manual_manual`
+         * pattern, so the resolved key is `fp_shipstation_shipstation`.
+         * Medusa prepends `fp_` itself when resolving; pass
+         * `shipstation_shipstation` here. */
+        provider_id: "shipstation_shipstation",
         service_zone_id: serviceZoneId,
         shipping_profile_id: shippingProfile.id,
         type: { label: o.label, description: o.description, code: o.code },

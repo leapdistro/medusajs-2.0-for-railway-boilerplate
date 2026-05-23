@@ -69,14 +69,10 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
   } | null
 
   constructor(cradle: any) {
+    /* AbstractFulfillmentProviderService takes no constructor args per
+     * its TS signature. The cradle still arrives because Medusa passes
+     * it via DI — we grab the cache service before super() and stash. */
     super()
-    /* Cache module is registered by default in Medusa v2 (in-memory).
-     * Pull it once from the cradle at construction — fulfillment providers
-     * don't share the awilix-Proxy-on-resolve gotcha that bit the payment
-     * provider (see feedback_medusa_provider_cradle_proxy.md); fulfillment
-     * providers are constructed with a normal scoped cradle. Guard with
-     * optional chaining anyway so a stripped-down test environment that
-     * doesn't include the cache module still loads the service. */
     this.cache_ = cradle?.cacheService ?? cradle?.cache_service ?? null
   }
 

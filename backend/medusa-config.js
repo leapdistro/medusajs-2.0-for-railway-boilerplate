@@ -147,11 +147,14 @@ const medusaConfig = {
           },
           {
             resolve: './src/modules/shipstation-fulfillment',
-            /* No `id:` field — Medusa builds the fulfillment container
-             * key as `fp_${identifier}${id ? `_${id}` : ""}`. Omitting
-             * yields `fp_shipstation`. seed-shipstation-options.ts uses
-             * provider_id "shipstation" (Medusa prepends the `fp_`
-             * itself when resolving). */
+            /* Set `id: "shipstation"` explicitly. The fulfillment module
+             * appears to require an id (unlike payment, where omitting
+             * works) — the manual provider is registered with id "manual"
+             * making its container key `fp_manual_manual`. Mirror that:
+             * container key resolves to `fp_shipstation_shipstation` and
+             * seed-shipstation-options.ts uses provider_id
+             * "shipstation_shipstation". */
+            id: 'shipstation',
           },
         ],
       },
