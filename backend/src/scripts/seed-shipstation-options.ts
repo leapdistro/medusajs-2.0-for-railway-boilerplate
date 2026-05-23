@@ -71,7 +71,7 @@ export default async function seedShipStationOptions({ container }: ExecArgs) {
     if (!opt) continue
     /* Skip if already calculated + provider already ShipStation — that
      * means a prior run handled it. */
-    if (opt.price_type === "calculated" && String(opt.provider_id ?? "").startsWith("sp_shipstation")) {
+    if (opt.price_type === "calculated" && String(opt.provider_id ?? "").includes("shipstation")) {
       continue
     }
     toRetire.push(opt.id)
@@ -116,10 +116,13 @@ export default async function seedShipStationOptions({ container }: ExecArgs) {
         /* "calculated" tells Medusa to defer pricing to the provider's
          * calculatePrice() call at cart-time. */
         price_type: "calculated" as const,
-        /* Container key — `sp_${identifier}${id ? `_${id}` : ""}`, and
-         * since medusa-config.js omits `id` for the ShipStation provider,
-         * the key resolves to `sp_shipstation`. */
-        provider_id: "sp_shipstation",
+        /* Medusa internally prepends `fp_` when looking up fulfillment
+         * providers in the container — pass just the identifier here.
+         * Since medusa-config.js omits `id` for the ShipStation provider,
+         * the resolved container key is `fp_shipstation`. (The seeded
+         * manual provider uses provider_id "manual_manual" because that
+         * registration sets both identifier + id to "manual".) */
+        provider_id: "shipstation",
         service_zone_id: serviceZoneId,
         shipping_profile_id: shippingProfile.id,
         type: { label: o.label, description: o.description, code: o.code },
