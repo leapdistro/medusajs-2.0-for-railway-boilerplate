@@ -35,6 +35,7 @@
     "test:store-products": "medusa exec ./src/scripts/test-store-products.ts",
     "test:email": "medusa exec ./src/scripts/test-email.ts",
     "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",
+    "seed:shipstation": "medusa exec ./src/scripts/seed-shipstation-options.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
     "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",

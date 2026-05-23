@@ -132,6 +132,30 @@ const medusaConfig = {
         ]
       }
     }] : []),
+    /* Fulfillment module — registers the seeded manual provider (so the
+     * existing static options like Local Pickup keep working) plus
+     * ShipStation's live-rates provider when API creds are configured.
+     * The manual provider is always included; ShipStation is opt-in. */
+    ...(process.env.SHIPSTATION_API_KEY && process.env.SHIPSTATION_API_SECRET ? [{
+      key: Modules.FULFILLMENT,
+      resolve: '@medusajs/fulfillment',
+      options: {
+        providers: [
+          {
+            resolve: '@medusajs/fulfillment-manual',
+            id: 'manual',
+          },
+          {
+            resolve: './src/modules/shipstation-fulfillment',
+            /* No `id:` field — Medusa builds the container key as
+             * `sp_${identifier}${id ? `_${id}` : ""}`. Omitting yields
+             * `sp_shipstation`. seed-shipstation-options.ts references
+             * that exact provider_id when creating calculated options. */
+          },
+        ],
+      },
+    }] : []),
+
     /* Payment module — registers all configured external providers
      * (KAJA / Authorize.net, optionally Stripe). pp_system_default is
      * always available out of the box; no need to list it here. */
