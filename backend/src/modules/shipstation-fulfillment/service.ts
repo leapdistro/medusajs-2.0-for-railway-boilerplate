@@ -1,4 +1,4 @@
-import { AbstractFulfillmentProviderService, MedusaError, Modules } from "@medusajs/framework/utils"
+import { AbstractFulfillmentProviderService, ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import type {
   CalculateShippingOptionPriceDTO,
   CalculatedShippingOptionPrice,
@@ -195,38 +195,39 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
     let metadataByVariantId: Record<string, any> = {}
     console.info(`[shipstation] calculatePrice start: ${variantIds.length} variant(s), cradle=${this.cradle_ ? "yes" : "no"}`)
     if (variantIds.length > 0 && this.cradle_) {
-      /* Try the cradle directly, then a few common alias keys — Medusa
-       * registers the product module's container key inconsistently
-       * across minors. */
-      const candidateKeys = [Modules.PRODUCT, "productService", "productModuleService"]
-      let productService: any = null
+      /* Medusa v2 enforces module isolation — cross-module DI is blocked
+       * for direct service access. But the QUERY service is a top-level
+       * framework registration (not a module) so it IS resolvable from
+       * any cradle. Use it to graph-query the product_variant entity. */
+      let queryService: any = null
       let resolveErr: string | null = null
-      for (const key of candidateKeys) {
+      for (const key of [ContainerRegistrationKeys.QUERY, "remoteQuery", "query"]) {
         try {
           const s = this.cradle_[key]
-          if (s && typeof s.listProductVariants === "function") {
-            productService = s
-            console.info(`[shipstation] resolved product module via cradle["${key}"]`)
+          if (s && typeof s.graph === "function") {
+            queryService = s
+            console.info(`[shipstation] resolved query service via cradle["${key}"]`)
             break
           }
         } catch (e: any) {
           resolveErr = `${key}: ${e?.message}`
         }
       }
-      if (!productService) {
-        console.warn(`[shipstation] could not resolve product module from cradle (last err: ${resolveErr ?? "none"})`)
+      if (!queryService) {
+        console.warn(`[shipstation] could not resolve query service from cradle (last err: ${resolveErr ?? "none"})`)
       } else {
         try {
-          const variants = await productService.listProductVariants(
-            { id: variantIds },
-            { take: variantIds.length },
-          )
-          console.info(`[shipstation] looked up ${variants?.length ?? 0} variant(s); sample metadata=${JSON.stringify(variants?.[0]?.metadata ?? {}).slice(0, 200)}`)
-          for (const v of variants ?? []) {
+          const { data: variants } = await queryService.graph({
+            entity: "product_variant",
+            fields: ["id", "metadata"],
+            filters: { id: variantIds },
+          })
+          console.info(`[shipstation] graph lookup returned ${variants?.length ?? 0} variant(s); sample=${JSON.stringify(variants?.[0] ?? {}).slice(0, 200)}`)
+          for (const v of (variants as any[]) ?? []) {
             metadataByVariantId[v.id] = v.metadata ?? {}
           }
         } catch (e: any) {
-          console.warn(`[shipstation] listProductVariants threw: ${e?.message}`)
+          console.warn(`[shipstation] query.graph threw: ${e?.message}`)
         }
       }
     }
