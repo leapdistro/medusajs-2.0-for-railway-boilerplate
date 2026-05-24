@@ -19,6 +19,35 @@ type ShipStationOptionData = {
 }
 
 /**
+ * Per-process rate cache. We can't use Modules.CACHE from inside a
+ * fulfillment provider — the awilix cradle is a Proxy and ANY property
+ * access (even `cradle.cacheService`) becomes a `resolve()` call which
+ * throws if the key isn't registered. Same gotcha as the payment
+ * provider — see feedback_medusa_provider_cradle_proxy.md.
+ *
+ * In-process Map keyed by `zip:weight:declared_value:service` is enough
+ * for our use case: Medusa calls calculatePrice once per shipping option
+ * per cart recalc; cache lets the second option (NDA Saver) skip the API
+ * after Ground populated both rates. Survives the entire backend process
+ * lifetime; Railway redeploys flush it.
+ */
+const rateCache = new Map<string, { total: number; expiresAt: number }>()
+
+function cacheGet(key: string): number | null {
+  const entry = rateCache.get(key)
+  if (!entry) return null
+  if (entry.expiresAt < Date.now()) {
+    rateCache.delete(key)
+    return null
+  }
+  return entry.total
+}
+
+function cacheSet(key: string, total: number, ttlSec: number): void {
+  rateCache.set(key, { total, expiresAt: Date.now() + ttlSec * 1000 })
+}
+
+/**
  * Shape we need from `cart` inside calculatePrice. Medusa hands us the
  * fully expanded cart with items + addresses, but we only need a small
  * slice — type defensively so missing fields don't crash on null.
@@ -63,17 +92,12 @@ type CalcCart = {
 class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
   static identifier = "shipstation"
 
-  protected readonly cache_: {
-    get: (k: string) => Promise<unknown>
-    set: (k: string, v: unknown, ttlSec?: number) => Promise<void>
-  } | null
-
-  constructor(cradle: any) {
+  constructor() {
     /* AbstractFulfillmentProviderService takes no constructor args per
-     * its TS signature. The cradle still arrives because Medusa passes
-     * it via DI — we grab the cache service before super() and stash. */
+     * its TS signature. Critically: do NOT probe the cradle here — it's
+     * an awilix Proxy and any property access becomes a resolve() that
+     * throws. Cache is module-level (see top of file). */
     super()
-    this.cache_ = cradle?.cacheService ?? cradle?.cache_service ?? null
   }
 
   /* ─── Static option list ──────────────────────────────────────── */
@@ -177,11 +201,9 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
      * Ground ↔ NDA toggles both options' calculate calls). */
     const reqShape = { toPostalCode: toZip, weightLbs: Number(weightLbs.toFixed(2)), declaredValue }
     const cacheKey = `${rateCacheKey(reqShape)}:${serviceCode}`
-    if (this.cache_) {
-      const hit = await this.cache_.get(cacheKey).catch(() => null) as { total: number } | null
-      if (hit && typeof hit.total === "number") {
-        return { calculated_amount: hit.total, is_calculated_price_tax_inclusive: false }
-      }
+    const hit = cacheGet(cacheKey)
+    if (hit !== null) {
+      return { calculated_amount: hit, is_calculated_price_tax_inclusive: false }
     }
 
     const rates = await getRates(reqShape)
@@ -193,15 +215,10 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
       )
     }
 
-    if (this.cache_) {
-      /* Cache BOTH services in one round-trip so the second
-       * calculatePrice (Medusa calls once per shipping option) skips
-       * the API. */
-      await Promise.all(
-        rates.map((r) =>
-          this.cache_!.set(`${rateCacheKey(reqShape)}:${r.serviceCode}`, { total: r.total }, 60 * 10),
-        ),
-      )
+    /* Cache BOTH services in one round-trip so the second calculatePrice
+     * (Medusa calls once per shipping option) skips the API. */
+    for (const r of rates) {
+      cacheSet(`${rateCacheKey(reqShape)}:${r.serviceCode}`, r.total, 60 * 10)
     }
 
     return { calculated_amount: match.total, is_calculated_price_tax_inclusive: false }
