@@ -180,25 +180,41 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
       .filter((id): id is string => typeof id === "string" && id.length > 0)
 
     let metadataByVariantId: Record<string, any> = {}
+    console.info(`[shipstation] calculatePrice start: ${variantIds.length} variant(s), cradle=${this.cradle_ ? "yes" : "no"}`)
     if (variantIds.length > 0 && this.cradle_) {
-      try {
-        /* Resolve the product module from the cradle. Modules.PRODUCT is
-         * a standard Medusa key — safe to access on the Proxy (the gotcha
-         * only fires on unregistered keys). */
-        const productService: any = this.cradle_[Modules.PRODUCT]
-        const variants = await productService.listProductVariants(
-          { id: variantIds },
-          { take: variantIds.length, select: ["id", "title", "metadata"] },
-        )
-        for (const v of variants ?? []) {
-          metadataByVariantId[v.id] = v.metadata ?? {}
+      /* Try the cradle directly, then a few common alias keys — Medusa
+       * registers the product module's container key inconsistently
+       * across minors. */
+      const candidateKeys = [Modules.PRODUCT, "productService", "productModuleService"]
+      let productService: any = null
+      let resolveErr: string | null = null
+      for (const key of candidateKeys) {
+        try {
+          const s = this.cradle_[key]
+          if (s && typeof s.listProductVariants === "function") {
+            productService = s
+            console.info(`[shipstation] resolved product module via cradle["${key}"]`)
+            break
+          }
+        } catch (e: any) {
+          resolveErr = `${key}: ${e?.message}`
         }
-      } catch (e: any) {
-        /* If the lookup fails, fall through to the context-based read
-         * (which will likely surface "missing" errors but at least
-         * doesn't crash). Log so operators can see why rates are
-         * failing for everyone. */
-        console.warn(`[shipstation] variant metadata lookup failed: ${e?.message}`)
+      }
+      if (!productService) {
+        console.warn(`[shipstation] could not resolve product module from cradle (last err: ${resolveErr ?? "none"})`)
+      } else {
+        try {
+          const variants = await productService.listProductVariants(
+            { id: variantIds },
+            { take: variantIds.length },
+          )
+          console.info(`[shipstation] looked up ${variants?.length ?? 0} variant(s); sample metadata=${JSON.stringify(variants?.[0]?.metadata ?? {}).slice(0, 200)}`)
+          for (const v of variants ?? []) {
+            metadataByVariantId[v.id] = v.metadata ?? {}
+          }
+        } catch (e: any) {
+          console.warn(`[shipstation] listProductVariants threw: ${e?.message}`)
+        }
       }
     }
 
