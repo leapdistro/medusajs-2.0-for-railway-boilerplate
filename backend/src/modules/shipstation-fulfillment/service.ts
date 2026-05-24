@@ -1,4 +1,4 @@
-import { AbstractFulfillmentProviderService, MedusaError } from "@medusajs/framework/utils"
+import { AbstractFulfillmentProviderService, MedusaError, Modules } from "@medusajs/framework/utils"
 import type {
   CalculateShippingOptionPriceDTO,
   CalculatedShippingOptionPrice,
@@ -92,12 +92,21 @@ type CalcCart = {
 class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
   static identifier = "shipstation"
 
-  constructor() {
-    /* AbstractFulfillmentProviderService takes no constructor args per
-     * its TS signature. Critically: do NOT probe the cradle here — it's
-     * an awilix Proxy and any property access becomes a resolve() that
-     * throws. Cache is module-level (see top of file). */
+  /* Store the cradle reference (no property access in constructor — that
+   * would trigger the awilix Proxy gotcha). We access Modules.PRODUCT
+   * on it inside calculatePrice() to look up variant metadata, because
+   * Medusa's calculatePrice context only includes variant.id, not the
+   * full variant — even though we need metadata.shipping_weight_lb. */
+  private readonly cradle_: any
+
+  constructor(cradle?: any) {
     super()
+    /* Critically: assignment-only, no property access. Accessing
+     * a property on the Proxy triggers `resolve()` for that key; doing
+     * it here for unregistered keys would crash provider registration.
+     * Method-level access of KNOWN-registered services (Modules.PRODUCT
+     * etc.) is fine and is the standard Medusa DI pattern. */
+    this.cradle_ = cradle ?? null
   }
 
   /* ─── Static option list ──────────────────────────────────────── */
@@ -161,16 +170,47 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
     }
 
     /* Sum packaged shipping weight from variant.metadata.shipping_weight_lb.
-     * Hard-fail with a clear operator-actionable message if any line is
-     * missing the stamp — buyer shouldn't be able to check out with
-     * un-weighed merchandise (real cost would be a guess). */
+     * Medusa's calculatePrice context only includes variant.id, not the
+     * full variant — we look up metadata explicitly via the product
+     * module. Hard-fail with a clear operator-actionable message if any
+     * line is missing the stamp; buyer shouldn't be able to check out
+     * with un-weighed merchandise (real cost would be a guess). */
+    const variantIds = (cart.items ?? [])
+      .map((it) => (it.variant as any)?.id ?? (it as any).variant_id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+
+    let metadataByVariantId: Record<string, any> = {}
+    if (variantIds.length > 0 && this.cradle_) {
+      try {
+        /* Resolve the product module from the cradle. Modules.PRODUCT is
+         * a standard Medusa key — safe to access on the Proxy (the gotcha
+         * only fires on unregistered keys). */
+        const productService: any = this.cradle_[Modules.PRODUCT]
+        const variants = await productService.listProductVariants(
+          { id: variantIds },
+          { take: variantIds.length, select: ["id", "title", "metadata"] },
+        )
+        for (const v of variants ?? []) {
+          metadataByVariantId[v.id] = v.metadata ?? {}
+        }
+      } catch (e: any) {
+        /* If the lookup fails, fall through to the context-based read
+         * (which will likely surface "missing" errors but at least
+         * doesn't crash). Log so operators can see why rates are
+         * failing for everyone. */
+        console.warn(`[shipstation] variant metadata lookup failed: ${e?.message}`)
+      }
+    }
+
     let weightLbs = 0
     const missing: string[] = []
     for (const item of cart.items ?? []) {
       const qty = Number(item.quantity ?? 0)
-      const w = Number(item.variant?.metadata?.shipping_weight_lb ?? 0)
+      const vid = (item.variant as any)?.id ?? (item as any).variant_id
+      const meta = metadataByVariantId[vid] ?? (item.variant?.metadata ?? {})
+      const w = Number(meta?.shipping_weight_lb ?? 0)
       if (!Number.isFinite(w) || w <= 0) {
-        missing.push((item.variant as any)?.title ?? (item.variant as any)?.id ?? "(unknown variant)")
+        missing.push((item.variant as any)?.title ?? vid ?? "(unknown variant)")
         continue
       }
       weightLbs += qty * w
