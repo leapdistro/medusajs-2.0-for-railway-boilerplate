@@ -29,8 +29,31 @@ import { createShippingOptionsWorkflow, deleteShippingOptionsWorkflow } from "@m
 export default async function seedShipStationOptions({ container }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
   const fulfillmentService: any = container.resolve(Modules.FULFILLMENT)
+  const stockLocationService: any = container.resolve(Modules.STOCK_LOCATION)
+  const link = container.resolve(ContainerRegistrationKeys.LINK)
 
   logger.info("▶ Migrating UPS options to ShipStation calculated rates…")
+
+  /* ─── 0. Link the ShipStation provider to the warehouse ─────
+   * Medusa rejects "provider not enabled for service location" when
+   * a shipping_option references a fulfillment provider that has no
+   * link to the stock location backing the service zone. Mirrors the
+   * `manual_manual` link created in seed-us.ts:136. */
+  const warehouses = await stockLocationService.listStockLocations({}, { take: 1 })
+  const warehouse = warehouses?.[0]
+  if (!warehouse) {
+    logger.error("No stock location found. Run `pnpm seed:us` first.")
+    return
+  }
+  try {
+    await link.create({
+      [Modules.STOCK_LOCATION]: { stock_location_id: warehouse.id },
+      [Modules.FULFILLMENT]: { fulfillment_provider_id: "shipstation_shipstation" },
+    })
+    logger.info(`  + link: warehouse ↔ shipstation provider`)
+  } catch {
+    logger.info(`  · link: warehouse ↔ shipstation provider exists`)
+  }
 
   /* ─── 1. Find the service zone (created by seed-us.ts) ──────── */
   const sets = await fulfillmentService.listFulfillmentSets(
