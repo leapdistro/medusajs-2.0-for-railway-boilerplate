@@ -179,6 +179,19 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
       .map((it) => (it.variant as any)?.id ?? (it as any).variant_id)
       .filter((id): id is string => typeof id === "string" && id.length > 0)
 
+    /* TEMP DIAGNOSTIC — dump the first item structure so we can see
+     * what fields Medusa actually expands in the calculatePrice cart
+     * context. Remove once we know the right path to variant metadata. */
+    const firstItem = (cart.items ?? [])[0]
+    if (firstItem) {
+      const keys = Object.keys(firstItem as any).slice(0, 30)
+      const variantKeys = firstItem.variant ? Object.keys(firstItem.variant as any).slice(0, 30) : []
+      console.info(`[shipstation] DIAG item keys: ${keys.join(",")}`)
+      console.info(`[shipstation] DIAG item.variant keys: ${variantKeys.join(",")}`)
+      console.info(`[shipstation] DIAG item.variant.metadata: ${JSON.stringify((firstItem.variant as any)?.metadata ?? null).slice(0, 300)}`)
+      console.info(`[shipstation] DIAG item.metadata: ${JSON.stringify((firstItem as any)?.metadata ?? null).slice(0, 300)}`)
+    }
+
     let metadataByVariantId: Record<string, any> = {}
     console.info(`[shipstation] calculatePrice start: ${variantIds.length} variant(s), cradle=${this.cradle_ ? "yes" : "no"}`)
     if (variantIds.length > 0 && this.cradle_) {
