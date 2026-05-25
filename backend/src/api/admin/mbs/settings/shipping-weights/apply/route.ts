@@ -73,9 +73,20 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const { data: variants } = await query.graph({
     entity: "product_variant",
-    fields: ["id", "title", "sku", "weight", "metadata"],
+    fields: [
+      "id", "title", "sku", "weight", "metadata",
+      /* Needed for the category-based fallback: when a legacy variant
+       * lacks tier_key/size_key metadata AND its SKU doesn't decode
+       * (pre-rolls have no QTR/HALF/FULL prefix), match the variant's
+       * product categories against the rates.preroll subcategory keys. */
+      "product.categories.name",
+    ],
     filters: { deleted_at: null },
   })
+
+  function slugify(s: string): string {
+    return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+  }
 
   let updated = 0
   let skipped = 0
@@ -99,12 +110,27 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       const resolved = fromSku(typeof v.sku === "string" ? v.sku : null)
       if (resolved) dollars = (rates.flower as any)?.[resolved.size]
     }
+    /* Category-based fallback for legacy pre-roll variants that have
+     * no tier_key/size_key metadata AND no decodable SKU (e.g., the
+     * seed-data GELATO KING product). Find a category whose slugified
+     * name matches a key under rates.preroll; pick the FIRST sizeKey
+     * configured under that subcategory as the variant's rate. Works
+     * because operators currently configure one size per subcategory
+     * (30pk for thc-a, 15pk for hashholes); if multi-size pre-roll
+     * subcategories arrive later, this picks the first — operator
+     * can manually override per variant. */
     if (typeof dollars !== "number" || !Number.isFinite(dollars) || dollars <= 0) {
-      /* Last-resort: operator-set shipping_weight_lb metadata from a
-       * prior session — treat the value as dollars now (the field
-       * name is legacy; we ignore the "lb" semantics). */
-      const fromMeta = Number(meta.shipping_weight_lb)
-      if (Number.isFinite(fromMeta) && fromMeta > 0) dollars = fromMeta
+      const cats = (v.product?.categories ?? []) as Array<{ name?: string }>
+      for (const cat of cats) {
+        const slug = slugify(String(cat.name ?? ""))
+        const subRates = rates.preroll?.[slug]
+        if (!subRates) continue
+        const firstSizeKey = Object.keys(subRates).find((k) => Number(subRates[k]) > 0)
+        if (firstSizeKey) {
+          dollars = Number(subRates[firstSizeKey])
+          break
+        }
+      }
     }
 
     if (typeof dollars !== "number" || !Number.isFinite(dollars) || dollars <= 0) {
