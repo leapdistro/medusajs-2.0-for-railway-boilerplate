@@ -404,7 +404,8 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
           displayId, contactName, businessName, items,
           itemsTotalFormatted:    moneyArgs(totals.itemsTotal),
           shippingTotalFormatted: moneyArgs(totals.shippingTotal),
-          taxTotalFormatted:      moneyArgs(totals.taxTotal),
+          /* B2B-only — buyers have resale cert on file; tax always exempt. */
+        taxTotalFormatted:      "Exempt",
           grandTotalFormatted:    moneyArgs(totals.grandTotal),
           shippingAddress: pickAddress(order.shipping_address),
           billingAddress:  pickAddress(order.billing_address),
@@ -436,7 +437,8 @@ export async function sendOrderPlacedEmails(container: any, orderId: string): Pr
         contactName, businessName, items,
         itemsTotalFormatted:    moneyArgs(totals.itemsTotal),
         shippingTotalFormatted: moneyArgs(totals.shippingTotal),
-        taxTotalFormatted:      moneyArgs(totals.taxTotal),
+        /* B2B-only — buyers have resale cert on file; tax always exempt. */
+        taxTotalFormatted:      "Exempt",
         grandTotalFormatted:    moneyArgs(totals.grandTotal),
         shippingAddress: pickAddress(order.shipping_address),
         billingAddress:  pickAddress(order.billing_address),
