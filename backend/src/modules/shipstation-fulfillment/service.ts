@@ -1,6 +1,4 @@
 import { AbstractFulfillmentProviderService, MedusaError } from "@medusajs/framework/utils"
-
-const GRAMS_PER_LB = 453.59237
 import type {
   CalculateShippingOptionPriceDTO,
   CalculatedShippingOptionPrice,
@@ -163,25 +161,23 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
       )
     }
 
-    /* Path A: read packaged shipping weight from the native
-     * `variant.weight` field (grams). Medusa expands variant.weight in
-     * the calculatePrice cart context — unlike custom metadata, which
-     * isn't expanded due to performance/payload-size considerations.
-     * This sidesteps the Medusa v2 module-isolation gotcha (fulfillment
-     * provider can't cross-resolve product module). Convert grams → lbs
-     * for ShipStation. Hard-fail on any variant missing weight so the
+    /* Path A: read packaged shipping weight from `item.variant.weight`
+     * (lbs). Medusa expands variant.weight in the calculatePrice cart
+     * context — unlike custom metadata which isn't expanded for
+     * performance reasons. ShipStation API takes pounds natively, so
+     * no conversion. Hard-fail on any variant missing weight so the
      * buyer can't check out with un-weighed merchandise. */
     let weightLbs = 0
     const missing: string[] = []
     for (const item of cart.items ?? []) {
       const qty = Number(item.quantity ?? 0)
-      const grams = Number((item.variant as any)?.weight ?? 0)
-      if (!Number.isFinite(grams) || grams <= 0) {
+      const lbs = Number((item.variant as any)?.weight ?? 0)
+      if (!Number.isFinite(lbs) || lbs <= 0) {
         const vid = (item.variant as any)?.id ?? (item as any).variant_id
         missing.push((item.variant as any)?.title ?? vid ?? "(unknown variant)")
         continue
       }
-      weightLbs += (qty * grams) / GRAMS_PER_LB
+      weightLbs += qty * lbs
     }
     if (missing.length > 0) {
       throw new MedusaError(

@@ -5,35 +5,32 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 /**
  * POST /admin/mbs/settings/shipping-weights/apply
  *
- * Bulk-stamps PACKAGED shipping weight on every Medusa variant whose
- * metadata.tier_key + size_key matches an entry in the `shipping_weights`
- * setting. Path A migration (2026-05-25):
+ * Bulk-stamps PACKAGED shipping weight in LBS on every Medusa variant
+ * whose metadata.tier_key + size_key matches an entry in the
+ * `shipping_weights` setting. Path A migration (2026-05-25):
  *
- *   - Writes PACKAGED GRAMS to native `variant.weight` (Medusa exposes
- *     this in the cart context that fulfillment providers see — only
- *     way for the ShipStation provider to read shipping weight without
- *     tripping over Medusa v2's module isolation).
+ *   - Writes packaged LBS to native `variant.weight` (Medusa exposes
+ *     this in the cart context that fulfillment providers see — the
+ *     only way for the ShipStation provider to read shipping weight
+ *     without tripping over Medusa v2's module isolation). ShipStation
+ *     API takes pounds, so storing in lbs avoids any conversion step.
  *   - Mirrors the lbs value into `variant.metadata.shipping_weight_lb`
- *     as a human-readable reference for admin operators.
+ *     as a human-readable backup (also shown in the operator-friendly
+ *     metadata section of the variant detail page).
  *   - Net flower content (for storefront per-gram pricing) lives on
- *     `variant.metadata.net_grams` — populated by receiving-save on new
- *     variants AND by the one-time `backfill-net-grams.ts` script for
- *     legacy variants. This endpoint does NOT touch net_grams.
+ *     `variant.metadata.net_grams` — populated by receiving-save on
+ *     new variants AND by the one-time `backfill-net-grams.ts` script
+ *     for legacy variants. This endpoint does NOT touch net_grams.
  *
  * Overwrite semantics: existing `variant.weight` value is replaced.
- * Run the backfill script BEFORE this endpoint so legacy net_grams
- * data isn't lost.
+ * Run the backfill script BEFORE this endpoint so legacy net-grams
+ * data (currently sitting on variant.weight pre-migration) isn't lost.
  *
  * Skipped:
  *   - Variants without metadata.tier_key + size_key (legacy seed
  *     products, or manually-created edibles / drinks / accessories).
  *   - Variants whose (tier_key, size_key) has no matching setting entry.
- *
- * Returns counts so the admin UI can render a "47 updated, 12 skipped"
- * confirmation toast.
  */
-
-const GRAMS_PER_LB = 453.59237
 
 type ShippingWeights = {
   flower?: { qp?: number; half?: number; lb?: number }
@@ -91,13 +88,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       continue
     }
 
-    /* Write PACKAGED grams to variant.weight (read by ShipStation
-     * provider via the cart context), and mirror the lbs value to
-     * metadata for human-readable reference. */
-    const packagedGrams = Math.round(weight * GRAMS_PER_LB * 100) / 100
+    /* Write packaged LBS directly to variant.weight (read by the
+     * ShipStation provider via the cart context — no conversion needed
+     * since ShipStation API takes pounds). Mirror the same value to
+     * metadata.shipping_weight_lb for admin visibility. */
     try {
       await productService.updateProductVariants(v.id, {
-        weight: packagedGrams,
+        weight: weight,
         metadata: { ...meta, shipping_weight_lb: weight },
       })
       updated += 1

@@ -513,29 +513,27 @@ export async function saveOneRow(
     /* 2. Build variants on the shared inventory item — one per variant
      *    def in the profile. SKUs already computed above; reuse by idx.
      *
-     *    Path A (2026-05-25): variant.weight holds PACKAGED grams for
+     *    Path A (2026-05-25): variant.weight holds packaged LBS for
      *    ShipStation rate quotes (read via the cart context from the
      *    fulfillment provider). Net flower content moves to
      *    metadata.net_grams for the storefront's per-gram pricing math.
-     *    If shipping_weights isn't set up yet, fall back to writing the
-     *    net grams to variant.weight (matches legacy behavior; operator
-     *    can re-apply via Settings → Shipping Weights once configured). */
+     *    If shipping_weights isn't set up yet for this (tier, size),
+     *    leave variant.weight undefined — operator fills via MBS
+     *    Settings → Shipping Weights → Apply once configured. The
+     *    storefront's gram display still works because metadata.net_grams
+     *    carries that value independently. */
     const variants = variantDefs.map((v, idx) => {
       const shippingLb = lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey)
-      const packagedGrams = shippingLb != null
-        ? Math.round(shippingLb * 453.59237 * 100) / 100
-        : (v.grams ?? undefined)
       return ({
       title: v.label,
       sku: proposedSkus[idx],
       options: { Size: v.label },
       prices: [{ amount: tp[v.sizeKey] ?? 0, currency_code: "usd" }],
       manage_inventory: true,
-      /* Weight in grams. Path A: packaged (for ShipStation). Net flower
-       * content → metadata.net_grams below. Optional per profile —
-       * categories without a meaningful weight (drinks etc.) leave
-       * this undefined. */
-      ...(packagedGrams !== undefined ? { weight: packagedGrams } : {}),
+      /* Packaged shipping weight in LBS (ShipStation reads from here).
+       * Undefined when settings aren't configured yet — checkout will
+       * prompt operator to set them. */
+      ...(shippingLb != null ? { weight: shippingLb } : {}),
       /* UPC → native Medusa variant.barcode field. Only set when the
        * profile enables UPC (pre-rolls today; flower leaves it null). */
       ...(ctx.profile.fields.upc && row.upc ? { barcode: row.upc } : {}),
