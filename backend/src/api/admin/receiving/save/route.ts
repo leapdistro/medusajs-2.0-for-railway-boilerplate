@@ -5,7 +5,7 @@ import {
   computeShipPerLb,
   saveOneRow,
   type SaveRow,
-  type ShippingWeights,
+  type ShippingRates,
   type TierKey,
   type TierPriceMap,
 } from "../../../../lib/receiving-save"
@@ -99,16 +99,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   }
 
-  /* 2b. Shipping weights — soft-required. If missing, new variants
-   *     just skip the metadata.shipping_weight_lb stamp; operator can
-   *     fill via MBS Settings → Shipping Weights → Apply later. */
-  const shippingWeights = (await settings.getSetting("shipping_weights")) as ShippingWeights | null
+  /* 2b. Shipping rates — soft-required. If missing, new variants
+   *     just skip the variant.weight stamp; operator can fill via
+   *     MBS Settings → Shipping Rates → Apply later. */
+  const shippingRates = (await settings.getSetting("shipping_rates")) as ShippingRates | null
 
   /* 3. Build save context (resolves categories/channel/location once). */
   const shipPerLb = computeShipPerLb(body.rows, body.shippingTotal ?? 0)
   let ctx
   try {
-    ctx = await buildSaveContext(req.scope, shipPerLb, tierPrices ?? ({} as TierPriceMap), shippingWeights, profile)
+    ctx = await buildSaveContext(req.scope, shipPerLb, tierPrices ?? ({} as TierPriceMap), shippingRates, profile)
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message ?? "Save context failed" })
     return

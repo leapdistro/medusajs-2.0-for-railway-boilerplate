@@ -82,29 +82,26 @@ const DEFAULTS: Array<{
     ],
   },
   {
-    key: "shipping_weights",
-    description: "Default shipping weights (lb, packaged) per variant size. Used by ShipStation rate quotes at checkout. Receiving stamps variant.metadata.shipping_weight_lb from these values on new variants; admin can bulk-apply to existing variants via MBS Settings → Shipping Weights → Apply to All Variants. Kept separate from the native variant.weight field (which carries net flower content in grams for the storefront's per-gram price math).",
+    key: "shipping_rates",
+    description: "Flat shipping cost (USD) per variant size. Receiving stamps the rate × 100 (cents) onto variant.weight on new variants; admin can bulk-apply to existing variants via MBS Settings → Shipping Rates → Apply to All Variants. The fulfillment provider sums variant.weight × quantity / 100 at checkout to compute the total shipping cost for the cart. Operators can override per-variant in admin (variant.weight is integer cents). Per-gram pricing display reads metadata.net_grams — independent.",
     value: {
-      /* Flower: packaged weight = flower net + pouch + labels.
-       * QP (0.25 lb net) → ~0.30 lb packaged
-       * Half (0.50 lb net) → ~0.55 lb packaged
-       * LB (1.0 lb net) → ~1.05 lb packaged */
+      /* Per-variant-type shipping cost in whole USD. Operator adjusts in
+       * admin → MBS Settings → Shipping Rates. A cart with 2× QP +
+       * 1× LB at the defaults below = $20 + $20 + $50 = $90 shipping. */
       flower: {
-        qp:   0.30,
-        half: 0.55,
-        lb:   1.05,
+        qp:   20,
+        half: 35,
+        lb:   50,
       },
-      /* Pre-roll: keyed by (subcategory key → variant sizeKey → weight lb).
-       * Subcategory keys match the live receiving profile (slugified
-       * Medusa category names; static profile entries for THC-A + Hashholes
-       * use those exact keys). New subcategories added in Medusa show up
-       * in the admin UI on next load — operator types in the weight there. */
+      /* Pre-roll: keyed by (subcategory key → variant sizeKey → dollars).
+       * Subcategories live-merged from Medusa in the admin UI so new
+       * subcategories appear automatically with a 0 default. */
       preroll: {
         "thc-a": {
-          "30pk": 0.45,
+          "30pk": 25,
         },
         "hashholes": {
-          "15pk": 0.55,
+          "15pk": 30,
         },
       },
     },

@@ -83,21 +83,15 @@ export default async function seedShipStationOptions({ container }: ExecArgs) {
   const existing = await fulfillmentService.listShippingOptions({ service_zone_id: serviceZoneId })
   const existingByName = new Map<string, any>(existing.map((o: any) => [o.name, o]))
 
-  /* Legacy static options to retire. Local Pickup stays as-is. */
-  const RETIRE_NAMES = ["UPS Ground", "UPS 2-Day Air", "UPS Next Day Air"]
-  /* New calculated options (and the canonical name for NDA Saver). */
-  const WANTED_NAMES = ["UPS Ground", "UPS Next Day Air Saver"]
+  /* Retire all prior UPS options (static or calculated, any era). The
+   * current model is ONE flat-rate calculated option "Standard Shipping"
+   * backed by per-variant rate cents on variant.weight. */
+  const RETIRE_NAMES = ["UPS Ground", "UPS 2-Day Air", "UPS Next Day Air", "UPS Next Day Air Saver"]
 
   const toRetire: string[] = []
   for (const name of RETIRE_NAMES) {
     const opt = existingByName.get(name)
-    if (!opt) continue
-    /* Skip if already calculated + provider already ShipStation — that
-     * means a prior run handled it. */
-    if (opt.price_type === "calculated" && String(opt.provider_id ?? "").includes("shipstation")) {
-      continue
-    }
-    toRetire.push(opt.id)
+    if (opt) toRetire.push(opt.id)
   }
 
   if (toRetire.length > 0) {
@@ -107,25 +101,18 @@ export default async function seedShipStationOptions({ container }: ExecArgs) {
     logger.info("  · no legacy options to retire")
   }
 
-  /* ─── 4. Create the two calculated options ─────────────────── */
+  /* ─── 4. Create the one calculated option ─────────────────── */
   /* Refetch after the delete so the name-set is current. */
   const after = await fulfillmentService.listShippingOptions({ service_zone_id: serviceZoneId })
   const afterNames = new Set(after.map((o: any) => o.name))
 
   const newOptions = [
     {
-      name: "UPS Ground",
-      code: "ups-ground",
+      name: "Standard Shipping",
+      code: "standard-shipping",
       label: "Standard",
-      description: "Live UPS Ground rate (with adult signature + insurance)",
-      service_code: "ups_ground" as const,
-    },
-    {
-      name: "UPS Next Day Air Saver",
-      code: "ups-next-day-air-saver",
-      label: "Overnight",
-      description: "Live UPS Next Day Air Saver rate (with adult signature + insurance)",
-      service_code: "ups_next_day_air_saver" as const,
+      description: "Flat shipping rate, computed per cart from per-variant rates",
+      service_code: "standard" as const,
     },
   ]
   const toCreate = newOptions.filter((o) => !afterNames.has(o.name))

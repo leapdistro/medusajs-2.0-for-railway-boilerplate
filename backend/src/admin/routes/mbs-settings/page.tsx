@@ -34,7 +34,7 @@ const TABS = [
   { id: "cancellation_reasons", label: "Cancellation Reasons"  },
   { id: "denial_reasons",       label: "Denial Reasons"        },
   { id: "flower_tier_prices",   label: "Tier Prices"           },
-  { id: "shipping_weights",     label: "Shipping Weights"      },
+  { id: "shipping_rates",       label: "Shipping Rates"        },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -137,8 +137,8 @@ const MbsSettingsPage = () => {
             {tab === "flower_tier_prices" && (
               <TierPricesForm row={currentRow} onSaved={onSaved} />
             )}
-            {tab === "shipping_weights" && (
-              <ShippingWeightsForm row={currentRow} onSaved={onSaved} />
+            {tab === "shipping_rates" && (
+              <ShippingRatesForm row={currentRow} onSaved={onSaved} />
             )}
           </>
         )}
@@ -439,8 +439,8 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
   )
 }
 
-/* ─────────────────────────── Shipping Weights ─────────────────────────── */
-type ShippingWeights = {
+/* ─────────────────────────── Shipping Rates ─────────────────────────── */
+type ShippingRates = {
   flower: { qp: number; half: number; lb: number }
   preroll: Record<string, Record<string, number>>
 }
@@ -451,34 +451,28 @@ type PrerollSubcategoryRow = {
   variants: Array<{ sizeKey: string; label: string }>
 }
 
-const EMPTY_SHIPPING_WEIGHTS: ShippingWeights = {
+const EMPTY_SHIPPING_RATES: ShippingRates = {
   flower: { qp: 0, half: 0, lb: 0 },
   preroll: {},
 }
 
-const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
-  const [v, setV] = useState<ShippingWeights>(EMPTY_SHIPPING_WEIGHTS)
+const ShippingRatesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<ShippingRates>(EMPTY_SHIPPING_RATES)
   const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
   const [confirmApply, setConfirmApply] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  /* Hydrate from setting once. Merge incoming over the empty shape so
-   * a partial setting (e.g., flower only, no preroll yet) still renders
-   * cleanly. */
   useEffect(() => {
     if (!row?.value) return
-    const incoming = row.value as Partial<ShippingWeights>
+    const incoming = row.value as Partial<ShippingRates>
     setV({
-      flower: { ...EMPTY_SHIPPING_WEIGHTS.flower, ...(incoming.flower ?? {}) },
+      flower: { ...EMPTY_SHIPPING_RATES.flower, ...(incoming.flower ?? {}) },
       preroll: { ...(incoming.preroll ?? {}) },
     })
   }, [row])
 
-  /* Live-fetch pre-roll subcategories from the receiving profile route.
-   * This is the same source the receiving page uses, so anything added
-   * in Medusa admin shows up here automatically. */
   useEffect(() => {
     let cancelled = false
     fetch("/admin/receiving/profile/pre-roll", { credentials: "include" })
@@ -513,9 +507,9 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
   const save = async () => {
     setSaving(true)
     try {
-      const next = await saveSetting("shipping_weights", v)
+      const next = await saveSetting("shipping_rates", v)
       onSaved(next)
-      toast.success("Shipping weights saved")
+      toast.success("Shipping rates saved")
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -527,6 +521,8 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
     setApplying(true)
     setConfirmApply(false)
     try {
+      /* Endpoint path is /shipping-weights/apply for historical reasons;
+       * the handler reads shipping_rates and writes cents to variant.weight. */
       const res = await fetch("/admin/mbs/settings/shipping-weights/apply", {
         method: "POST",
         credentials: "include",
@@ -547,7 +543,7 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Default packaged shipping weights (lb) per variant size. Used by ShipStation rate quotes at checkout. New variants created via receiving auto-stamp these values. Click <strong>Apply to All Variants</strong> after saving to overwrite existing variants in bulk.
+        Flat shipping cost (USD) per variant size. Checkout sums rate × quantity across the cart to compute the buyer&apos;s total shipping. New variants created via receiving auto-stamp these values. Click <strong>Apply to All Variants</strong> after saving to overwrite existing variants in bulk.
       </Text>
 
       {/* Flower section */}
@@ -564,17 +560,17 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
           <div className="grid grid-cols-3">
             {(["qp", "half", "lb"] as const).map((k) => (
               <div key={k} className="p-1.5 flex items-center gap-1">
+                <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
                 <Input
                   type="number"
                   inputMode="decimal"
                   min={0}
-                  step={0.01}
+                  step={1}
                   value={v.flower[k] || ""}
                   onChange={setFlower(k)}
-                  placeholder="0.00"
+                  placeholder="0"
                   className="text-right"
                 />
-                <Text size="xsmall" className="text-ui-fg-subtle">lb</Text>
               </div>
             ))}
           </div>
@@ -598,17 +594,17 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
                     <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
                       <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
                       <div className="flex items-center gap-1">
+                        <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
                         <Input
                           type="number"
                           inputMode="decimal"
                           min={0}
-                          step={0.01}
+                          step={1}
                           value={v.preroll[sub.key]?.[variant.sizeKey] || ""}
                           onChange={setPreroll(sub.key, variant.sizeKey)}
-                          placeholder="0.00"
+                          placeholder="0"
                           className="text-right"
                         />
-                        <Text size="xsmall" className="text-ui-fg-subtle">lb</Text>
                       </div>
                     </div>
                   ))}
@@ -620,7 +616,7 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
       </div>
 
       <div className="flex items-center gap-3 pt-2 border-t">
-        <Button variant="primary" onClick={save} isLoading={saving}>Save Shipping Weights</Button>
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Shipping Rates</Button>
         <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
           Apply to All Variants
         </Button>
@@ -630,7 +626,7 @@ const ShippingWeightsForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: 
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
           <Text size="small" weight="plus">Overwrite every matching variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            This will set <code>variant.metadata.shipping_weight_lb</code> on every flower + pre-roll variant whose tier_key / size_key matches the saved settings. Any per-variant overrides will be replaced. Variants without matching settings (custom subcategories not yet weighted, or non-flower / non-pre-roll products) are skipped silently.
+            This will set the shipping rate on every flower + pre-roll variant whose tier_key / size_key matches the saved rates. Any per-variant overrides will be replaced. Variants without matching settings (custom subcategories not yet rated, or non-flower / non-pre-roll products) are skipped silently.
           </Text>
           <div className="flex items-center gap-2">
             <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>

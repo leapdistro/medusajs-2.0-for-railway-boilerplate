@@ -138,7 +138,7 @@ function asNumber(v: string | number | null | undefined): number | null {
 
 /* ---- Shared invoice context for all rows in one save ---- */
 
-export type ShippingWeights = {
+export type ShippingRates = {
   flower?: { qp?: number; half?: number; lb?: number }
   preroll?: Record<string, Record<string, number>>
 }
@@ -151,12 +151,12 @@ export type SaveContext = {
   /** $/lb — total invoice shipping ÷ Σ(qty_lb). 0 if no shipping. */
   shipPerLb: number
   tierPrices: TierPriceMap
-  /** Lb-based shipping weights (packaged) per variant size. Resolved once
-   *  per save batch from `mbs_settings.shipping_weights`. Stamped onto
-   *  each new variant's `metadata.shipping_weight_lb` so ShipStation can
-   *  read it without touching the native variant.weight field (which
-   *  carries net grams for the storefront's per-gram math). */
-  shippingWeights: ShippingWeights | null
+  /** Per-variant flat shipping rates in USD. Resolved once per save
+   *  batch from `mbs_settings.shipping_rates`. New variants get the
+   *  rate × 100 (cents) stamped onto native `variant.weight` so the
+   *  fulfillment provider can read it at quote time without
+   *  cross-module DI. */
+  shippingRates: ShippingRates | null
   /** Sales channel id to attach new products to (resolved once). */
   salesChannelId: string
   /** Stock location id to write inventory levels against (resolved once). */
@@ -169,28 +169,28 @@ export type SaveContext = {
   shippingProfileId: string
 }
 
-/** Lookup helper: tier_key + size_key → packaged shipping weight in lb.
- *  Tier discriminates flower vs pre-roll subtree. Returns null when no
- *  matching entry — caller decides whether to throw or skip. */
-export function lookupShippingWeight(
-  weights: ShippingWeights | null,
+/** Lookup helper: tier_key + size_key → flat shipping rate in USD.
+ *  Tier discriminates flower vs pre-roll subtree. Returns null when
+ *  no matching entry — caller decides whether to throw or skip. */
+export function lookupShippingRate(
+  rates: ShippingRates | null,
   tierKey: string,
   sizeKey: string,
 ): number | null {
-  if (!weights) return null
+  if (!rates) return null
   if (tierKey === "classic" || tierKey === "exotic" || tierKey === "super" || tierKey === "snow" || tierKey === "rapper") {
-    const w = (weights.flower as any)?.[sizeKey]
-    return typeof w === "number" && Number.isFinite(w) && w > 0 ? w : null
+    const r = (rates.flower as any)?.[sizeKey]
+    return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
   }
-  const w = weights.preroll?.[tierKey]?.[sizeKey]
-  return typeof w === "number" && Number.isFinite(w) && w > 0 ? w : null
+  const r = rates.preroll?.[tierKey]?.[sizeKey]
+  return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
 }
 
 export async function buildSaveContext(
   container: any,
   shipPerLb: number,
   tierPrices: TierPriceMap,
-  shippingWeights: ShippingWeights | null,
+  shippingRates: ShippingRates | null,
   profile: ReceivingProfile = FLOWER_PROFILE,
 ): Promise<SaveContext> {
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
@@ -251,7 +251,7 @@ export async function buildSaveContext(
     profile,
     shipPerLb,
     tierPrices,
-    shippingWeights,
+    shippingRates,
     salesChannelId: defaultChannel.id,
     stockLocationId: locations[0].id,
     subcategoryIds,
@@ -513,27 +513,27 @@ export async function saveOneRow(
     /* 2. Build variants on the shared inventory item — one per variant
      *    def in the profile. SKUs already computed above; reuse by idx.
      *
-     *    Path A (2026-05-25): variant.weight holds packaged LBS for
-     *    ShipStation rate quotes (read via the cart context from the
-     *    fulfillment provider). Net flower content moves to
-     *    metadata.net_grams for the storefront's per-gram pricing math.
-     *    If shipping_weights isn't set up yet for this (tier, size),
-     *    leave variant.weight undefined — operator fills via MBS
-     *    Settings → Shipping Weights → Apply once configured. The
-     *    storefront's gram display still works because metadata.net_grams
-     *    carries that value independently. */
+     *    Shipping model: variant.weight holds the per-variant shipping
+     *    rate in CENTS (integer-safe, read directly from the cart
+     *    context by the fulfillment provider's calculatePrice). When
+     *    shipping_rates settings aren't configured for this (tier,
+     *    size), leave variant.weight undefined — checkout will hard-
+     *    fail with a clear "Missing shipping rate" error until an
+     *    operator fills via MBS Settings → Shipping Rates → Apply.
+     *
+     *    Net flower content (for storefront per-gram pricing) lives
+     *    on metadata.net_grams — independent of the shipping rate. */
     const variants = variantDefs.map((v, idx) => {
-      const shippingLb = lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey)
+      const shippingDollars = lookupShippingRate(ctx.shippingRates, row.tier, v.sizeKey)
+      const shippingCents = shippingDollars != null ? Math.round(shippingDollars * 100) : null
       return ({
       title: v.label,
       sku: proposedSkus[idx],
       options: { Size: v.label },
       prices: [{ amount: tp[v.sizeKey] ?? 0, currency_code: "usd" }],
       manage_inventory: true,
-      /* Packaged shipping weight in LBS (ShipStation reads from here).
-       * Undefined when settings aren't configured yet — checkout will
-       * prompt operator to set them. */
-      ...(shippingLb != null ? { weight: shippingLb } : {}),
+      /* Shipping rate in cents (provider divides by 100). */
+      ...(shippingCents != null ? { weight: shippingCents } : {}),
       /* UPC → native Medusa variant.barcode field. Only set when the
        * profile enables UPC (pre-rolls today; flower leaves it null). */
       ...(ctx.profile.fields.upc && row.upc ? { barcode: row.upc } : {}),
@@ -549,12 +549,11 @@ export async function saveOneRow(
         ...(v.unitLabel ? { unit_label: v.unitLabel } : {}),
         ...(v.unitsPerVariant ? { units_per_variant: v.unitsPerVariant } : {}),
         /* Net flower content (grams). Source of truth for storefront's
-         * per-gram pricing display. Was on variant.weight pre-Path-A. */
+         * per-gram pricing display. */
         ...(v.grams !== undefined ? { net_grams: v.grams } : {}),
-        /* Packaged shipping weight (lb) — operator-friendly mirror of
-         * what we wrote to variant.weight (in packaged grams). Visible
-         * in admin → Variant → Metadata. */
-        ...(shippingLb !== null ? { shipping_weight_lb: shippingLb! } : {}),
+        /* Operator-friendly mirror of variant.weight's cents value
+         * as whole dollars — visible in admin → Variant → Metadata. */
+        ...(shippingDollars !== null ? { shipping_rate_usd: shippingDollars! } : {}),
       },
       inventory_items: [{
         inventory_item_id: inventoryItemId,
