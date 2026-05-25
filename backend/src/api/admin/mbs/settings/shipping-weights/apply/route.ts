@@ -53,9 +53,34 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
    * product_variant; we only need a few fields. */
   const { data: variants } = await query.graph({
     entity: "product_variant",
-    fields: ["id", "title", "metadata"],
+    fields: ["id", "title", "sku", "weight", "metadata"],
     filters: { deleted_at: null },
   })
+
+  /* SKU-pattern fallback table for legacy seed variants that have no
+   * tier_key/size_key in metadata. Receiving-save SKUs encode tier +
+   * size in fixed slots — `QTR-RAP-SAT-DUSDIA` = quarter, Rapper. */
+  const SKU_SIZE_MAP: Record<string, "qp" | "half" | "lb"> = {
+    QTR:  "qp",
+    HALF: "half",
+    FULL: "lb",
+  }
+  const SKU_TIER_MAP: Record<string, "classic" | "exotic" | "super" | "snow" | "rapper"> = {
+    CLA: "classic",
+    EXO: "exotic",
+    SUP: "super",
+    SNO: "snow",
+    RAP: "rapper",
+  }
+  function fromSku(sku: string | null | undefined): { tier: string; size: string } | null {
+    if (!sku) return null
+    const parts = sku.toUpperCase().split("-")
+    if (parts.length < 2) return null
+    const size = SKU_SIZE_MAP[parts[0]]
+    const tier = SKU_TIER_MAP[parts[1]]
+    if (!size || !tier) return null
+    return { tier, size }
+  }
 
   let updated = 0
   let skipped = 0
@@ -64,23 +89,36 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   for (const v of (variants as any[]) ?? []) {
     const meta = (v.metadata ?? {}) as Record<string, any>
+
+    /* Weight resolution order (first match wins):
+     *   1. metadata.tier_key + metadata.size_key → settings lookup
+     *      (receiving-created variants)
+     *   2. SKU prefix (QTR/HALF/FULL + CLA/EXO/SUP/SNO/RAP) → settings
+     *      (legacy seed flower; covers products like DUSTY DIAMONDS)
+     *   3. existing metadata.shipping_weight_lb (operator-manually-set;
+     *      previous attempts to fill this in via the admin metadata
+     *      panel before Path A moved storage to variant.weight)
+     */
+    let weight: number | undefined
     const tier = typeof meta.tier_key === "string" ? meta.tier_key : null
     const size = typeof meta.size_key === "string" ? meta.size_key : null
-    if (!tier || !size) {
-      bumpSkip("no_tier_or_size_key")
-      continue
+    if (tier && size) {
+      if (tier === "classic" || tier === "exotic" || tier === "super" || tier === "snow" || tier === "rapper") {
+        weight = (weights.flower as any)?.[size]
+      } else {
+        weight = weights.preroll?.[tier]?.[size]
+      }
     }
-
-    /* Lookup precedence: flower keys are the 3 fixed sizes; pre-roll
-     * keys nest under (subcategoryKey → sizeKey). The receiving profile
-     * uses the same tier_key namespace for both ("classic"/"exotic"/...
-     * for flower; "thc-a"/"hashholes"/... for pre-roll), so a single
-     * tier_key value disambiguates which sub-tree to read. */
-    let weight: number | undefined
-    if (tier === "classic" || tier === "exotic" || tier === "super" || tier === "snow" || tier === "rapper") {
-      weight = (weights.flower as any)?.[size]
-    } else {
-      weight = weights.preroll?.[tier]?.[size]
+    if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) {
+      const sku = typeof v.sku === "string" ? v.sku : null
+      const resolved = fromSku(sku)
+      if (resolved) {
+        weight = (weights.flower as any)?.[resolved.size]
+      }
+    }
+    if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) {
+      const fromMeta = Number(meta.shipping_weight_lb)
+      if (Number.isFinite(fromMeta) && fromMeta > 0) weight = fromMeta
     }
 
     if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) {
