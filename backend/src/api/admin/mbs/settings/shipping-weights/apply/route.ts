@@ -5,26 +5,35 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 /**
  * POST /admin/mbs/settings/shipping-weights/apply
  *
- * Bulk-stamps `variant.metadata.shipping_weight_lb` on every Medusa
- * variant whose metadata.tier_key + size_key matches an entry in the
- * `shipping_weights` setting. Overwrites existing values (operator
- * accepted overwrite semantics — see the design conversation).
+ * Bulk-stamps PACKAGED shipping weight on every Medusa variant whose
+ * metadata.tier_key + size_key matches an entry in the `shipping_weights`
+ * setting. Path A migration (2026-05-25):
  *
- * Stored separately from the native `variant.weight` field because
- * that one carries net flower content in grams for the storefront's
- * per-gram math; shipping weight is a different concept (packaged,
- * in lbs).
+ *   - Writes PACKAGED GRAMS to native `variant.weight` (Medusa exposes
+ *     this in the cart context that fulfillment providers see — only
+ *     way for the ShipStation provider to read shipping weight without
+ *     tripping over Medusa v2's module isolation).
+ *   - Mirrors the lbs value into `variant.metadata.shipping_weight_lb`
+ *     as a human-readable reference for admin operators.
+ *   - Net flower content (for storefront per-gram pricing) lives on
+ *     `variant.metadata.net_grams` — populated by receiving-save on new
+ *     variants AND by the one-time `backfill-net-grams.ts` script for
+ *     legacy variants. This endpoint does NOT touch net_grams.
+ *
+ * Overwrite semantics: existing `variant.weight` value is replaced.
+ * Run the backfill script BEFORE this endpoint so legacy net_grams
+ * data isn't lost.
  *
  * Skipped:
- *   - Variants without metadata.tier_key + size_key (manually-created
- *     non-flower / non-pre-roll products like edibles / drinks).
- *   - Variants whose (tier_key, size_key) has no matching setting
- *     entry (e.g., a custom pre-roll subcategory not yet weighted —
- *     operator needs to add it to the setting first).
+ *   - Variants without metadata.tier_key + size_key (legacy seed
+ *     products, or manually-created edibles / drinks / accessories).
+ *   - Variants whose (tier_key, size_key) has no matching setting entry.
  *
  * Returns counts so the admin UI can render a "47 updated, 12 skipped"
  * confirmation toast.
  */
+
+const GRAMS_PER_LB = 453.59237
 
 type ShippingWeights = {
   flower?: { qp?: number; half?: number; lb?: number }
@@ -82,8 +91,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       continue
     }
 
+    /* Write PACKAGED grams to variant.weight (read by ShipStation
+     * provider via the cart context), and mirror the lbs value to
+     * metadata for human-readable reference. */
+    const packagedGrams = Math.round(weight * GRAMS_PER_LB * 100) / 100
     try {
       await productService.updateProductVariants(v.id, {
+        weight: packagedGrams,
         metadata: { ...meta, shipping_weight_lb: weight },
       })
       updated += 1

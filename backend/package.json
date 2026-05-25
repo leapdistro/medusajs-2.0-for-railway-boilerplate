@@ -37,6 +37,7 @@
     "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",
     "seed:shipstation": "medusa exec ./src/scripts/seed-shipstation-options.ts",
     "audit:shipping-weights": "medusa exec ./src/scripts/audit-shipping-weights.ts",
+    "backfill:net-grams": "medusa exec ./src/scripts/backfill-net-grams.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
     "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",

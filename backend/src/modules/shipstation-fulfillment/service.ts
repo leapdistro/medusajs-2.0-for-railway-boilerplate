@@ -1,4 +1,6 @@
-import { AbstractFulfillmentProviderService, ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
+import { AbstractFulfillmentProviderService, MedusaError } from "@medusajs/framework/utils"
+
+const GRAMS_PER_LB = 453.59237
 import type {
   CalculateShippingOptionPriceDTO,
   CalculatedShippingOptionPrice,
@@ -92,21 +94,13 @@ type CalcCart = {
 class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
   static identifier = "shipstation"
 
-  /* Store the cradle reference (no property access in constructor — that
-   * would trigger the awilix Proxy gotcha). We access Modules.PRODUCT
-   * on it inside calculatePrice() to look up variant metadata, because
-   * Medusa's calculatePrice context only includes variant.id, not the
-   * full variant — even though we need metadata.shipping_weight_lb. */
-  private readonly cradle_: any
-
-  constructor(cradle?: any) {
+  constructor() {
+    /* No cradle access — Path A reads variant.weight directly from the
+     * cart context. Medusa v2's awilix cradle is a Proxy where property
+     * access triggers resolve(), AND module isolation blocks fulfillment
+     * → product cross-module DI. Both rabbit holes avoided by leaning
+     * on the native variant.weight field that Medusa expands itself. */
     super()
-    /* Critically: assignment-only, no property access. Accessing
-     * a property on the Proxy triggers `resolve()` for that key; doing
-     * it here for unregistered keys would crash provider registration.
-     * Method-level access of KNOWN-registered services (Modules.PRODUCT
-     * etc.) is fine and is the standard Medusa DI pattern. */
-    this.cradle_ = cradle ?? null
   }
 
   /* ─── Static option list ──────────────────────────────────────── */
@@ -169,81 +163,25 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
       )
     }
 
-    /* Sum packaged shipping weight from variant.metadata.shipping_weight_lb.
-     * Medusa's calculatePrice context only includes variant.id, not the
-     * full variant — we look up metadata explicitly via the product
-     * module. Hard-fail with a clear operator-actionable message if any
-     * line is missing the stamp; buyer shouldn't be able to check out
-     * with un-weighed merchandise (real cost would be a guess). */
-    const variantIds = (cart.items ?? [])
-      .map((it) => (it.variant as any)?.id ?? (it as any).variant_id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0)
-
-    /* TEMP DIAGNOSTIC — dump the first item structure so we can see
-     * what fields Medusa actually expands in the calculatePrice cart
-     * context. Remove once we know the right path to variant metadata. */
-    const firstItem = (cart.items ?? [])[0]
-    if (firstItem) {
-      const keys = Object.keys(firstItem as any).slice(0, 30)
-      const variantKeys = firstItem.variant ? Object.keys(firstItem.variant as any).slice(0, 30) : []
-      console.info(`[shipstation] DIAG item keys: ${keys.join(",")}`)
-      console.info(`[shipstation] DIAG item.variant keys: ${variantKeys.join(",")}`)
-      console.info(`[shipstation] DIAG item.variant.metadata: ${JSON.stringify((firstItem.variant as any)?.metadata ?? null).slice(0, 300)}`)
-      console.info(`[shipstation] DIAG item.metadata: ${JSON.stringify((firstItem as any)?.metadata ?? null).slice(0, 300)}`)
-    }
-
-    let metadataByVariantId: Record<string, any> = {}
-    console.info(`[shipstation] calculatePrice start: ${variantIds.length} variant(s), cradle=${this.cradle_ ? "yes" : "no"}`)
-    if (variantIds.length > 0 && this.cradle_) {
-      /* Medusa v2 enforces module isolation — cross-module DI is blocked
-       * for direct service access. But the QUERY service is a top-level
-       * framework registration (not a module) so it IS resolvable from
-       * any cradle. Use it to graph-query the product_variant entity. */
-      let queryService: any = null
-      let resolveErr: string | null = null
-      for (const key of [ContainerRegistrationKeys.QUERY, "remoteQuery", "query"]) {
-        try {
-          const s = this.cradle_[key]
-          if (s && typeof s.graph === "function") {
-            queryService = s
-            console.info(`[shipstation] resolved query service via cradle["${key}"]`)
-            break
-          }
-        } catch (e: any) {
-          resolveErr = `${key}: ${e?.message}`
-        }
-      }
-      if (!queryService) {
-        console.warn(`[shipstation] could not resolve query service from cradle (last err: ${resolveErr ?? "none"})`)
-      } else {
-        try {
-          const { data: variants } = await queryService.graph({
-            entity: "product_variant",
-            fields: ["id", "metadata"],
-            filters: { id: variantIds },
-          })
-          console.info(`[shipstation] graph lookup returned ${variants?.length ?? 0} variant(s); sample=${JSON.stringify(variants?.[0] ?? {}).slice(0, 200)}`)
-          for (const v of (variants as any[]) ?? []) {
-            metadataByVariantId[v.id] = v.metadata ?? {}
-          }
-        } catch (e: any) {
-          console.warn(`[shipstation] query.graph threw: ${e?.message}`)
-        }
-      }
-    }
-
+    /* Path A: read packaged shipping weight from the native
+     * `variant.weight` field (grams). Medusa expands variant.weight in
+     * the calculatePrice cart context — unlike custom metadata, which
+     * isn't expanded due to performance/payload-size considerations.
+     * This sidesteps the Medusa v2 module-isolation gotcha (fulfillment
+     * provider can't cross-resolve product module). Convert grams → lbs
+     * for ShipStation. Hard-fail on any variant missing weight so the
+     * buyer can't check out with un-weighed merchandise. */
     let weightLbs = 0
     const missing: string[] = []
     for (const item of cart.items ?? []) {
       const qty = Number(item.quantity ?? 0)
-      const vid = (item.variant as any)?.id ?? (item as any).variant_id
-      const meta = metadataByVariantId[vid] ?? (item.variant?.metadata ?? {})
-      const w = Number(meta?.shipping_weight_lb ?? 0)
-      if (!Number.isFinite(w) || w <= 0) {
+      const grams = Number((item.variant as any)?.weight ?? 0)
+      if (!Number.isFinite(grams) || grams <= 0) {
+        const vid = (item.variant as any)?.id ?? (item as any).variant_id
         missing.push((item.variant as any)?.title ?? vid ?? "(unknown variant)")
         continue
       }
-      weightLbs += qty * w
+      weightLbs += (qty * grams) / GRAMS_PER_LB
     }
     if (missing.length > 0) {
       throw new MedusaError(

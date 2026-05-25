@@ -511,18 +511,31 @@ export async function saveOneRow(
     const inventoryItemId = (Array.isArray(created) ? created[0] : created).id
 
     /* 2. Build variants on the shared inventory item — one per variant
-     *    def in the profile. SKUs already computed above; reuse by idx. */
-    const variants = variantDefs.map((v, idx) => ({
+     *    def in the profile. SKUs already computed above; reuse by idx.
+     *
+     *    Path A (2026-05-25): variant.weight holds PACKAGED grams for
+     *    ShipStation rate quotes (read via the cart context from the
+     *    fulfillment provider). Net flower content moves to
+     *    metadata.net_grams for the storefront's per-gram pricing math.
+     *    If shipping_weights isn't set up yet, fall back to writing the
+     *    net grams to variant.weight (matches legacy behavior; operator
+     *    can re-apply via Settings → Shipping Weights once configured). */
+    const variants = variantDefs.map((v, idx) => {
+      const shippingLb = lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey)
+      const packagedGrams = shippingLb != null
+        ? Math.round(shippingLb * 453.59237 * 100) / 100
+        : (v.grams ?? undefined)
+      return ({
       title: v.label,
       sku: proposedSkus[idx],
       options: { Size: v.label },
       prices: [{ amount: tp[v.sizeKey] ?? 0, currency_code: "usd" }],
       manage_inventory: true,
-      /* Weight in grams — required for the storefront margin calc to
-       * render (cost/gram math). Also feeds ShipStation when wired.
-       * Optional per profile — categories without a meaningful weight
-       * (drinks etc.) leave this undefined. */
-      ...(v.grams !== undefined ? { weight: v.grams } : {}),
+      /* Weight in grams. Path A: packaged (for ShipStation). Net flower
+       * content → metadata.net_grams below. Optional per profile —
+       * categories without a meaningful weight (drinks etc.) leave
+       * this undefined. */
+      ...(packagedGrams !== undefined ? { weight: packagedGrams } : {}),
       /* UPC → native Medusa variant.barcode field. Only set when the
        * profile enables UPC (pre-rolls today; flower leaves it null). */
       ...(ctx.profile.fields.upc && row.upc ? { barcode: row.upc } : {}),
@@ -531,29 +544,26 @@ export async function saveOneRow(
         tier_key: row.tier,
         size_key: v.sizeKey,
         /* Per-unit / margin-calc canonical override. Storefront's
-         * src/lib/per-unit.ts hits these first (path #1) before falling
-         * through to weight (path #2 — flower) or label regex (path #3).
-         * For flower, omit — weight (113/227/454g) drives "g" / count
-         * derivation. For pre-rolls and any future category that sets
-         * them on the profile, write through. */
+         * src/lib/per-unit.ts hits these first (path #1) before
+         * falling through to weight or label regex. For pre-rolls
+         * and any future category that sets them on the profile,
+         * write through. */
         ...(v.unitLabel ? { unit_label: v.unitLabel } : {}),
         ...(v.unitsPerVariant ? { units_per_variant: v.unitsPerVariant } : {}),
-        /* Packaged shipping weight (lb) — read by ShipStation's rate
-         * provider at checkout. Sits beside the native variant.weight
-         * (grams, net flower content) because they're different
-         * concepts; conflating them breaks the storefront's per-gram
-         * pricing display. Skip the stamp silently when the setting
-         * has no matching entry — operator can fill it in via MBS
-         * Settings → Shipping Weights → Apply later. */
-        ...(lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey) !== null
-          ? { shipping_weight_lb: lookupShippingWeight(ctx.shippingWeights, row.tier, v.sizeKey)! }
-          : {}),
+        /* Net flower content (grams). Source of truth for storefront's
+         * per-gram pricing display. Was on variant.weight pre-Path-A. */
+        ...(v.grams !== undefined ? { net_grams: v.grams } : {}),
+        /* Packaged shipping weight (lb) — operator-friendly mirror of
+         * what we wrote to variant.weight (in packaged grams). Visible
+         * in admin → Variant → Metadata. */
+        ...(shippingLb !== null ? { shipping_weight_lb: shippingLb! } : {}),
       },
       inventory_items: [{
         inventory_item_id: inventoryItemId,
         required_quantity: v.multiplier,
       }],
-    }))
+      })
+    })
 
     /* 3. Create the product with the variants in one workflow. */
     const { result: productResult } = await createProductsWorkflow(container).run({
