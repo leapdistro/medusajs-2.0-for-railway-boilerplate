@@ -186,6 +186,13 @@ class ShipStationFulfillmentService extends AbstractFulfillmentProviderService {
         `${missing.length > 5 ? ` + ${missing.length - 5} more` : ""}. Set in MBS Settings → Shipping Weights → Apply to All Variants.`,
       )
     }
+    /* Empty cart (no items) is a valid state — Medusa calls
+     * calculatePrice during the remove-last-item flow. Throwing here
+     * blocks the remove operation entirely. Return 0 and let Medusa
+     * gate "can the buyer actually check out" elsewhere. */
+    if ((cart.items ?? []).length === 0) {
+      return { calculated_amount: 0, is_calculated_price_tax_inclusive: false }
+    }
     if (weightLbs <= 0) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
