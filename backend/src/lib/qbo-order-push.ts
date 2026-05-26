@@ -82,6 +82,13 @@ export async function pushOrderToQbo(
       "items.variant.metadata",
       "items.variant.inventory_items.required_quantity",
       "items.variant.product.id",
+      /* Fulfillment items drive the invoice quantity — wholesale model
+       * is "ship what we have, refund the rest" so QBO invoice should
+       * bill for fulfilled qty, not ordered qty. Sum per line below. */
+      "fulfillments.id",
+      "fulfillments.canceled_at",
+      "fulfillments.items.line_item_id",
+      "fulfillments.items.quantity",
       /* Actual payment state on the order — drives the QBO Payment
        * decision below. We can't trust customer.metadata.payment_terms
        * alone: an admin can grant a buyer Net 15 yet that buyer's
@@ -222,6 +229,28 @@ export async function pushOrderToQbo(
       inputToPoolByProduct.set(String(p.id), reqs.length > 0 ? Math.max(...reqs) : 1)
     }
   }
+  /* Build line_item_id → fulfilled qty map from non-cancelled
+   * fulfillments. Wholesale workflow ships what's in pool + refunds
+   * the rest, so QBO invoice should reflect shipped qty (not ordered).
+   * When the order has zero fulfillments — e.g., operator hits the
+   * manual "Push to QuickBooks" retry before fulfilling — we fall
+   * back to ordered qty so the push doesn't no-op. */
+  const fulfillments = (order.fulfillments ?? []) as Array<{
+    canceled_at?: string | null
+    items?: Array<{ line_item_id?: string | null; quantity?: number | null }>
+  }>
+  const fulfilledByLine = new Map<string, number>()
+  for (const f of fulfillments) {
+    if (f.canceled_at) continue
+    for (const fi of f.items ?? []) {
+      const lid = fi.line_item_id
+      const qty = Number(fi.quantity ?? 0)
+      if (!lid || !Number.isFinite(qty) || qty <= 0) continue
+      fulfilledByLine.set(lid, (fulfilledByLine.get(lid) ?? 0) + qty)
+    }
+  }
+  const orderHasFulfillments = Array.from(fulfilledByLine.values()).some((q) => q > 0)
+
   for (const item of order.items ?? []) {
     const vSku = item.variant_sku as string | null
     if (!vSku) {
@@ -236,18 +265,29 @@ export async function pushOrderToQbo(
     }
     /* Medusa v2 unit_price is already in source-currency dollars
      * (e.g., USD), not cents, and reflects the discounted/effective
-     * price. For quantity, fall through multiple shapes: top-level
-     * `quantity` (most common), `detail.quantity` (sometimes the
-     * fulfillment-aware value), and `raw_quantity.value` (BigNumber
-     * source). Cancel-fulfillment workflows can zero out `quantity`
-     * while leaving raw_quantity intact. */
-    const rawQty = item.raw_quantity?.value ?? item.raw_quantity
-    const variantQty = Number(
-      (item.quantity != null && Number(item.quantity) > 0 ? item.quantity : null)
-        ?? (item.detail?.quantity ?? null)
-        ?? rawQty
-        ?? 0,
-    )
+     * price.
+     *
+     * Quantity:
+     *   - If the order has any fulfillments, use the fulfilled qty for
+     *     THIS line. Skip the line entirely when fulfilled qty is 0
+     *     (the operator didn't ship it — it will be refunded out).
+     *   - If the order has no fulfillments at all (manual push before
+     *     fulfillment), fall back to ordered qty via the legacy multi-
+     *     source read. */
+    let variantQty: number
+    if (orderHasFulfillments) {
+      const f = fulfilledByLine.get(String(item.id)) ?? 0
+      if (f <= 0) continue
+      variantQty = f
+    } else {
+      const rawQty = item.raw_quantity?.value ?? item.raw_quantity
+      variantQty = Number(
+        (item.quantity != null && Number(item.quantity) > 0 ? item.quantity : null)
+          ?? (item.detail?.quantity ?? null)
+          ?? rawQty
+          ?? 0,
+      )
+    }
     const variantUnitPrice = Number(item.unit_price ?? 0)
 
     /* Convert variant units → QBO Item's input unit (lb for flower,
@@ -428,6 +468,11 @@ export async function pushOrderToQbo(
       metadata: {
         ...(order.metadata ?? {}),
         qbo_invoice_id: invoice.id,
+        /* DocNumber is the human-facing QBO Invoice number (auto-
+         * incremented unless we passed docNumber). Stamp it so the
+         * customer-facing PDF (storefront) can render the SAME number
+         * QBO shows the accountant. Null when QBO didn't return one. */
+        qbo_doc_number: invoice.docNumber ?? null,
         qbo_pushed_at: nowIso,
         qbo_payment_id: paymentId ?? null,
         qbo_push_error: null,
