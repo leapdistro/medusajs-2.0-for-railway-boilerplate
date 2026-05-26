@@ -36,7 +36,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const { data: products } = await query.graph({
     entity: "product",
     fields: [
-      "id", "title", "handle", "thumbnail", "status",
+      "id", "title", "handle", "thumbnail", "status", "created_at",
       "images.*",
       "options.*", "options.values.*",
       "variants.id", "variants.title", "variants.sku", "variants.weight",
