@@ -19,6 +19,7 @@ import {
   findPaymentMethodIdByName,
   findQboTermIdByName,
   getDefaultAccounts,
+  getNextInvoiceDocNumber,
   invoicePublicUrl,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
@@ -406,21 +407,22 @@ export async function pushOrderToQbo(
     }
   }
 
-  /* 5. Create the Invoice. */
+  /* 5. Create the Invoice.
+   *    DocNumber: take the next sequential value from QBO so we (a)
+   *    avoid colliding with prior invoices (Medusa display_id reuse
+   *    after sandbox-stamp cleanup, etc.) and (b) still get a visible
+   *    invoice number in QBO's UI. Omitting DocNumber leaves it blank
+   *    on tenants with "Custom transaction numbers" enabled (most B2B
+   *    QBO accounts). Falls back to undefined on any query failure
+   *    — QBO behaviour then follows its CustomTxnNumbers preference. */
   const txnDate = new Date().toISOString().slice(0, 10)
+  const nextDocNumber = (await getNextInvoiceDocNumber(qbo, conn)) ?? undefined
   let invoice
   try {
     invoice = await createInvoice(qbo, conn, {
       customerId: qboCustomerId,
       txnDate,
-      /* Let QBO auto-assign DocNumber. Previously we forced it to the
-       * Medusa display_id, which collides whenever a prior invoice
-       * already used that number (e.g., re-push after sandbox-stamp
-       * cleanup, or display_id reuse across environments). The auto-
-       * assigned DocNumber is captured below as invoice.docNumber and
-       * stamped on order.metadata.qbo_doc_number, so the storefront
-       * PDF + the accountant see the SAME number. Medusa cross-
-       * reference is preserved via PrivateNote. */
+      docNumber: nextDocNumber,
       lines,
       shippingTotal: shippingItemId ? shippingTotal : undefined,
       shippingItemId,

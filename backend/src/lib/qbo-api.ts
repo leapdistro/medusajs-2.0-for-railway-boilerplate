@@ -681,6 +681,45 @@ export type InvoiceLine = {
   description?: string
 }
 
+/**
+ * Find the next sequential Invoice DocNumber by reading QBO's current
+ * highest. Used when the caller wants the API to control numbering
+ * (vs forcing Medusa's display_id, which collides on re-pushes).
+ *
+ * Why we can't just rely on QBO's auto-assignment: when the tenant
+ * has "Custom transaction numbers" enabled (default for most B2B
+ * accounts), QBO leaves DocNumber NULL on creates that don't pass
+ * one — the invoice ends up unlabeled in the QBO UI. Forcing the
+ * next sequential number keeps invoices numbered AND collision-free.
+ *
+ * Strategy: query Invoices ordered by DocNumber desc, parse the
+ * leading integer of the first row's DocNumber, add 1. Defensive
+ * against non-numeric DocNumbers (e.g., "INV-00045" → 45 → 46).
+ * Returns null on any failure so the caller can fall back to passing
+ * no DocNumber (QBO behaviour determined by the CustomTxnNumbers
+ * preference).
+ */
+export async function getNextInvoiceDocNumber(
+  qbo: QboService,
+  conn: QboConnectionRow,
+): Promise<string | null> {
+  try {
+    const fresh = await ensureFreshAccessToken(qbo, conn)
+    const q = `select * from Invoice orderby DocNumber desc maxresults 1`
+    const json = await qboFetch(fresh, `/query?query=${encodeURIComponent(q)}`)
+    const last = json?.QueryResponse?.Invoice?.[0]
+    const lastDoc = last?.DocNumber
+    if (typeof lastDoc !== "string" || lastDoc.length === 0) return "1"
+    /* Parse the trailing integer — handles "24" and "INV-00045" alike. */
+    const m = lastDoc.match(/(\d+)\s*$/)
+    if (!m) return null
+    const next = Number(m[1]) + 1
+    return String(next)
+  } catch {
+    return null
+  }
+}
+
 export async function createInvoice(
   qbo: QboService,
   conn: QboConnectionRow,
