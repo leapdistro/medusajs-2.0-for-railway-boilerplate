@@ -26,6 +26,7 @@ import {
   chargeWithCustomerPaymentProfile,
   chargeWithOpaqueData,
   getTransactionDetails,
+  priorAuthCapture,
   refundTransaction,
   voidTransaction,
 } from "../../lib/kaja-authnet"
@@ -60,11 +61,25 @@ type SessionData = {
    *  cradle is a Proxy and any property access becomes a resolve()).
    *  Storefront includes it alongside saved_card_id when attaching. */
   cim_profile_id?: string
-  /** After authorize succeeds: the Authorize.net transaction record. */
+  /** After authorize succeeds: the Authorize.net transaction record.
+   *  In auth_only mode this is the AUTHORIZATION transId (money has
+   *  NOT moved yet). In auth_capture mode it's the capture transId
+   *  (money moved at authorize-time). */
   trans_id?: string
   auth_code?: string
   avs_result?: string
   cvv_result?: string
+  /** auth_only mode only: the priorAuthCapture transId stamped by
+   *  capturePayment when the fulfillment subscriber fires. Acts as
+   *  the idempotency key so re-running capture on the same auth
+   *  doesn't double-charge. Null/undefined until capture lands. */
+  capture_trans_id?: string
+  /** auth_only mode only: the partial capture amount stamped by
+   *  the fulfillment subscriber when fulfilled-qty < ordered-qty.
+   *  Medusa's CapturePaymentInput doesn't pass amount to provider
+   *  hooks, so this is the side-channel. Falls through to data.amount
+   *  (full original auth) when unset. */
+  capture_amount?: number
   /** Internal status tracking — maps to Medusa's PaymentSessionStatus
    *  via getPaymentStatus. */
   status?: PaymentSessionStatus
@@ -77,6 +92,19 @@ type SessionData = {
 
 function pickData(input: { data?: Record<string, unknown> | null }): SessionData {
   return (input.data ?? {}) as SessionData
+}
+
+/**
+ * Read the capture mode from env first (Railway-controlled toggle),
+ * falling back to module-options if anyone wires it via medusa-config.
+ * Default "auth_capture" so existing single-step behaviour persists
+ * if the env var isn't set.
+ */
+function resolveCaptureMode(options: KajaOptions): "auth_capture" | "auth_only" {
+  const env = (process.env.KAJA_CAPTURE_MODE ?? "").toLowerCase()
+  if (env === "auth_only") return "auth_only"
+  if (env === "auth_capture") return "auth_capture"
+  return options.captureMode ?? "auth_capture"
 }
 
 /**
@@ -201,12 +229,13 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
 
   async authorizePayment(input: AuthorizePaymentInput): Promise<AuthorizePaymentOutput> {
     const data = pickData(input)
+    const mode = resolveCaptureMode(this.options_)
     /* Log what the provider sees on the session BEFORE deciding which
      * path to take. Saved-card vs new-card mode is invisible from the
      * outside, so without this trace a generic "not authorized" error
      * could mean any of: missing opaque data, missing cim_profile_id,
      * zero amount, or a real Authorize.net decline. */
-    console.info(`[kaja-authnet] authorizePayment: amount=${data.amount} hasOpaque=${!!(data.opaque_data_descriptor && data.opaque_data_value)} hasSavedCardId=${!!data.saved_card_id} hasCimProfileId=${!!data.cim_profile_id}`)
+    console.info(`[kaja-authnet] authorizePayment: mode=${mode} amount=${data.amount} hasOpaque=${!!(data.opaque_data_descriptor && data.opaque_data_value)} hasSavedCardId=${!!data.saved_card_id} hasCimProfileId=${!!data.cim_profile_id}`)
     const amount = toAmount(data.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Payment amount is zero or invalid")
@@ -233,6 +262,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
         customerProfileId: data.cim_profile_id,
         customerPaymentProfileId: data.saved_card_id,
         customerEmail: customer?.email,
+        mode,
       })
     } else {
       /* New-card path: opaqueData must have been attached via
@@ -253,6 +283,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
           dataValue: data.opaque_data_value,
         },
         customerEmail: customer?.email,
+        mode,
         billingAddress: billing || customer ? {
           firstName: customer?.first_name ?? null,
           lastName: customer?.last_name ?? null,
@@ -296,9 +327,12 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
       return { status: "error", data: failed as Record<string, unknown> }
     }
 
-    /* authCaptureTransaction = authorize + capture in one round-trip.
-     * Money has already moved; treat as captured at Medusa's level
-     * too so admin doesn't show a "Capture" button.
+    /* In auth_capture mode (default) the call was authCaptureTransaction
+     *   → money moved at authorize-time; treat as captured.
+     * In auth_only mode the call was authOnlyTransaction
+     *   → card was held, money has NOT moved; treat as authorized.
+     *     The fulfillment subscriber later calls priorAuthCapture
+     *     (provider.capturePayment) to actually charge.
      *
      * Save-at-checkout note: when the buyer opted in via the storefront
      * "Save this card" checkbox, the storefront re-tokenizes the same
@@ -306,25 +340,78 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
      * and posts to /api/account/payment-methods — keeping CIM writes
      * off the provider's hot path (no DI gymnastics needed). See
      * KajaCardForm's completeCheckout flow. */
-    const captured: SessionData = {
+    const successStatus: PaymentSessionStatus = mode === "auth_only" ? "authorized" : "captured"
+    const updated: SessionData = {
       ...data,
       trans_id: result.transId,
       auth_code: result.authCode,
       avs_result: result.avsResult,
       cvv_result: result.cvvResult,
-      status: "captured",
+      status: successStatus,
     }
-    return { status: "captured", data: captured as Record<string, unknown> }
+    return { status: successStatus, data: updated as Record<string, unknown> }
   }
 
-  /* ─── Lifecycle: capture (no-op in auth_capture mode) ─────────── */
+  /* ─── Lifecycle: capture ──────────────────────────────────────── */
 
   async capturePayment(input: CapturePaymentInput): Promise<CapturePaymentOutput> {
-    /* In authCaptureTransaction mode the money was captured at
-     * authorize-time; this is a pass-through. The auth_only mode
-     * (future toggle) would call priorAuthCapture here instead. */
     const data = pickData(input)
-    return { data: { ...data, status: "captured" } as Record<string, unknown> }
+    const mode = resolveCaptureMode(this.options_)
+
+    /* auth_capture mode — the original transaction was already a
+     * capture, so this is just an idempotent acknowledgement. Keeps
+     * Medusa's standard "capture" workflow happy without re-charging. */
+    if (mode !== "auth_only") {
+      return { data: { ...data, status: "captured" } as Record<string, unknown> }
+    }
+
+    /* Idempotency: if we already captured this auth (subscriber retry,
+     * admin clicking Capture after the subscriber already fired, etc.)
+     * just return the cached state. Without this, a duplicate fire
+     * would create a second priorAuthCapture against the same auth —
+     * Authorize.net would error, but the second response would also
+     * trample the first capture_trans_id in session data. */
+    if (data.capture_trans_id) {
+      return { data: { ...data, status: "captured" } as Record<string, unknown> }
+    }
+
+    if (!data.trans_id) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "No authorization trans_id on payment session — can't capture",
+      )
+    }
+
+    /* Capture amount:
+     *   - data.capture_amount (set by the fulfillment subscriber when
+     *     partial-capturing on a "ship 8 of 10" scenario)
+     *   - data.amount (original authorized amount — full capture)
+     * Medusa's CapturePaymentInput type doesn't expose an `amount`
+     * field on the provider hook, so partial captures travel via
+     * a custom session-data field stamped by the caller. */
+    const captureAmount = toAmount(data.capture_amount ?? data.amount ?? 0)
+    if (!Number.isFinite(captureAmount) || captureAmount <= 0) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Capture amount is zero or invalid")
+    }
+
+    const result = await priorAuthCapture({
+      refTransId: data.trans_id,
+      amount: captureAmount,
+    })
+    if (!result.ok) {
+      console.warn(`[kaja-authnet] priorAuthCapture failed for auth=${data.trans_id}: ${result.error}`)
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        result.error ?? "Capture failed",
+      )
+    }
+
+    const captured: SessionData = {
+      ...data,
+      capture_trans_id: result.transId,
+      status: "captured",
+    }
+    return { data: captured as Record<string, unknown> }
   }
 
   /* ─── Lifecycle: refund (admin Refund button) ─────────────────── */

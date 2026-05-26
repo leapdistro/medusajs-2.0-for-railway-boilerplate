@@ -44,6 +44,11 @@ export type ChargeArgs = {
   invoiceNumber?: string
   customerEmail?: string
   billingAddress?: BillingAddress
+  /** "auth_capture" (default) = authCaptureTransaction — money moves now.
+   *  "auth_only" = authOnlyTransaction — places a hold on the card; the
+   *  fulfillment subscriber later calls priorAuthCapture to actually
+   *  move the money. */
+  mode?: "auth_capture" | "auth_only"
 }
 
 export type ChargeResult =
@@ -91,7 +96,7 @@ export async function chargeWithOpaqueData(args: ChargeArgs): Promise<ChargeResu
       merchantAuthentication: { name: apiLoginId, transactionKey },
       ...(args.invoiceNumber ? { refId: args.invoiceNumber.slice(0, 20) } : {}),
       transactionRequest: {
-        transactionType: "authCaptureTransaction",
+        transactionType: args.mode === "auth_only" ? "authOnlyTransaction" : "authCaptureTransaction",
         amount: args.amount.toFixed(2),
         payment: {
           opaqueData: {
@@ -156,6 +161,8 @@ export type ChargeWithProfileArgs = {
    *  the CIM payment profile by default — only pass this when the
    *  shipping/ordering address differs from the saved billing address. */
   billingAddress?: BillingAddress
+  /** Mirror of ChargeArgs.mode. See that field for semantics. */
+  mode?: "auth_capture" | "auth_only"
 }
 
 /**
@@ -181,7 +188,7 @@ export async function chargeWithCustomerPaymentProfile(
       merchantAuthentication: { name: apiLoginId, transactionKey },
       ...(args.invoiceNumber ? { refId: args.invoiceNumber.slice(0, 20) } : {}),
       transactionRequest: {
-        transactionType: "authCaptureTransaction",
+        transactionType: args.mode === "auth_only" ? "authOnlyTransaction" : "authCaptureTransaction",
         amount: args.amount.toFixed(2),
         profile: {
           customerProfileId: args.customerProfileId,
