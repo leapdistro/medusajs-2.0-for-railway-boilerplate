@@ -413,7 +413,14 @@ export async function pushOrderToQbo(
     invoice = await createInvoice(qbo, conn, {
       customerId: qboCustomerId,
       txnDate,
-      docNumber: String(order.display_id ?? order.id),
+      /* Let QBO auto-assign DocNumber. Previously we forced it to the
+       * Medusa display_id, which collides whenever a prior invoice
+       * already used that number (e.g., re-push after sandbox-stamp
+       * cleanup, or display_id reuse across environments). The auto-
+       * assigned DocNumber is captured below as invoice.docNumber and
+       * stamped on order.metadata.qbo_doc_number, so the storefront
+       * PDF + the accountant see the SAME number. Medusa cross-
+       * reference is preserved via PrivateNote. */
       lines,
       shippingTotal: shippingItemId ? shippingTotal : undefined,
       shippingItemId,
