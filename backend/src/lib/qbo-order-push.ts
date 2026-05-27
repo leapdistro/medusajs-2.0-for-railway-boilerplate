@@ -419,7 +419,14 @@ export async function pushOrderToQbo(
    *    of an undeleted prior invoice), retry with "MBS-25-2", "MBS-25-3"
    *    up to a small cap. After that we give up and surface the error —
    *    operator should delete the prior QBO invoice manually. */
-  const txnDate = new Date().toISOString().slice(0, 10)
+  /* TxnDate = the order's created_at (truncated to YYYY-MM-DD). Previously
+   * we used new Date() at push time, which made the QBO invoice show the
+   * fulfillment date rather than the order date — and crossed UTC midnight
+   * could even bump it forward a day from the operator's local view. */
+  const orderCreatedIso = order.created_at
+    ? new Date(order.created_at).toISOString()
+    : new Date().toISOString()
+  const txnDate = orderCreatedIso.slice(0, 10)
   const baseDocNumber = `MBS-${order.display_id ?? order.id}`
   let invoice: Awaited<ReturnType<typeof createInvoice>> | undefined
   let lastError: string | undefined
