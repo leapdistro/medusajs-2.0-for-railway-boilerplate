@@ -19,7 +19,6 @@ import {
   findPaymentMethodIdByName,
   findQboTermIdByName,
   getDefaultAccounts,
-  getNextInvoiceDocNumber,
   invoicePublicUrl,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
@@ -408,30 +407,55 @@ export async function pushOrderToQbo(
   }
 
   /* 5. Create the Invoice.
-   *    DocNumber: take the next sequential value from QBO so we (a)
-   *    avoid colliding with prior invoices (Medusa display_id reuse
-   *    after sandbox-stamp cleanup, etc.) and (b) still get a visible
-   *    invoice number in QBO's UI. Omitting DocNumber leaves it blank
-   *    on tenants with "Custom transaction numbers" enabled (most B2B
-   *    QBO accounts). Falls back to undefined on any query failure
-   *    — QBO behaviour then follows its CustomTxnNumbers preference. */
+   *    DocNumber strategy: deterministic mapping from Medusa display_id
+   *    → "MBS-<n>". Lets the accountant see the source order at a glance
+   *    AND eliminates drift between Medusa and QBO when invoices get
+   *    deleted/re-pushed during testing — same order always gets the
+   *    same DocNumber. The "MBS-" prefix prevents collision with any
+   *    invoices manually created directly in QBO (those use plain
+   *    numeric DocNumbers).
+   *
+   *    Collision retry: if "MBS-25" already exists (e.g., re-push on top
+   *    of an undeleted prior invoice), retry with "MBS-25-2", "MBS-25-3"
+   *    up to a small cap. After that we give up and surface the error —
+   *    operator should delete the prior QBO invoice manually. */
   const txnDate = new Date().toISOString().slice(0, 10)
-  const nextDocNumber = (await getNextInvoiceDocNumber(qbo, conn)) ?? undefined
-  let invoice
-  try {
-    invoice = await createInvoice(qbo, conn, {
-      customerId: qboCustomerId,
-      txnDate,
-      docNumber: nextDocNumber,
-      lines,
-      shippingTotal: shippingItemId ? shippingTotal : undefined,
-      shippingItemId,
-      salesTermId,
-      privateNote: `Medusa order ${order.display_id ?? order.id}`,
-      taxExempt: true,
-    })
-  } catch (e: any) {
-    return { ok: false, code: "API_ERROR", error: `Invoice create failed: ${e?.message}` }
+  const baseDocNumber = `MBS-${order.display_id ?? order.id}`
+  let invoice: Awaited<ReturnType<typeof createInvoice>> | undefined
+  let lastError: string | undefined
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const docNumber = attempt === 0 ? baseDocNumber : `${baseDocNumber}-${attempt + 1}`
+    try {
+      invoice = await createInvoice(qbo, conn, {
+        customerId: qboCustomerId,
+        txnDate,
+        docNumber,
+        lines,
+        shippingTotal: shippingItemId ? shippingTotal : undefined,
+        shippingItemId,
+        salesTermId,
+        privateNote: `Medusa order ${order.display_id ?? order.id}`,
+        taxExempt: true,
+      })
+      break
+    } catch (e: any) {
+      const msg = String(e?.message ?? "")
+      lastError = msg
+      /* Duplicate DocNumber Error = code 6140. Retry with -N suffix. */
+      if (/Duplicate Document Number|\b6140\b/.test(msg)) {
+        logger.info(`[qbo-order-push] DocNumber "${docNumber}" exists in QBO — retrying with suffix`)
+        continue
+      }
+      /* Any other error — bail. */
+      return { ok: false, code: "API_ERROR", error: `Invoice create failed: ${msg}` }
+    }
+  }
+  if (!invoice) {
+    return {
+      ok: false,
+      code: "API_ERROR",
+      error: `Invoice create failed after 5 DocNumber collision retries (base "${baseDocNumber}"). Last error: ${lastError ?? "unknown"}`,
+    }
   }
 
   /* 6. Card-paid path: close the invoice with a Payment so QBO marks
