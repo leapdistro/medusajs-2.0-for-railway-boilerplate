@@ -5,30 +5,62 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 /**
  * POST /admin/mbs/settings/tier-prices/apply
  *
- * Bulk-propagates the current mbs-settings tier prices to every
- * "tier_linked" variant. Lets the operator change a tier price in
- * settings and push it to every existing variant in one click —
- * without that, edits in MBS Settings would only affect FUTURE
- * receivings.
+ * Bulk-propagates the current mbs-settings tier prices to every variant
+ * we can confidently identify — receiving-created, manually-created, or
+ * legacy seed alike. Three resolution strategies, in order:
+ *
+ *   1. metadata.tier_key + metadata.size_key — fast path for variants
+ *      that receiving stamped. Always wins when present.
+ *   2. Category handle (variant.product.categories[].handle matches a
+ *      setting key like "classic" / "thc-a") + size derived from the
+ *      variant's SKU last segment OR variant.title. SKU convention is
+ *      <cat-3>-<subcat-3>-...-<size> so size is the trailing segment
+ *      (qp / half / lb / 30pk / 15pk / etc.).
+ *   3. Same as #2 but with a small variant-title → size_key mapping
+ *      (½→half, "30 ct Box"→30pk, etc.) for variants whose SKUs don't
+ *      decode but whose option value follows the brand convention.
+ *
+ * Variants that none of the three can resolve are SKIPPED — we don't
+ * have enough info to price them, so leaving them alone is correct.
  *
  * Body: { scope: "flower" | "preroll" }
- *   - "flower":  walks variants whose metadata.tier_key is one of
- *     classic / exotic / super / snow / rapper. Reads from
- *     `flower_tier_prices` setting.
- *   - "preroll": walks every other tier_linked variant (i.e., the
- *     pre-roll subcategory keys — thc-a / hashholes / future subs).
- *     Reads from `pre_roll_tier_prices` setting.
- *
- * Match rule: variant.metadata.tier_linked === true AND tier_key +
- * size_key are present. Variants without tier_linked metadata are
- * treated as manual overrides — skipped. Variants where the resolved
- * setting value matches the current price are also skipped (no-op
- * write). Failed updates are logged but don't abort the loop.
+ *   - "flower":  reads flower_tier_prices, scoped to category handles
+ *     matching its keys (classic / exotic / super / snow / rapper)
+ *   - "preroll": reads pre_roll_tier_prices, scoped to anything else
+ *     present in its key set (thc-a / hashholes / future subcategories
+ *     added in Medusa admin — they auto-extend the scope)
  */
 
-const FLOWER_TIERS = new Set(["classic", "exotic", "super", "snow", "rapper"])
-
 type TierMap = Record<string, Record<string, number>>
+
+/* Variant-title → size_key normalisation. Covers the brand's variant
+ * labels that don't lowercase to a setting key directly. Kept short
+ * intentionally — adding a new label here means a new brand variant
+ * style was introduced (rare). */
+const TITLE_TO_SIZE_KEY: Record<string, string> = {
+  "½":           "half",
+  "1/2":         "half",
+  "half lb":     "half",
+  "halflb":      "half",
+  "30 ct box":   "30pk",
+  "15 ct box":   "15pk",
+  "30ct":        "30pk",
+  "15ct":        "15pk",
+}
+
+function normalizeSizeFromTitle(rawTitle: string | null | undefined): string | null {
+  if (!rawTitle) return null
+  const t = String(rawTitle).toLowerCase().trim()
+  if (TITLE_TO_SIZE_KEY[t]) return TITLE_TO_SIZE_KEY[t]
+  return t // try a direct match against setting size keys
+}
+
+function sizeFromSku(sku: string | null | undefined): string | null {
+  if (!sku) return null
+  const parts = sku.toLowerCase().split("-").filter(Boolean)
+  if (parts.length === 0) return null
+  return parts[parts.length - 1] // last segment (qp / half / lb / 30pk / etc.)
+}
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
@@ -53,13 +85,18 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  /* Pull every variant + its USD price row. Filter on metadata
-   * happens in memory (Medusa v2 graph filters don't support nested
-   * jsonb predicates yet in this minor). */
+  const validTierKeys = new Set(Object.keys(prices))
+
+  /* Pull every variant + product categories + USD price row. We can't
+   * easily filter jsonb metadata in the graph layer in this Medusa minor,
+   * so the strategy match runs in memory. ~hundreds of variants in
+   * production catalogs — well within an in-memory pass budget. */
   const { data: variants } = await query.graph({
     entity: "product_variant",
     fields: [
-      "id", "title", "metadata",
+      "id", "title", "sku", "metadata",
+      "options.option.title", "options.value",
+      "product.categories.id", "product.categories.handle", "product.categories.name",
       "price_set.prices.id", "price_set.prices.amount", "price_set.prices.currency_code",
     ],
     filters: { deleted_at: null },
@@ -74,24 +111,51 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   for (const v of (variants as any[]) ?? []) {
     scanned += 1
     const meta = (v.metadata ?? {}) as Record<string, any>
-    if (meta.tier_linked !== true) { bumpSkip("not_tier_linked"); continue }
 
-    const tier = typeof meta.tier_key === "string" ? meta.tier_key : null
-    const size = typeof meta.size_key === "string" ? meta.size_key : null
-    if (!tier || !size) { bumpSkip("missing_tier_or_size_metadata"); continue }
+    /* Resolve tier + size via the strategy ladder. */
+    let tier: string | null = null
+    let size: string | null = null
 
-    const isFlowerTier = FLOWER_TIERS.has(tier)
-    if (scope === "flower" && !isFlowerTier) { bumpSkip("out_of_scope"); continue }
-    if (scope === "preroll" && isFlowerTier) { bumpSkip("out_of_scope"); continue }
+    /* Strategy 1 — metadata. */
+    if (typeof meta.tier_key === "string" && typeof meta.size_key === "string") {
+      tier = meta.tier_key
+      size = meta.size_key
+    }
+
+    /* Strategy 2 + 3 — category handle + SKU/title size. */
+    if (!tier || !size) {
+      const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
+      const matchedCat = cats.find((c) => c?.handle && validTierKeys.has(String(c.handle)))
+      if (matchedCat?.handle) {
+        tier = String(matchedCat.handle)
+        /* Try SKU first (more reliable when present), then variant title /
+         * Size option value. */
+        const validSizes = new Set(Object.keys(prices[tier] ?? {}))
+        const skuSize = sizeFromSku(v.sku)
+        if (skuSize && validSizes.has(skuSize)) {
+          size = skuSize
+        } else {
+          /* Pull a Size option value if present, else fall back to the
+           * variant's own title. */
+          const sizeOpt = ((v.options ?? []) as any[])
+            .find((o) => String(o?.option?.title ?? "").toLowerCase() === "size")
+          const candidate = sizeOpt?.value ?? v.title
+          const normalized = normalizeSizeFromTitle(candidate)
+          if (normalized && validSizes.has(normalized)) size = normalized
+        }
+      }
+    }
+
+    if (!tier || !size) { bumpSkip("unresolved_tier_or_size"); continue }
+    if (!validTierKeys.has(tier)) { bumpSkip("out_of_scope_tier"); continue }
 
     const newPrice = prices?.[tier]?.[size]
     if (typeof newPrice !== "number" || !Number.isFinite(newPrice) || newPrice <= 0) {
-      bumpSkip("no_matching_price_in_setting"); continue
+      bumpSkip("no_price_for_tier_size"); continue
     }
 
     const usd = (v.price_set?.prices ?? []).find((p: any) => p?.currency_code === "usd")
     if (!usd?.id) { bumpSkip("no_usd_price_row"); continue }
-
     if (Number(usd.amount) === newPrice) { bumpSkip("already_current"); continue }
 
     updates.push({ id: String(usd.id), amount: newPrice })
@@ -104,7 +168,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       updated = updates.length
     } catch (e: any) {
       logger.warn(`[tier-prices/apply] batch update failed: ${e?.message}. Falling back to one-by-one.`)
-      /* Fallback: try each separately so one bad row doesn't kill the batch. */
       for (const u of updates) {
         try {
           await pricingService.updatePrices([u])

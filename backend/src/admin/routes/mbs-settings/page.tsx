@@ -468,9 +468,9 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
 
       {confirmApply && (
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Overwrite every tier-linked flower variant?</Text>
+          <Text size="small" weight="plus">Overwrite every matching flower variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            This walks every variant whose metadata.tier_linked=true AND whose tier_key matches a flower tier (classic / exotic / super / snow / rapper), and overwrites its USD price with the saved tier prices. Variants without tier_linked metadata are treated as manual overrides and skipped.
+            Walks every variant in the catalog and resolves its tier + size in three steps: (1) metadata.tier_key + size_key (set by receiving), (2) product category handle + SKU last segment, (3) category handle + variant title. The matching USD price from the saved settings overwrites the variant&apos;s current price. Variants that can&apos;t be resolved (no matching category, custom SKU, etc.) are skipped — leaves truly custom variants alone.
           </Text>
           <div className="flex items-center gap-2">
             <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
@@ -611,9 +611,9 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
 
       {confirmApply && (
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Overwrite every tier-linked pre-roll variant?</Text>
+          <Text size="small" weight="plus">Overwrite every matching pre-roll variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            This walks every variant whose metadata.tier_linked=true AND whose tier_key matches a pre-roll subcategory key, and overwrites its USD price with the saved tier prices. Variants without tier_linked metadata are treated as manual overrides and skipped.
+            Walks every variant in the catalog and resolves its subcategory + size in three steps: (1) metadata.tier_key + size_key (set by receiving), (2) product category handle + SKU last segment, (3) category handle + variant title. The matching USD price from the saved settings overwrites the variant&apos;s current price. Variants that can&apos;t be resolved (no matching category, custom SKU, etc.) are skipped — leaves truly custom variants alone.
           </Text>
           <div className="flex items-center gap-2">
             <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
