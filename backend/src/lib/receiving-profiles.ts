@@ -63,7 +63,10 @@ export type SubcategoryDef = {
 
 /** Where the variant selling price comes from. */
 export type PricingModel =
-  /** Lookup in mbs-settings "flower_tier_prices" — { qp, half, lb } per tier. */
+  /** Lookup in mbs-settings (key from profile.tierPricesSettingKey) keyed
+   *  by (row.tier or subcategory key) → variant sizeKey → dollars. Same
+   *  shape works for Flower (flower_tier_prices) AND Pre-Roll
+   *  (pre_roll_tier_prices). */
   | "tier"
   /** Operator types a single price per row that applies to the (single) variant. */
   | "flat"
@@ -99,6 +102,12 @@ export type ReceivingProfile = {
   /** Field gating for the review grid. */
   fields: ProfileFields
   pricingModel: PricingModel
+  /** mbs-settings key holding the tier-price map for this profile.
+   *  Required when pricingModel === "tier"; unused otherwise. Both
+   *  flower_tier_prices and pre_roll_tier_prices share the same outer
+   *  shape ({ tierOrSubcatKey: { sizeKey: dollars } }) so receiving-save
+   *  reads them identically — it just needs to know which key. */
+  tierPricesSettingKey?: string
   /** UI labels for the pool unit ("QP"/"QPs" for flower, "Box"/"Boxes" for pre-rolls). Used in
    *  receiving-history table headers + admin widgets. */
   unitLabel: { singular: string; plural: string }
@@ -143,6 +152,7 @@ export const FLOWER_PROFILE: ReceivingProfile = {
     upc: false,
   },
   pricingModel: "tier",
+  tierPricesSettingKey: "flower_tier_prices",
   unitLabel: { singular: "QP", plural: "QPs" },
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
@@ -199,8 +209,13 @@ export const PREROLL_PROFILE: ReceivingProfile = {
      * on the receiving form + UPC display on the storefront PDP. */
     upc: true,
   },
-  /* Each row carries its own price (operator types it). No tier table. */
-  pricingModel: "flat",
+  /* Tier-driven from mbs-settings pre_roll_tier_prices. Operator
+   * still types LANDED COST per row (the unitPrice column drives
+   * the QBO Bill + COGS); selling prices are auto-filled by tier
+   * lookup keyed by subcategory key + variant sizeKey. Operator can
+   * still override per-variant in Medusa admin after save. */
+  pricingModel: "tier",
+  tierPricesSettingKey: "pre_roll_tier_prices",
   unitLabel: { singular: "Box", plural: "Boxes" },
   inputUnitLabel: { singular: "box", plural: "boxes" },
   inputToPoolMultiplier: 1,

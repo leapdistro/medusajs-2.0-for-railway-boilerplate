@@ -163,7 +163,10 @@ const PreRollReceivingPage = () => {
       r.bestFor &&
       r.quantityBoxes > 0 &&
       r.costPerBox > 0 &&
-      r.sellPricePerBox > 0 &&
+      /* No sellPrice validation — pre-roll pricing is now tier-driven
+       * (mbs-settings.pre_roll_tier_prices). Field removed from the
+       * row UI; operator can override per-variant in Medusa admin
+       * after save if needed. */
       r.coa.state === "ready",
     )
   }, [supplier, invoiceNumber, invoiceDate, rows])
@@ -638,13 +641,9 @@ const RowCard: React.FC<{
           />
         </Field>
 
-        <Field label="Sell Price / Box">
-          <Input
-            type="number"
-            value={row.sellPricePerBox || ""}
-            onChange={(e: any) => onChange({ sellPricePerBox: Number(e.target.value) || 0 })}
-          />
-        </Field>
+        {/* Sell Price field removed — pre-roll selling prices come
+          * from MBS Settings → Pre-Roll Tier Prices (keyed by
+          * subcategory + variant size). */}
         <Field label="THCa %">
           <Input value={row.thcaPercent} onChange={(e: any) => onChange({ thcaPercent: e.target.value })} />
         </Field>

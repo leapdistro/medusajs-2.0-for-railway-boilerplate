@@ -298,7 +298,19 @@ export async function saveOneRow(
     if (!tp) {
       priceError = `No tier price configured for "${row.tier}".`
     } else {
-      sellPrices = { qp: tp.qp, half: tp.half, lb: tp.lb }
+      /* Read sizeKeys from the tier-price entry itself rather than
+       * hardcoding {qp, half, lb}. Flower entries carry qp/half/lb;
+       * pre-roll entries carry 30pk / 15pk / etc. Skip non-positive
+       * values so a partially-priced tier doesn't push $0 variants. */
+      sellPrices = {}
+      for (const [sizeKey, amt] of Object.entries(tp as Record<string, unknown>)) {
+        const n = Number(amt)
+        if (Number.isFinite(n) && n > 0) sellPrices[sizeKey] = n
+      }
+      if (Object.keys(sellPrices).length === 0) {
+        priceError = `Tier "${row.tier}" has no priced sizes in ${ctx.profile.tierPricesSettingKey ?? "tier prices"}.`
+        sellPrices = null
+      }
     }
   } else {
     const sp = row.sellPrice

@@ -84,16 +84,26 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   /* 2. Tier prices (only relevant when profile.pricingModel === "tier").
-   *    For "flat" pricing (pre-rolls), rows carry their own sellPrice
-   *    and tierPrices is unused — pass an empty map. */
+   *    For "flat" pricing, rows carry their own sellPrice and tierPrices
+   *    is unused — pass an empty map. The setting key comes FROM the
+   *    profile so flower reads flower_tier_prices and pre-roll reads
+   *    pre_roll_tier_prices without a hardcoded branch here. */
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
   let tierPrices: TierPriceMap | null = null
   if (profile.pricingModel === "tier") {
-    tierPrices = (await settings.getSetting("flower_tier_prices")) as TierPriceMap | null
+    const settingKey = profile.tierPricesSettingKey
+    if (!settingKey) {
+      res.status(500).json({
+        ok: false,
+        error: `Profile "${profile.key}" uses pricingModel "tier" but has no tierPricesSettingKey configured.`,
+      })
+      return
+    }
+    tierPrices = (await settings.getSetting(settingKey)) as TierPriceMap | null
     if (!tierPrices) {
       res.status(500).json({
         ok: false,
-        error: "flower_tier_prices not configured. Run `pnpm seed:settings` or set them in MBS Settings → Tier Prices.",
+        error: `${settingKey} not configured. Run \`pnpm seed:settings\` or set them in MBS Settings → ${settingKey === "flower_tier_prices" ? "Flower" : "Pre-Roll"} Tier Prices.`,
       })
       return
     }
