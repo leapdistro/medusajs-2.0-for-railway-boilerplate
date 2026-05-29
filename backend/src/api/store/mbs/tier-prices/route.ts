@@ -39,7 +39,19 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const tierPrices = await settings.getSetting("flower_tier_prices").catch(() => null)
+  const [flowerPrices, preRollPrices] = await Promise.all([
+    settings.getSetting("flower_tier_prices").catch(() => null),
+    settings.getSetting("pre_roll_tier_prices").catch(() => null),
+  ])
 
-  return res.json({ ok: true, tier_prices: tierPrices ?? null })
+  return res.json({
+    ok: true,
+    /* Legacy field name — flower-only callers still read this. */
+    tier_prices: flowerPrices ?? null,
+    /* Split shape for clarity at call sites. The two ladders have
+     * different keying (flower: tier × size; pre-roll: subcategory ×
+     * size) so they're surfaced as separate top-level fields. */
+    flower_tier_prices: flowerPrices ?? null,
+    pre_roll_tier_prices: preRollPrices ?? null,
+  })
 }

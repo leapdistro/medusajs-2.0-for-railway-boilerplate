@@ -29,12 +29,13 @@ const GearIcon = () => (
 type SettingRow = { id: string; key: string; value: any; description?: string | null }
 
 const TABS = [
-  { id: "payment_info",         label: "Payment Info"          },
-  { id: "contact_info",         label: "Contact Info"          },
-  { id: "cancellation_reasons", label: "Cancellation Reasons"  },
-  { id: "denial_reasons",       label: "Denial Reasons"        },
-  { id: "flower_tier_prices",   label: "Tier Prices"           },
-  { id: "shipping_rates",       label: "Shipping Rates"        },
+  { id: "payment_info",          label: "Payment Info"          },
+  { id: "contact_info",          label: "Contact Info"          },
+  { id: "cancellation_reasons",  label: "Cancellation Reasons"  },
+  { id: "denial_reasons",        label: "Denial Reasons"        },
+  { id: "flower_tier_prices",    label: "Flower Tier Prices"    },
+  { id: "pre_roll_tier_prices",  label: "Pre-Roll Tier Prices"  },
+  { id: "shipping_rates",        label: "Shipping Rates"        },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -136,6 +137,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "flower_tier_prices" && (
               <TierPricesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "pre_roll_tier_prices" && (
+              <PreRollTierPricesForm row={currentRow} onSaved={onSaved} />
             )}
             {tab === "shipping_rates" && (
               <ShippingRatesForm row={currentRow} onSaved={onSaved} />
@@ -434,6 +438,110 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
 
       <div>
         <Button variant="primary" onClick={save} isLoading={saving}>Save Tier Prices</Button>
+      </div>
+    </div>
+  )
+}
+
+/* ──────────────────────── Pre-Roll Tier Prices ──────────────────────── */
+/* Keyed by (subcategory slug → variant sizeKey → dollars). Subcategories
+ * + their variants are LIVE-MERGED from the receiving profile endpoint
+ * so adding a new Pre-Roll subcategory in Medusa makes it appear here
+ * automatically with $0 defaults. Mirrors the shipping_rates pre-roll
+ * pattern — same admin UX, just selling price instead of shipping. */
+type PreRollTierPrices = Record<string, Record<string, number>>
+
+const EMPTY_PREROLL_TIER_PRICES: PreRollTierPrices = {}
+
+const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
+  const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
+  const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!row?.value) return
+    setV({ ...(row.value as PreRollTierPrices) })
+  }, [row])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/receiving/profile/pre-roll", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: { profile?: { subcategories?: PrerollSubcategoryRow[] } }) => {
+        if (cancelled) return
+        setPrerollSubs(j.profile?.subcategories ?? [])
+      })
+      .catch((e: any) => {
+        if (cancelled) return
+        setLoadError(`Could not load pre-roll subcategories: ${e?.message}`)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const setCell = (subKey: string, sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({
+      ...p,
+      [subKey]: { ...(p[subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
+    }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const next = await saveSetting("pre_roll_tier_prices", v)
+      onSaved(next)
+      toast.success("Pre-roll tier prices saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Default selling prices for Pre-Roll variants (USD whole dollars). Subcategories live-merged from Medusa — add a new Pre-Roll subcategory in Categories and it appears here with $0 placeholders. Used by the home-page Pre-Rolls showcase + (optionally) receiving auto-fill.
+      </Text>
+
+      {loadError ? (
+        <Text size="small" className="text-ui-fg-error">{loadError}</Text>
+      ) : prerollSubs.length === 0 ? (
+        <Text size="small" className="text-ui-fg-subtle">Loading pre-roll subcategories…</Text>
+      ) : (
+        <div className="border divide-y">
+          {prerollSubs.map((sub) => (
+            <div key={sub.key} className="px-3 py-3">
+              <Text size="small" weight="plus" className="mb-1.5">{sub.label}</Text>
+              <div className="flex flex-col gap-1.5">
+                {sub.variants.map((variant) => (
+                  <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
+                    <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
+                    <div className="flex items-center gap-1">
+                      <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step={1}
+                        value={v[sub.key]?.[variant.sizeKey] || ""}
+                        onChange={setCell(sub.key, variant.sizeKey)}
+                        placeholder="0"
+                        className="text-right"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Tier Prices</Button>
       </div>
     </div>
   )

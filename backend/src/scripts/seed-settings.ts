@@ -117,6 +117,14 @@ const DEFAULTS: Array<{
       rapper:  { qp: 500, half: 950, lb: 1800 },
     },
   },
+  {
+    key: "pre_roll_tier_prices",
+    description: "Default selling prices for Pre-Roll variants by subcategory × size (USD whole dollars). Keyed by (subcategory slug → variant sizeKey → dollars). Subcategories live-merged from Medusa in the admin UI so new subcategories appear automatically. Used by the homepage Pre-Rolls showcase + (optionally) receiving to auto-fill new variant prices.",
+    value: {
+      "thc-a":     { "30pk": 60 },
+      "hashholes": { "15pk": 60 },
+    },
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {
