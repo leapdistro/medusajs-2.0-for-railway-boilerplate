@@ -370,6 +370,8 @@ const EMPTY_TIER_PRICES: TierPrices = {
 const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
   const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
   useEffect(() => {
     if (!row?.value) return
     const incoming = row.value as Partial<TierPrices>
@@ -397,6 +399,27 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
       toast.error(e?.message ?? "Save failed")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const apply = async () => {
+    setApplying(true)
+    setConfirmApply(false)
+    try {
+      const res = await fetch("/admin/mbs/settings/tier-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "flower" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      toast.success(`${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Apply failed")
+    } finally {
+      setApplying(false)
     }
   }
 
@@ -436,9 +459,25 @@ const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Setti
         ))}
       </div>
 
-      <div>
+      <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Tier Prices</Button>
+        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
+          Apply to All Variants
+        </Button>
       </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Overwrite every tier-linked flower variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            This walks every variant whose metadata.tier_linked=true AND whose tier_key matches a flower tier (classic / exotic / super / snow / rapper), and overwrites its USD price with the saved tier prices. Variants without tier_linked metadata are treated as manual overrides and skipped.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -457,6 +496,8 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
   const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
   const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -500,10 +541,31 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
     }
   }
 
+  const apply = async () => {
+    setApplying(true)
+    setConfirmApply(false)
+    try {
+      const res = await fetch("/admin/mbs/settings/tier-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "preroll" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      toast.success(`${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Apply failed")
+    } finally {
+      setApplying(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Default selling prices for Pre-Roll variants (USD whole dollars). Subcategories live-merged from Medusa — add a new Pre-Roll subcategory in Categories and it appears here with $0 placeholders. Used by the home-page Pre-Rolls showcase + (optionally) receiving auto-fill.
+        Default selling prices for Pre-Roll variants (USD whole dollars). Subcategories live-merged from Medusa — add a new Pre-Roll subcategory in Categories and it appears here with $0 placeholders. Used by receiving auto-fill + the home-page Pre-Rolls showcase.
       </Text>
 
       {loadError ? (
@@ -540,9 +602,25 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
         </div>
       )}
 
-      <div>
+      <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Tier Prices</Button>
+        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
+          Apply to All Variants
+        </Button>
       </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Overwrite every tier-linked pre-roll variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            This walks every variant whose metadata.tier_linked=true AND whose tier_key matches a pre-roll subcategory key, and overwrites its USD price with the saved tier prices. Variants without tier_linked metadata are treated as manual overrides and skipped.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
