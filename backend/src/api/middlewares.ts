@@ -97,5 +97,15 @@ export default defineMiddlewares({
       method: "POST",
       bodyParser: { preserveRawBody: true, sizeLimit: "1mb" },
     },
+    {
+      /* Medusa's default bodyParser sizeLimit is ~1 MB, which truncates
+       * product image uploads from the admin (modern phone photos run
+       * 3-8 MB each). Bump the ceiling for the admin upload route so
+       * operators can attach product images without manually resizing
+       * first. 20 MB covers DSLR exports + multi-image multipart batches. */
+      matcher: "/admin/uploads",
+      method: "POST",
+      bodyParser: { sizeLimit: "20mb" },
+    },
   ],
 })
