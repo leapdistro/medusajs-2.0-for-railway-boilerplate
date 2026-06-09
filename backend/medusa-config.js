@@ -48,6 +48,19 @@ const medusaConfig = {
   admin: {
     backendUrl: BACKEND_URL,
     disable: SHOULD_DISABLE_ADMIN,
+    /* Vite build override — bumps the admin's client-side image upload
+     * ceiling from the default 1 MB to 5 MB. Without this, the admin
+     * UI rejects the file in the browser before it ever reaches the
+     * server (where our compressUploadsMiddleware would have shrunk
+     * it). Mirrors the bodyParser sizeLimit on /admin/uploads so the
+     * client + server share the same inbound ceiling. */
+    vite: (config) => {
+      config.define = {
+        ...(config.define ?? {}),
+        __MAX_UPLOAD_FILE_SIZE__: JSON.stringify(5 * 1024 * 1024),
+      }
+      return config
+    },
   },
   modules: [
     {
