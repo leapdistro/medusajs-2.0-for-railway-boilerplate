@@ -1,5 +1,67 @@
 import multer from "multer"
-import { defineMiddlewares } from "@medusajs/framework/http"
+import sharp from "sharp"
+import { defineMiddlewares, type MedusaNextFunction, type MedusaRequest, type MedusaResponse } from "@medusajs/framework/http"
+
+/**
+ * Compresses inbound image uploads before they reach the route handler.
+ *
+ * Mutates `req.files[i].buffer` in place with a resized + re-encoded
+ * JPEG (max 2000×2000, quality 85, mozjpeg). The downstream Medusa
+ * `uploadFilesWorkflow` stores whatever buffer is on req.files, so this
+ * runs once at the boundary and the stored file is small forever.
+ *
+ * Why server-side: client-side compression would require overriding
+ * Medusa admin's image-picker UI (significant lift). Doing it here
+ * normalises every upload path — admin product pictures, future custom
+ * image-upload routes, etc. — without the admin UI noticing.
+ *
+ * Why JPEG (not WebP / AVIF): JPEG is universally supported in the
+ * Medusa admin previews + email clients. WebP would shave another
+ * ~25% but the storefront PDP carousel is the only consumer of these
+ * URLs and it doesn't currently emit a <picture> fallback.
+ *
+ * Non-image files (PDFs, etc.) pass through untouched.
+ */
+async function compressUploadsMiddleware(
+  req: MedusaRequest,
+  _res: MedusaResponse,
+  next: MedusaNextFunction,
+): Promise<void> {
+  const files = (req as unknown as { files?: Array<{
+    buffer?: Buffer
+    mimetype?: string
+    originalname?: string
+    size?: number
+  }> }).files
+  if (!Array.isArray(files) || files.length === 0) return next()
+
+  await Promise.all(files.map(async (file) => {
+    if (!file?.buffer || !file.mimetype?.startsWith("image/")) return
+    try {
+      const original = file.buffer.length
+      const compressed = await sharp(file.buffer)
+        /* .rotate() with no args reads EXIF orientation and bakes the
+         * rotation into the pixels. Without this, phone photos taken
+         * in portrait end up sideways once EXIF is stripped. */
+        .rotate()
+        .resize({ width: 2000, height: 2000, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 85, mozjpeg: true })
+        .toBuffer()
+      file.buffer = compressed
+      file.mimetype = "image/jpeg"
+      file.originalname = (file.originalname ?? "image").replace(/\.[^.]+$/, "") + ".jpg"
+      file.size = compressed.length
+      // eslint-disable-next-line no-console
+      console.info(`[uploads-compress] ${file.originalname}: ${(original / 1024).toFixed(0)}KB → ${(compressed.length / 1024).toFixed(0)}KB`)
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.warn(`[uploads-compress] failed for ${file.originalname}: ${e?.message ?? e}`)
+      /* Fall through with the original buffer — better to upload
+       * uncompressed than fail the operator's image entirely. */
+    }
+  }))
+  next()
+}
 
 /**
  * In-memory multer instance for the wholesale-application endpoint.
@@ -99,13 +161,19 @@ export default defineMiddlewares({
     },
     {
       /* Medusa's default bodyParser sizeLimit is ~1 MB, which truncates
-       * product image uploads from the admin (modern phone photos run
-       * 3-8 MB each). Bump the ceiling for the admin upload route so
-       * operators can attach product images without manually resizing
-       * first. 20 MB covers DSLR exports + multi-image multipart batches. */
+       * any phone-photo product image upload. The ceiling is raised to
+       * 5 MB — enough headroom for modern phone photos (typically 2-5 MB)
+       * to arrive at the server — and the compressUploadsMiddleware
+       * normalises each image down to ~150-300 KB before storage.
+       *
+       * 5 MB is a deliberate balance: high enough that phone uploads
+       * succeed; low enough that operators aren't tempted to upload
+       * unprocessed DSLR JPEGs (which sharp would compress to the same
+       * 200KB output anyway, wasting bandwidth on the way in). */
       matcher: "/admin/uploads",
       method: "POST",
-      bodyParser: { sizeLimit: "20mb" },
+      bodyParser: { sizeLimit: "5mb" },
+      middlewares: [compressUploadsMiddleware],
     },
   ],
 })
