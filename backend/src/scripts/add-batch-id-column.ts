@@ -22,24 +22,28 @@ import type { ExecArgs } from "@medusajs/framework/types"
  */
 export default async function addBatchIdColumn({ container }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const manager: any = container.resolve("manager")
+  /* PG_CONNECTION is the shared Knex instance — exposes .raw() for
+   * arbitrary SQL. "manager" exists too but only inside module scope;
+   * exec scripts only see the global container. */
+  const pg: any = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 
   logger.info("▶ Adding batch_id column to product_attributes…")
 
   try {
-    await manager.execute(
+    await pg.raw(
       `alter table "product_attributes" add column if not exists "batch_id" text null;`,
     )
     logger.info("✓ batch_id column added (or already existed).")
 
     /* Sanity-check: read the column from information_schema so the
-     * operator gets confirmation the change is in place. */
-    const rows = await manager.execute(`
+     * operator gets confirmation the change is in place. Knex.raw
+     * returns { rows: [...] } for SELECTs. */
+    const result = await pg.raw(`
       select column_name, data_type, is_nullable
       from information_schema.columns
       where table_name = 'product_attributes' and column_name = 'batch_id';
     `)
-    logger.info(`Column inspect: ${JSON.stringify(rows)}`)
+    logger.info(`Column inspect: ${JSON.stringify(result?.rows ?? result)}`)
   } catch (e: any) {
     logger.error(`✗ Failed: ${e?.message ?? e}`)
     throw e
