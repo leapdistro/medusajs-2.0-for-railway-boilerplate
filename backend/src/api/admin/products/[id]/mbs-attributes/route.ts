@@ -11,6 +11,7 @@ type MbsAttributesPayload = {
   total_cannabinoids_percent?: string | null
   effects?: string[] | null
   coa_url?: string | null
+  batch_id?: string | null
 }
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {

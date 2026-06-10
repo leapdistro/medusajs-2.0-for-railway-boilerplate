@@ -21,6 +21,10 @@ export type ExtractedCoa = {
   thcaPercent: number | null
   /** Sum of all cannabinoids %, e.g. 28.04. null if not found. */
   totalCannabinoidsPercent: number | null
+  /** Lab Sample / Test / Batch identifier. Free-form (labs use varied
+   *  formats). Printed on the wholesale label so buyers can cross-
+   *  reference the original COA. null if not found / unreadable. */
+  batchId: string | null
   /** AI's flag for anything ambiguous (multiple THCa values, decarb only, etc.). */
   notes: string | null
 }
@@ -39,15 +43,17 @@ const PROMPT = `You are a precise data extractor for cannabis lab Certificate of
 {
   "thcaPercent": number|null,
   "totalCannabinoidsPercent": number|null,
+  "batchId": string|null,
   "notes": string|null
 }
 
 Rules:
 1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).
 2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the THCa value alone. Return as number only.
-3. If a value is genuinely missing, unreadable, or below LOQ/LOD, use null. Do NOT guess. Do NOT return 0 for missing values.
-4. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", or "Total Cannabinoids not directly reported, summed individual cannabinoids". null if clean.
-5. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
+3. batchId: the lab's unique identifier for THIS test/sample. Look for labels like "Sample ID", "Sample #", "Sample No.", "Test ID", "Test #", "Batch ID", "Batch #", "Lab ID", "Report ID", "Order #", "Certificate #". Return the identifier exactly as printed, including any prefix/format (e.g. "S-12345", "1A4-N7-K2", "2024-0098-A"). Prefer the most specific test-level ID over a general report ID. Strip surrounding whitespace only. Return as a string.
+4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null. Do NOT guess. Do NOT return 0 or empty string for missing values.
+5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", or "Two IDs present (Sample + Order), used Sample". null if clean.
+6. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
 
 function extractJsonObject(text: string): string | null {
   const start = text.indexOf("{")

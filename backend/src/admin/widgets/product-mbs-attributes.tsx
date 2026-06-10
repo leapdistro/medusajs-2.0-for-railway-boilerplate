@@ -49,6 +49,7 @@ type Form = {
   total_cannabinoids_percent: string
   effects: string[]
   coa_url: string
+  batch_id: string
 }
 
 const EMPTY_FORM: Form = {
@@ -59,6 +60,7 @@ const EMPTY_FORM: Form = {
   total_cannabinoids_percent: "",
   effects: [],
   coa_url: "",
+  batch_id: "",
 }
 
 const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) => {
@@ -85,6 +87,7 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
               : "",
           effects: Array.isArray(attributes.effects) ? attributes.effects : [],
           coa_url: attributes.coa_url ?? "",
+          batch_id: attributes.batch_id ?? "",
         })
       })
       .finally(() => {
@@ -117,6 +120,7 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         total_cannabinoids_percent: form.total_cannabinoids_percent || null,
         effects: form.effects.length ? form.effects : null,
         coa_url: form.coa_url || null,
+        batch_id: form.batch_id || null,
       }
       const res = await fetch(`/admin/products/${productId}/mbs-attributes`, {
         method: "POST",
@@ -222,6 +226,18 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
             value={form.total_cannabinoids_percent}
             onChange={(e) => setForm({ ...form, total_cannabinoids_percent: e.target.value })}
             placeholder="24.3"
+          />
+        </div>
+        <div className="flex flex-col gap-y-2">
+          <Label size="small" weight="plus">Batch ID</Label>
+          {/* Lab Sample/Test/Batch identifier from the COA. Receiving's
+            * AI extractor populates this automatically; operator can
+            * override here. Printed on the wholesale label. */}
+          <Input
+            type="text"
+            value={form.batch_id}
+            onChange={(e) => setForm({ ...form, batch_id: e.target.value })}
+            placeholder="e.g. S-12345"
           />
         </div>
       </div>

@@ -63,6 +63,9 @@ type Row = {
   coa: CoaState
   thcaPercent: string
   totalCannabinoidsPercent: string
+  /* Lab Sample/Test/Batch ID from the COA — populated by the AI
+   * extractor (with manual override). Printed on labels. */
+  batchId: string
   upc: string
 }
 
@@ -78,6 +81,7 @@ const blankRow = (defaultSubcategory: string = ""): Row => ({
   coa: { state: "idle" },
   thcaPercent: "",
   totalCannabinoidsPercent: "",
+  batchId: "",
   upc: "",
 })
 
@@ -300,6 +304,7 @@ const PreRollReceivingPage = () => {
           coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
           thcaPercent: r.thcaPercent.trim() || null,
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
+          batchId: r.batchId.trim() || null,
           upc: r.upc.trim() || null,
         })),
       }
@@ -651,6 +656,14 @@ const RowCard: React.FC<{
           <Input
             value={row.totalCannabinoidsPercent}
             onChange={(e: any) => onChange({ totalCannabinoidsPercent: e.target.value })}
+          />
+        </Field>
+        <Field label="Batch ID">
+          {/* Lab Sample/Test/Batch ID from the COA. Printed on the
+            * wholesale label so buyers can cross-reference. */}
+          <Input
+            value={row.batchId}
+            onChange={(e: any) => onChange({ batchId: e.target.value })}
           />
         </Field>
       </div>

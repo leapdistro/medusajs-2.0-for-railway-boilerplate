@@ -27,4 +27,9 @@ export const ProductAttributes = model.define("product_attributes", {
   total_cannabinoids_percent: model.text().nullable(),
   effects: model.json().nullable(),
   coa_url: model.text().nullable(),
+  /* Lab batch / sample / test ID extracted from the COA at receiving.
+   * Free-form text — labs use varied formats (e.g. "S-12345", "1A4-N7-K2",
+   * "Sample #2024-0098"). Printed on the wholesale label so buyers can
+   * cross-reference the original COA. */
+  batch_id: model.text().nullable(),
 })

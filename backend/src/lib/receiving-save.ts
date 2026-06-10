@@ -64,6 +64,9 @@ export type SaveRow = {
   coaOriginalName: string | null
   thcaPercent: string | null
   totalCannabinoidsPercent: string | null
+  /** Lab Sample/Test/Batch ID from the COA — printed on labels.
+   *  Free-form text since lab formats vary. */
+  batchId?: string | null
   /** UPC barcode — only sent by profiles where fields.upc === true
    *  (Pre-Rolls and its subcategories). Lands on variant.barcode. */
   upc?: string | null
@@ -445,6 +448,7 @@ export async function saveOneRow(
         thca_percent: row.thcaPercent,
         total_cannabinoids_percent: row.totalCannabinoidsPercent,
         coa_url: row.coaUrl,
+        batch_id: row.batchId ?? null,
       }
       if (existingAttrsId) {
         await mbsAttrs.updateProductAttributes({ id: existingAttrsId, ...attrPayload })
@@ -606,6 +610,7 @@ export async function saveOneRow(
       thca_percent: row.thcaPercent,
       total_cannabinoids_percent: row.totalCannabinoidsPercent,
       coa_url: row.coaUrl,
+      batch_id: row.batchId ?? null,
     })
     await link.create({
       [Modules.PRODUCT]: { product_id: productId },

@@ -141,6 +141,9 @@ type ReviewRow = {
    * type manually OR auto-extract from the uploaded COA via AI. */
   thcaPercent: string
   totalCannabinoidsPercent: string
+  /* Lab Sample/Test/Batch ID extracted from the COA. Printed on the
+   * wholesale label so buyers can verify the COA. Free-form text. */
+  batchId: string
   /* Free-form AI commentary from the COA extractor — usually null,
    * but flags lab format quirks like "decarbed Total THC reported
    * instead of raw cannabinoid sum". Surfaced as a ⚠ tooltip in the
@@ -231,6 +234,7 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
       coa: { state: "idle" },
       thcaPercent: "",
       totalCannabinoidsPercent: "",
+      batchId: "",
       coaNotes: null,
       nearMatches: [],
     }
@@ -251,6 +255,7 @@ const blankReviewRow = (): ReviewRow => ({
   coa: { state: "idle" },
   thcaPercent: "",
   totalCannabinoidsPercent: "",
+  batchId: "",
   coaNotes: null,
   nearMatches: [],
 })
@@ -608,6 +613,7 @@ const ReviewView: React.FC<{
       coa: { state: "idle" },
       thcaPercent: "",
       totalCannabinoidsPercent: "",
+      batchId: "",
       coaNotes: null,
       nearMatches: [],
     }])
@@ -665,6 +671,7 @@ const ReviewView: React.FC<{
         ...r,
         thcaPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.thcaPercent,
         totalCannabinoidsPercent: json.totalCannabinoidsPercent != null ? String(json.totalCannabinoidsPercent) : r.totalCannabinoidsPercent,
+        batchId: json.batchId ? String(json.batchId) : r.batchId,
         coaNotes: json.notes ?? null,
       } : r))
       return "ok"
@@ -791,6 +798,7 @@ const ReviewView: React.FC<{
           coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
           thcaPercent: r.thcaPercent.trim() || null,
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
+          batchId: r.batchId.trim() || null,
         })),
       }
       const res = await fetch("/admin/receiving/save", {
@@ -1092,6 +1100,7 @@ const ReviewView: React.FC<{
               <Th>Best For</Th>
               <Th align="right">THCa %</Th>
               <Th align="right">Cann %</Th>
+              <Th>Batch ID</Th>
               <Th>Effects</Th>
               <Th>COA</Th>
               <Th align="right">Landed / lb</Th>
@@ -1210,6 +1219,13 @@ const ReviewView: React.FC<{
                       value={row.totalCannabinoidsPercent}
                       onChange={(e) => updateRow(i, { totalCannabinoidsPercent: e.target.value })}
                       style={{ textAlign: "right" }} />
+                  </Td>
+                  <Td style={{ minWidth: 110, maxWidth: 140 }}>
+                    {/* AI extractor populates this from the COA; operator
+                      * can edit if the lab uses a non-standard label. */}
+                    <Input type="text" placeholder="—"
+                      value={row.batchId}
+                      onChange={(e) => updateRow(i, { batchId: e.target.value })} />
                   </Td>
                   <Td style={{ minWidth: 200, maxWidth: 260 }}>
                     <div className="flex flex-wrap gap-1">
@@ -1798,6 +1814,7 @@ const ReceivingPage = () => {
               coa: r.coa ?? { state: "idle" },
               thcaPercent: r.thcaPercent ?? "",
               totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
+              batchId: r.batchId ?? "",
               coaNotes: r.coaNotes ?? null,
               nearMatches: r.nearMatches ?? [],
             }))
