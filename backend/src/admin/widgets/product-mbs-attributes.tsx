@@ -128,7 +128,16 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       })
-      if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+      if (!res.ok) {
+        /* Surface the backend's actual error string instead of just the
+         * status code — Medusa returns a JSON body with { message } on
+         * 400s + 500s and the operator needs the actual reason
+         * (e.g. "column 'batch_id' does not exist" if the migration
+         * didn't run). */
+        const body = await res.json().catch(() => null)
+        const reason = body?.message ?? body?.error ?? `HTTP ${res.status}`
+        throw new Error(`Save failed: ${reason}`)
+      }
       toast.success("MBS attributes saved")
     } catch (e: any) {
       toast.error(e?.message || "Save failed")
