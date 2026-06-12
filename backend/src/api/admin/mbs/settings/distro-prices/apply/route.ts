@@ -92,7 +92,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   /* Find-or-create the PriceList. One PriceList shared by flower +
-   * preroll distro prices — different variants, same audience. */
+   * preroll distro prices — different variants, same audience.
+   *
+   * Customer-group rule attribute MUST be `customer.groups.id` (plural,
+   * dotted). See pricing migration Migration20241212190401 — earlier
+   * Medusa used `customer_group_id`; current shape is `customer.groups.id`.
+   * Cart query-config + promotion rule-attributes-map confirm this. */
+  const RULES = { "customer.groups.id": [distroGroup.id] }
   const existingLists = await pricingService.listPriceLists(
     { title: [PRICE_LIST_TITLE] },
     { take: 1 },
@@ -104,10 +110,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
       type: "override",
       status: "active",
-      rules: { "customer.group_id": [distroGroup.id] },
+      rules: RULES,
     }])
     priceList = created
     logger.info(`[distro-prices/apply] created price list ${priceList?.id}`)
+  } else {
+    /* Repair pass — if the existing list was created with the wrong
+     * rule attribute (earlier slice-4 ship used `customer.group_id`),
+     * overwrite to the canonical shape. Idempotent: if rules already
+     * match, the update is a no-op. */
+    try {
+      await pricingService.updatePriceLists([{ id: priceList.id, rules: RULES, status: "active" }])
+      logger.info(`[distro-prices/apply] refreshed rules on price list ${priceList.id}`)
+    } catch (e: any) {
+      logger.warn(`[distro-prices/apply] could not refresh rules: ${e?.message}`)
+    }
   }
   if (!priceList?.id) {
     res.status(500).json({ ok: false, message: "Could not create or load distro PriceList" })
