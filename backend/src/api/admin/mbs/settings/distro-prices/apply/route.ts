@@ -256,7 +256,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (toUpdate.length > 0) {
     try {
       await pricingService.updatePriceListPrices([{
-        id: priceList.id,
+        price_list_id: priceList.id,
         prices: toUpdate.map((u) => ({ id: u.id, amount: u.amount })),
       }])
       updated = toUpdate.length
