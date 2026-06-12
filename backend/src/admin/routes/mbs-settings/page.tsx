@@ -726,6 +726,8 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
 const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
   const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
   useEffect(() => {
     if (!row?.value) return
     const incoming = row.value as Partial<TierPrices>
@@ -756,10 +758,31 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
     }
   }
 
+  const apply = async () => {
+    setApplying(true)
+    setConfirmApply(false)
+    try {
+      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "flower" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      toast.success(`${(s.added ?? 0) + (s.updated ?? 0)} prices propagated · ${s.skipped ?? 0} skipped`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Apply failed")
+    } finally {
+      setApplying(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Propagation to variants lands in slice 4 — for now this just stores the table.
+        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Apply propagates these to a customer-group-scoped Medusa PriceList — buyers outside the group are unaffected.
       </Text>
 
       <div className="border">
@@ -792,7 +815,23 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Distro Prices</Button>
+        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
+          Apply to All Variants
+        </Button>
       </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Propagate distro prices to every matching flower variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            Writes to a Medusa PriceList scoped to the <strong>distro</strong> customer group. Variants are resolved via the same 3-strategy ladder used for tier prices (metadata → category+SKU → category+title). Buyers NOT in the distro group are unaffected — they continue to see default tier prices.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -802,6 +841,8 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
   const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
   const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -845,10 +886,31 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
     }
   }
 
+  const apply = async () => {
+    setApplying(true)
+    setConfirmApply(false)
+    try {
+      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "preroll" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      toast.success(`${(s.added ?? 0) + (s.updated ?? 0)} prices propagated · ${s.skipped ?? 0} skipped`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Apply failed")
+    } finally {
+      setApplying(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Pre-Roll variants shown to buyers in the <strong>distro</strong> customer group. Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here. Propagation to variants lands in slice 4.
+        Selling prices for Pre-Roll variants shown to buyers in the <strong>distro</strong> customer group. Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here. Apply propagates these to a customer-group-scoped Medusa PriceList — buyers outside the group are unaffected.
       </Text>
 
       {loadError ? (
@@ -887,7 +949,23 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Distro Prices</Button>
+        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
+          Apply to All Variants
+        </Button>
       </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Propagate distro prices to every matching pre-roll variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            Writes to a Medusa PriceList scoped to the <strong>distro</strong> customer group. Variants are resolved via the same 3-strategy ladder used for tier prices. Buyers NOT in the distro group are unaffected.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
