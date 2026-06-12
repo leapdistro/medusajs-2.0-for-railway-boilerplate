@@ -125,6 +125,35 @@ const DEFAULTS: Array<{
       "hashholes": { "15pk": 60 },
     },
   },
+  {
+    key: "flower_owner_markup_per_qp",
+    description: "Owner Stores pricing — fixed USD markup added on top of landed cost per QP unit. A Half variant carries 2× this markup, an LB variant 4× (pool_units multiplier). Applies to buyers in the owner_stores customer group.",
+    value: 15,
+  },
+  {
+    key: "preroll_owner_markup_per_box",
+    description: "Owner Stores pricing — fixed USD markup added on top of landed cost per box (pre-roll variant). Applies to buyers in the owner_stores customer group.",
+    value: 10,
+  },
+  {
+    key: "flower_distro_prices",
+    description: "Distro selling prices for Flower variants by tier × size (USD whole dollars). Operator-set table mirroring flower_tier_prices but scoped to the distro customer group. Apply-to-All-Variants from admin propagates to a customer-group-scoped price list.",
+    value: {
+      classic: { qp: 200, half: 360, lb:  650 },
+      exotic:  { qp: 240, half: 440, lb:  800 },
+      super:   { qp: 280, half: 520, lb:  960 },
+      snow:    { qp: 320, half: 600, lb: 1120 },
+      rapper:  { qp: 400, half: 760, lb: 1440 },
+    },
+  },
+  {
+    key: "preroll_distro_prices",
+    description: "Distro selling prices for Pre-Roll variants by subcategory × size (USD whole dollars). Keyed (subcategory slug → variant sizeKey → dollars). Subcategories live-merged from Medusa in the admin UI. Scoped to the distro customer group.",
+    value: {
+      "thc-a":     { "30pk": 48 },
+      "hashholes": { "15pk": 48 },
+    },
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {
