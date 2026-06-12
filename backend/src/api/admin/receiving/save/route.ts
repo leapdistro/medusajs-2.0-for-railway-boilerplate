@@ -1,5 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
   buildSaveContext,
   computeShipPerLb,
@@ -185,6 +185,26 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     historyError = e?.message ?? String(e)
     logger.error(`[receiving:save] ✗ HISTORY WRITE FAILED: ${historyError}`)
     if (e?.stack) logger.error(e.stack)
+  }
+
+  /* 4b. Emit receiving.saved on full success so the owner-stores
+   *     price subscriber can refresh prices for the touched profile.
+   *     Receiving updates inventory_item.metadata.landed_per_qp, which
+   *     is the cost basis for Owner Stores PriceList rows. */
+  if (summary.failed === 0 && historyId) {
+    try {
+      const eventBus: any = req.scope.resolve(Modules.EVENT_BUS)
+      await eventBus.emit({
+        name: "receiving.saved",
+        data: {
+          history_id: historyId,
+          profile_key: profile.key,
+          summary,
+        },
+      })
+    } catch (e: any) {
+      logger.warn(`[receiving:save] event emit failed: ${e?.message}`)
+    }
   }
 
   /* 5. Discard the draft if all rows succeeded. Partial success keeps
