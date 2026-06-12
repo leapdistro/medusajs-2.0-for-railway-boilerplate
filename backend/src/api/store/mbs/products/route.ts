@@ -42,8 +42,12 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
 
   /* Resolve the authenticated customer (when present) so we can attach
    * a pricing context that Medusa's PriceList rules can evaluate. The
-   * `customer.groups.id` attribute is what slice 4's distro PriceList
-   * keys off — without it, every caller sees default prices. */
+   * shape MUST be nested (not the flat `customer.groups.id` form) —
+   * Medusa's own `setPricingContext` middleware writes it as
+   *   { currency_code, customer: { groups: [{ id }] } }
+   * and the calculate_price evaluator walks that nested shape. The
+   * dotted form is the rule ATTRIBUTE on the PriceList, not the
+   * context shape. Took two ships of slice 4 to learn this. */
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
   const pricingContext: Record<string, any> = { currency_code: "usd" }
   if (customerId) {
@@ -57,7 +61,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         .map((g) => g?.id)
         .filter((id): id is string => Boolean(id))
       if (groupIds.length > 0) {
-        pricingContext["customer.groups.id"] = groupIds
+        pricingContext.customer = { groups: groupIds.map((id) => ({ id })) }
       }
     } catch {
       /* Soft-fail: if customer lookup blows up, fall through to
