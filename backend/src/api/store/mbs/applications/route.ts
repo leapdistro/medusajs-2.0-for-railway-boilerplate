@@ -112,7 +112,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (!isEmail(email)) {
     return res.status(400).json({ ok: false, message: "Email format invalid" })
   }
-  if (!einDoc)     return res.status(400).json({ ok: false, message: "EIN document is required" })
   if (!licenseDoc) return res.status(400).json({ ok: false, message: "Resale certificate is required" })
 
   /* Validate businessType against the live settings list — rejects any
@@ -191,7 +190,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   let einDocUrl: string | undefined
   let licenseDocUrl: string | undefined
   try {
-    einDocUrl     = await uploadOne(einDoc, "ein")
+    if (einDoc) einDocUrl = await uploadOne(einDoc, "ein")
     licenseDocUrl = await uploadOne(licenseDoc, "license")
   } catch (e: any) {
     logger.error(`[/store/mbs/applications] file upload failed: ${e?.message}`)
