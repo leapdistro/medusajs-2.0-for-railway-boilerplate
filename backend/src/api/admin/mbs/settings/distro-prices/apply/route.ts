@@ -149,15 +149,24 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   })
 
   /* Existing list prices, keyed by price_set_id. Used to decide
-   * update-existing vs add-new. */
-  const existingListPrices = await pricingService.listPrices(
-    { price_list_id: [priceList.id] },
-    { take: 100000 },
-  ).catch(() => [])
-  const byPriceSet: Record<string, any> = {}
-  for (const p of existingListPrices ?? []) {
-    if (p?.price_set_id) byPriceSet[String(p.price_set_id)] = p
+   * update-existing vs add-new. We fetch via query.graph (more
+   * reliable than `pricingService.listPrices({ price_list_id })`,
+   * which silently returned [] in 2.13 and made every re-apply
+   * try to ADD already-existing prices). */
+  const { data: priceListExpanded } = await query.graph({
+    entity: "price_list",
+    fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
+    filters: { id: priceList.id },
+  })
+  const byPriceSet: Record<string, { id: string; amount: number | string }> = {}
+  for (const pl of (priceListExpanded as any[]) ?? []) {
+    for (const p of (pl.prices ?? []) as any[]) {
+      if (p?.price_set_id && p?.id) {
+        byPriceSet[String(p.price_set_id)] = { id: String(p.id), amount: p.amount }
+      }
+    }
   }
+  logger.info(`[distro-prices/apply] price-list ${priceList.id} has ${Object.keys(byPriceSet).length} existing prices`)
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
   const toUpdate: Array<{ id: string; amount: number }> = []
@@ -212,9 +221,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const existing = byPriceSet[String(priceSetId)]
     if (existing?.id) {
-      if (Number(existing.amount) === newPrice) {
-        bumpSkip("already_current"); continue
-      }
+      /* Don't compare BigNumber amounts here — Number(bn) returns NaN
+       * in Medusa v2, so the comparison would always coerce to false
+       * and we'd push anyway. Skipping the comparison entirely is
+       * cheaper than handling all BigNumber edge cases. The downside
+       * (re-write a value that already matches) is negligible. */
       toUpdate.push({ id: String(existing.id), amount: newPrice })
     } else {
       toAdd.push({ price_set_id: String(priceSetId), currency_code: "usd", amount: newPrice })

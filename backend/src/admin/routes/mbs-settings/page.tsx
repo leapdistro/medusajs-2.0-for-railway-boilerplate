@@ -771,7 +771,14 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
       const s = body.summary ?? {}
-      toast.success(`${(s.added ?? 0) + (s.updated ?? 0)} prices propagated · ${s.skipped ?? 0} skipped`)
+      const propagated = (s.added ?? 0) + (s.updated ?? 0)
+      const reasons = s.skip_reasons ?? {}
+      /* Show top skip reason inline so the operator can act on it
+       * without diving into network logs. */
+      const topReason = Object.entries(reasons).sort((a, b) => (b[1] as number) - (a[1] as number))[0]
+      const suffix = topReason ? ` · top reason: ${topReason[0]} (${topReason[1]})` : ""
+      const fn = propagated > 0 ? toast.success : toast.warning
+      fn(`${propagated} prices propagated · ${s.skipped ?? 0} skipped${suffix}`)
     } catch (e: any) {
       toast.error(e?.message ?? "Apply failed")
     } finally {
@@ -899,7 +906,14 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
       const s = body.summary ?? {}
-      toast.success(`${(s.added ?? 0) + (s.updated ?? 0)} prices propagated · ${s.skipped ?? 0} skipped`)
+      const propagated = (s.added ?? 0) + (s.updated ?? 0)
+      const reasons = s.skip_reasons ?? {}
+      /* Show top skip reason inline so the operator can act on it
+       * without diving into network logs. */
+      const topReason = Object.entries(reasons).sort((a, b) => (b[1] as number) - (a[1] as number))[0]
+      const suffix = topReason ? ` · top reason: ${topReason[0]} (${topReason[1]})` : ""
+      const fn = propagated > 0 ? toast.success : toast.warning
+      fn(`${propagated} prices propagated · ${s.skipped ?? 0} skipped${suffix}`)
     } catch (e: any) {
       toast.error(e?.message ?? "Apply failed")
     } finally {
