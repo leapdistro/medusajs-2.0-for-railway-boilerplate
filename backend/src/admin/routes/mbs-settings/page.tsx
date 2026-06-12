@@ -29,13 +29,16 @@ const GearIcon = () => (
 type SettingRow = { id: string; key: string; value: any; description?: string | null }
 
 const TABS = [
-  { id: "payment_info",          label: "Payment Info"          },
-  { id: "contact_info",          label: "Contact Info"          },
-  { id: "cancellation_reasons",  label: "Cancellation Reasons"  },
-  { id: "denial_reasons",        label: "Denial Reasons"        },
-  { id: "flower_tier_prices",    label: "Flower Tier Prices"    },
-  { id: "pre_roll_tier_prices",  label: "Pre-Roll Tier Prices"  },
-  { id: "shipping_rates",        label: "Shipping Rates"        },
+  { id: "payment_info",            label: "Payment Info"            },
+  { id: "contact_info",            label: "Contact Info"            },
+  { id: "cancellation_reasons",    label: "Cancellation Reasons"    },
+  { id: "denial_reasons",          label: "Denial Reasons"          },
+  { id: "flower_tier_prices",      label: "Flower Tier Prices"      },
+  { id: "pre_roll_tier_prices",    label: "Pre-Roll Tier Prices"    },
+  { id: "owner_markup",            label: "Owner Markup"            },
+  { id: "flower_distro_prices",    label: "Flower Distro Prices"    },
+  { id: "preroll_distro_prices",   label: "Pre-Roll Distro Prices"  },
+  { id: "shipping_rates",          label: "Shipping Rates"          },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -140,6 +143,15 @@ const MbsSettingsPage = () => {
             )}
             {tab === "pre_roll_tier_prices" && (
               <PreRollTierPricesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "owner_markup" && (
+              <OwnerMarkupForm rows={rows} onSaved={onSaved} />
+            )}
+            {tab === "flower_distro_prices" && (
+              <DistroFlowerPricesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "preroll_distro_prices" && (
+              <DistroPreRollPricesForm row={currentRow} onSaved={onSaved} />
             )}
             {tab === "shipping_rates" && (
               <ShippingRatesForm row={currentRow} onSaved={onSaved} />
@@ -621,6 +633,261 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/* ─────────────────────── Owner Stores Markup ──────────────────────── */
+/* Owner-stores buyers pay (landed cost + markup) × pool_units. This tab
+ * just persists the markup numbers — propagation to a customer-group
+ * price list lands in slice 4 (apply endpoint extension + receiving
+ * subscriber). Two separate rows in mbs-settings: flower per QP unit,
+ * pre-roll per box. */
+const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const [flower, setFlower] = useState<number>(0)
+  const [preroll, setPreroll] = useState<number>(0)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    const f = rows["flower_owner_markup_per_qp"]?.value
+    const p = rows["preroll_owner_markup_per_box"]?.value
+    if (typeof f === "number") setFlower(f)
+    if (typeof p === "number") setPreroll(p)
+  }, [rows])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const a = await saveSetting("flower_owner_markup_per_qp", flower)
+      const b = await saveSetting("preroll_owner_markup_per_box", preroll)
+      onSaved(a)
+      onSaved(b)
+      toast.success("Owner markup saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Markup added on top of landed cost for buyers in the <strong>owner_stores</strong> customer group. Flower markup is per QP unit (Half = 2×, LB = 4×). Pre-roll markup is per box. Propagation to variant prices runs after slice 4 — for now this just stores the numbers.
+      </Text>
+
+      <div className="border divide-y">
+        <div className="grid grid-cols-2 items-center px-3 py-3 gap-3">
+          <Text size="small" weight="plus">Flower — per QP</Text>
+          <div className="flex items-center gap-1">
+            <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={1}
+              value={flower || ""}
+              onChange={(e) => setFlower(Number.isFinite(parseFloat(e.target.value)) ? parseFloat(e.target.value) : 0)}
+              placeholder="0"
+              className="text-right"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 items-center px-3 py-3 gap-3">
+          <Text size="small" weight="plus">Pre-Roll — per box</Text>
+          <div className="flex items-center gap-1">
+            <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={1}
+              value={preroll || ""}
+              onChange={(e) => setPreroll(Number.isFinite(parseFloat(e.target.value)) ? parseFloat(e.target.value) : 0)}
+              placeholder="0"
+              className="text-right"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t">
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Markup</Button>
+      </div>
+    </div>
+  )
+}
+
+/* ───────────────────── Distro Pricing — Flower ───────────────────── */
+/* Mirror of TierPricesForm but writes to flower_distro_prices. Apply
+ * button comes online once slice 4 extends /tier-prices/apply to handle
+ * the distro scope (which writes to a customer-group-scoped price list
+ * instead of the variant's default price). */
+const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (!row?.value) return
+    const incoming = row.value as Partial<TierPrices>
+    setV({
+      classic: { ...EMPTY_TIER_PRICES.classic, ...(incoming.classic ?? {}) },
+      exotic:  { ...EMPTY_TIER_PRICES.exotic,  ...(incoming.exotic  ?? {}) },
+      super:   { ...EMPTY_TIER_PRICES.super,   ...(incoming.super   ?? {}) },
+      snow:    { ...EMPTY_TIER_PRICES.snow,    ...(incoming.snow    ?? {}) },
+      rapper:  { ...EMPTY_TIER_PRICES.rapper,  ...(incoming.rapper  ?? {}) },
+    })
+  }, [row])
+
+  const setCell = (tier: TierKey, size: SizeKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({ ...p, [tier]: { ...p[tier], [size]: Number.isFinite(n) ? n : 0 } }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const next = await saveSetting("flower_distro_prices", v)
+      onSaved(next)
+      toast.success("Flower distro prices saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Propagation to variants lands in slice 4 — for now this just stores the table.
+      </Text>
+
+      <div className="border">
+        <div className="grid grid-cols-4 border-b">
+          <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
+          {SIZE_ORDER.map((s) => (
+            <div key={s} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{SIZE_LABELS[s]}</div>
+          ))}
+        </div>
+        {TIER_ORDER.map((tier, idx) => (
+          <div key={tier} className={`grid grid-cols-4${idx < TIER_ORDER.length - 1 ? " border-b" : ""}`}>
+            <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
+            {SIZE_ORDER.map((size) => (
+              <div key={size} className="p-1.5">
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={1}
+                  value={v[tier][size] || ""}
+                  onChange={setCell(tier, size)}
+                  placeholder="0"
+                  className="text-right"
+                />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t">
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Distro Prices</Button>
+      </div>
+    </div>
+  )
+}
+
+/* ───────────────────── Distro Pricing — Pre-Roll ───────────────────── */
+const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
+  const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
+  const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!row?.value) return
+    setV({ ...(row.value as PreRollTierPrices) })
+  }, [row])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/receiving/profile/pre-roll", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: { profile?: { subcategories?: PrerollSubcategoryRow[] } }) => {
+        if (cancelled) return
+        setPrerollSubs(j.profile?.subcategories ?? [])
+      })
+      .catch((e: any) => {
+        if (cancelled) return
+        setLoadError(`Could not load pre-roll subcategories: ${e?.message}`)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const setCell = (subKey: string, sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setV((p) => ({
+      ...p,
+      [subKey]: { ...(p[subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
+    }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const next = await saveSetting("preroll_distro_prices", v)
+      onSaved(next)
+      toast.success("Pre-roll distro prices saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Selling prices for Pre-Roll variants shown to buyers in the <strong>distro</strong> customer group. Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here. Propagation to variants lands in slice 4.
+      </Text>
+
+      {loadError ? (
+        <Text size="small" className="text-ui-fg-error">{loadError}</Text>
+      ) : prerollSubs.length === 0 ? (
+        <Text size="small" className="text-ui-fg-subtle">Loading pre-roll subcategories…</Text>
+      ) : (
+        <div className="border divide-y">
+          {prerollSubs.map((sub) => (
+            <div key={sub.key} className="px-3 py-3">
+              <Text size="small" weight="plus" className="mb-1.5">{sub.label}</Text>
+              <div className="flex flex-col gap-1.5">
+                {sub.variants.map((variant) => (
+                  <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
+                    <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
+                    <div className="flex items-center gap-1">
+                      <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step={1}
+                        value={v[sub.key]?.[variant.sizeKey] || ""}
+                        onChange={setCell(sub.key, variant.sizeKey)}
+                        placeholder="0"
+                        className="text-right"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-2 border-t">
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Distro Prices</Button>
+      </div>
     </div>
   )
 }
