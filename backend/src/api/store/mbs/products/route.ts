@@ -1,5 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules, QueryContext } from "@medusajs/framework/utils"
 
 /**
  * Custom Store route that returns products with the linked `product_attributes`
@@ -15,6 +15,13 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
  *                       (used by /account/orders/[id] to determine
  *                       which line items still link to a live PDP).
  *   - status: string  → defaults to "published"; pass "all" to include drafts
+ *
+ * Customer-group pricing (Distro, Owner Stores) — when called with a
+ * customer Bearer token, the route resolves the customer's group
+ * memberships and passes them as pricing context to query.graph. Medusa
+ * then evaluates any PriceList rules (e.g. `customer.groups.id`) and
+ * returns `variants.calculated_price.calculated_amount` reflecting the
+ * group-specific price. Public/anonymous callers see default prices.
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
@@ -33,6 +40,31 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
   if (statusParam !== "all") filters.status = statusParam
 
+  /* Resolve the authenticated customer (when present) so we can attach
+   * a pricing context that Medusa's PriceList rules can evaluate. The
+   * `customer.groups.id` attribute is what slice 4's distro PriceList
+   * keys off — without it, every caller sees default prices. */
+  const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
+  const pricingContext: Record<string, any> = { currency_code: "usd" }
+  if (customerId) {
+    try {
+      const customerService: any = req.scope.resolve(Modules.CUSTOMER)
+      const [customer] = await customerService.listCustomers(
+        { id: [customerId] },
+        { take: 1, relations: ["groups"] },
+      )
+      const groupIds = ((customer?.groups ?? []) as Array<{ id?: string }>)
+        .map((g) => g?.id)
+        .filter((id): id is string => Boolean(id))
+      if (groupIds.length > 0) {
+        pricingContext["customer.groups.id"] = groupIds
+      }
+    } catch {
+      /* Soft-fail: if customer lookup blows up, fall through to
+       * default pricing rather than 500ing the catalog. */
+    }
+  }
+
   const { data: products } = await query.graph({
     entity: "product",
     fields: [
@@ -45,6 +77,12 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "variants.manage_inventory",
       "variants.options.*", "variants.options.option.title",
       "variants.price_set.prices.amount", "variants.price_set.prices.currency_code",
+      /* calculated_price reflects the customer-group-scoped PriceList
+       * (Distro / Owner Stores) when a customer context is provided.
+       * For anonymous callers it falls back to the default price. */
+      "variants.calculated_price.calculated_amount",
+      "variants.calculated_price.original_amount",
+      "variants.calculated_price.currency_code",
       /* Pull inventory data so the storefront can render
        * per-variant "X available" labels without a second
        * round-trip. For pool products (Flower QP/½/LB sharing
@@ -58,6 +96,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "product_attributes.*",
     ],
     filters,
+    context: {
+      variants: {
+        calculated_price: QueryContext(pricingContext),
+      },
+    },
   })
 
   res.json({ products, count: products.length })
