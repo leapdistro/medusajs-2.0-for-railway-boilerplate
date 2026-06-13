@@ -1,5 +1,6 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import type { ExecArgs } from "@medusajs/framework/types"
+import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
 
 /**
  * One-off diagnostic — prints the state of the Owner Stores pricing
@@ -100,7 +101,7 @@ export default async function diagnoseOwnerPricing({ container }: ExecArgs) {
 
   /* ─── Step 2b: Landed cost + expected owner price ──────────────── */
   logger.info(`── Step 2b: landed cost + computed owner price for "${PRODUCT_HANDLE}" ──`)
-  const settings: any = container.resolve("mbs_settings" as any)
+  const settings: any = container.resolve(MBS_SETTINGS_MODULE)
   const flowerMarkup = Number(await settings.getSetting("flower_owner_markup_per_qp").catch(() => 0))
   const prerollMarkup = Number(await settings.getSetting("preroll_owner_markup_per_box").catch(() => 0))
   logger.info(`  current markups — flower: $${flowerMarkup}/qp · pre-roll: $${prerollMarkup}/box`)
