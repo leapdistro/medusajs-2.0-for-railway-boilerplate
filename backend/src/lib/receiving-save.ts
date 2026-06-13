@@ -578,13 +578,15 @@ export async function saveOneRow(
     /* 1. Create the shared inventory item first so we can pass its
      *    id into all 3 variants via inventory_items[] in one workflow
      *    call. Inventory item SKU MUST be globally unique across the
-     *    whole catalog — using just `strainSlug` collides with any
-     *    other product carrying that strain name (e.g., a pre-roll
-     *    Candy Runtz blocking a flower Candy Runtz). The product
-     *    handle is already tier-namespaced (`${tier}-${strainSlug}`),
-     *    so use that as the inventory SKU too. */
+     *    whole catalog — using bare strainSlug collides with the same
+     *    strain in any other profile (pre-roll Candy Runtz blocking
+     *    flower Candy Runtz). Use baseSku() — the canonical
+     *    cat-subcat-type-strain pattern (e.g. `flo-cla-hyb-can-run`).
+     *    Mirrors QBO Item SKU; collision-free across categories AND
+     *    tiers AND strain types. */
+    const itemBaseSku = baseSku(skuParts)
     const created = await inventoryService.createInventoryItems({
-      sku: handle,
+      sku: itemBaseSku,
       requires_shipping: true,
       title: row.strainName,
       metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },
