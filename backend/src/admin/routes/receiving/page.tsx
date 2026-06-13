@@ -12,6 +12,29 @@ import {
   toast,
 } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useColumnWidths, ColResizeHandle } from "../../lib/resizable-columns"
+
+/* Default column widths (px) for the flower receiving spreadsheet.
+ * Operator can drag column edges to resize; widths persist per-browser
+ * via localStorage under FLOWER_COLS_KEY. Order MUST mirror the <Th>
+ * order in the table render below. */
+const FLOWER_COLS_KEY = "mbs:receiving:flower:colwidths.v1"
+const FLOWER_COL_DEFAULTS = [
+  30,   // 0  select checkbox
+  200,  // 1  strain
+  80,   // 2  qty (lb)
+  100,  // 3  cost / lb
+  100,  // 4  tier
+  110,  // 5  type
+  100,  // 6  best for
+  130,  // 7  thca %
+  100,  // 8  cann %
+  130,  // 9  batch id
+  220,  // 10 effects
+  140,  // 11 coa
+  100,  // 12 landed / lb
+  260,  // 13 suggested sell
+]
 
 /**
  * Receiving — operator uploads a supplier invoice PDF, AI extracts the
@@ -464,6 +487,9 @@ const ReviewView: React.FC<{
   initialDraftId?: string | null
   onRestart: () => void
 }> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, initialRows, initialDraftId, onRestart }) => {
+  /* Resizable spreadsheet columns — drag column edges to resize.
+   * Widths persist per browser via localStorage. */
+  const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(FLOWER_COLS_KEY, FLOWER_COL_DEFAULTS)
   const [invoice, setInvoice] = useState<ExtractedInvoice>(initialInvoice)
   const [rows, setRows] = useState<ReviewRow[]>(() => initialRows ?? makeRows(initialInvoice))
   const [saving, setSaving] = useState(false)
@@ -1086,25 +1112,40 @@ const ReviewView: React.FC<{
         </div>
       )}
 
-      {/* Spreadsheet */}
+      {/* Spreadsheet — drag column edges to resize; double-click "Reset
+       *  Columns" below to restore defaults. Widths persist via
+       *  localStorage. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+        <button
+          type="button"
+          onClick={resetCols}
+          title="Reset all column widths to defaults"
+          style={{ background: "transparent", border: "1px solid #E5E1D6", padding: "4px 10px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer" }}
+        >
+          Reset Columns
+        </button>
+      </div>
       <div style={{ border: "1.5px solid #E5E1D6", overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <table style={{ tableLayout: "fixed", width: colsTotal, borderCollapse: "collapse", fontSize: 13 }}>
+          <colgroup>
+            {colWidths.map((w, ci) => <col key={ci} style={{ width: w }} />)}
+          </colgroup>
           <thead>
             <tr style={{ background: "#F3F1EA", borderBottom: "1.5px solid #0A0A0A" }}>
-              <Th><CheckBox checked={selected.size === rows.length && rows.length > 0} indeterminate={selected.size > 0 && selected.size < rows.length} onChange={toggleAll} /></Th>
-              <Th>Strain</Th>
-              <Th>Qty (lb)</Th>
-              <Th>Cost / lb</Th>
-              <Th>Tier</Th>
-              <Th>Type</Th>
-              <Th>Best For</Th>
-              <Th align="right">THCa %</Th>
-              <Th align="right">Cann %</Th>
-              <Th>Batch ID</Th>
-              <Th>Effects</Th>
-              <Th>COA</Th>
-              <Th align="right">Landed / lb</Th>
-              <Th align="right">Suggested Sell (QP / Half / LB)</Th>
+              <Th onResize={startColResize(0)}><CheckBox checked={selected.size === rows.length && rows.length > 0} indeterminate={selected.size > 0 && selected.size < rows.length} onChange={toggleAll} /></Th>
+              <Th onResize={startColResize(1)}>Strain</Th>
+              <Th onResize={startColResize(2)}>Qty (lb)</Th>
+              <Th onResize={startColResize(3)}>Cost / lb</Th>
+              <Th onResize={startColResize(4)}>Tier</Th>
+              <Th onResize={startColResize(5)}>Type</Th>
+              <Th onResize={startColResize(6)}>Best For</Th>
+              <Th onResize={startColResize(7)} align="right">THCa %</Th>
+              <Th onResize={startColResize(8)} align="right">Cann %</Th>
+              <Th onResize={startColResize(9)}>Batch ID</Th>
+              <Th onResize={startColResize(10)}>Effects</Th>
+              <Th onResize={startColResize(11)}>COA</Th>
+              <Th onResize={startColResize(12)} align="right">Landed / lb</Th>
+              <Th onResize={startColResize(13)} align="right">Suggested Sell (QP / Half / LB)</Th>
             </tr>
           </thead>
           <tbody>
@@ -1700,8 +1741,16 @@ const BulkSelect: React.FC<{
 )
 
 /* ---------- Small atoms ---------- */
-const Th: React.FC<{ children: React.ReactNode; align?: "left" | "right" }> = ({ children, align = "left" }) => (
+const Th: React.FC<{
+  children: React.ReactNode
+  align?: "left" | "right"
+  /** When provided, renders a drag handle on the right edge of this
+   *  <th>; pointer down starts a column resize. Wire via the
+   *  useColumnWidths() hook's startResize(index). */
+  onResize?: (e: React.PointerEvent<HTMLDivElement>) => void
+}> = ({ children, align = "left", onResize }) => (
   <th style={{
+    position: "relative",
     padding: "10px 8px",
     textAlign: align,
     fontFamily: "monospace",
@@ -1709,8 +1758,12 @@ const Th: React.FC<{ children: React.ReactNode; align?: "left" | "right" }> = ({
     fontWeight: 600,
     letterSpacing: "0.15em",
     textTransform: "uppercase",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   }}>
     {children}
+    {onResize && <ColResizeHandle onResize={onResize} />}
   </th>
 )
 const Td: React.FC<{ children: React.ReactNode; align?: "left" | "right"; style?: React.CSSProperties }> = ({ children, align = "left", style }) => (
