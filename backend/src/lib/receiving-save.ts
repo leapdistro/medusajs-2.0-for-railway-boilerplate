@@ -442,8 +442,15 @@ export async function saveOneRow(
       })
       try {
         if (level) {
+          /* Medusa's updateInventoryLevels_ identifies the level by
+           * (inventory_item_id, location_id), NOT by id. Passing
+           * { id, stocked_quantity } silently produces "Item undefined
+           * is not stocked at location undefined" because Medusa's
+           * internal map(...) pulls undefined for both fields.
+           * Audited 2026-06-13 against inventory-module.js:201. */
           await inventoryService.updateInventoryLevels([{
-            id: level.id,
+            inventory_item_id: firstInventoryId,
+            location_id: ctx.stockLocationId,
             stocked_quantity: (level.stocked_quantity ?? 0) + totalQps,
           }])
         } else {
