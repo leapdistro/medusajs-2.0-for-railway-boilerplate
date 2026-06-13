@@ -270,15 +270,25 @@ export async function saveOneRow(
   ctx: SaveContext,
 ): Promise<SaveRowResult> {
   const strainSlug = slugify(row.strainName)
-  /* Phase 5 — drop the legacy `${tier}-${strainSlug}` prefix so the
-   * URL = handle 1:1 (`/products/<cat>/<sub>/<handle>`). Identity rule
-   * is now strain-only — same strain across two tiers would collide
-   * here, but in practice the operator commits to one tier per strain
-   * at receive time (a strain is graded once, not stocked at multiple
-   * tiers simultaneously). If a collision DOES happen, Medusa rejects
-   * the create with a duplicate-handle error and the operator can
-   * rename. */
-  const handle = strainSlug
+  /* Identity = (strain + tier). Same strain at different tiers
+   * (Gelato classic vs Gelato exotic) IS a real case for the
+   * operator — they should land as TWO distinct products, not
+   * collapse into one. Earlier "strain-only" identity rule was
+   * removed 2026-06-13 after audit confirmed real cross-tier
+   * receipts.
+   *
+   * URL: handle is `${tier}-${strainSlug}` (e.g. `exotic-gelato`).
+   * PDP route is `/products/<cat>/<sub>/<handle>` — `/products/
+   * flower/exotic/exotic-gelato` reads slightly redundant but is
+   * unambiguous and stable across re-tierings.
+   *
+   * Backward compat for legacy handles (created when handle was just
+   * `strainSlug`): the restock lookup falls back to the bare slug AND
+   * verifies the existing product's category matches the row's tier
+   * before treating it as the same identity. Found legacy products
+   * stay with their old handle (no rename), so URLs don't break. */
+  const handle = `${row.tier}-${strainSlug}`
+  const legacyHandle = strainSlug
   /* Profile-aware pool math (Slice R3/R4, 2026-05-14):
    *   - row.quantity is in INPUT units (lb for flower, boxes for pre-roll).
    *   - ctx.shipPerLb is now profile-aware (shipping ÷ total input units),
@@ -403,12 +413,34 @@ export async function saveOneRow(
     const inventoryService: any = container.resolve(Modules.INVENTORY)
     const mbsAttrs: any = container.resolve(MBS_ATTRIBUTES_MODULE)
 
-    /* 1. Find existing product by handle (= identity rule). */
-    const { data: existing } = await query.graph({
+    /* 1. Find existing product by handle (= identity rule).
+     *    Identity is now (strain + tier) — handle = `${tier}-${strain}`.
+     *    Try the new style first; fall back to legacy `${strain}` only
+     *    when its category matches the row's tier (otherwise it'd
+     *    be a same-strain-different-tier product, which is a NEW
+     *    identity). */
+    const tierCategoryId = ctx.subcategoryIds[row.tier]
+    const productFields = [
+      "id", "handle",
+      "categories.id",
+      "variants.id", "variants.inventory_items.inventory.id",
+      "product_attributes.id",
+    ]
+    let { data: existing } = await query.graph({
       entity: "product",
-      fields: ["id", "handle", "variants.id", "variants.inventory_items.inventory.id", "product_attributes.id"],
+      fields: productFields,
       filters: { handle },
     })
+    if (!existing.length) {
+      const { data: legacy } = await query.graph({
+        entity: "product",
+        fields: productFields,
+        filters: { handle: legacyHandle },
+      })
+      existing = (legacy as any[]).filter((p) =>
+        (p.categories ?? []).some((c: { id?: string }) => c?.id === tierCategoryId),
+      )
+    }
 
     if (existing.length > 0) {
       /* ---------- RESTOCK PATH ---------- */
