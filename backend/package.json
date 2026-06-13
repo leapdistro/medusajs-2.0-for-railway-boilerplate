@@ -41,6 +41,7 @@
     "fix:add-batch-id-column": "medusa exec ./src/scripts/add-batch-id-column.ts",
     "diagnose:zero-totals": "medusa exec ./src/scripts/diagnose-zero-totals.ts",
     "diagnose:owner-pricing": "medusa exec ./src/scripts/diagnose-owner-pricing.ts",
+    "probe:update-pricelist": "medusa exec ./src/scripts/probe-update-pricelist.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
     "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",
