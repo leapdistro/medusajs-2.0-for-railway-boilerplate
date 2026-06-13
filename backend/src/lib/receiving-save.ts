@@ -416,7 +416,21 @@ export async function saveOneRow(
       const variants = (existing[0] as any).variants ?? []
       const firstInventoryId = variants[0]?.inventory_items?.[0]?.inventory?.id
       if (!firstInventoryId) {
-        return { ...baseResult, error: "Existing product has no inventory item — schema mismatch." }
+        /* This happens when the existing product's variant-to-inventory
+         * link is missing — usually a half-finished prior receiving.
+         * Operator can fix by: (a) deleting the orphaned product in
+         * admin and re-receiving, or (b) manually relinking in Medusa
+         * admin → Variant → Inventory. */
+        return {
+          ...baseResult,
+          error: `"${row.strainName}" exists in the catalog but has no inventory item linked. Delete the product (admin → Products → "${row.strainName}" → Delete) and save again. Likely cause: prior receiving for this strain crashed mid-flow and left an orphan.`,
+        }
+      }
+      if (!ctx.stockLocationId) {
+        return {
+          ...baseResult,
+          error: `Default stock location not resolved. Run \`pnpm seed:us\` on the backend and retry.`,
+        }
       }
 
       /* Increment the pool by adding to the existing level. We list
@@ -426,17 +440,24 @@ export async function saveOneRow(
         inventory_item_id: firstInventoryId,
         location_id: ctx.stockLocationId,
       })
-      if (level) {
-        await inventoryService.updateInventoryLevels([{
-          id: level.id,
-          stocked_quantity: (level.stocked_quantity ?? 0) + totalQps,
-        }])
-      } else {
-        await inventoryService.createInventoryLevels([{
-          inventory_item_id: firstInventoryId,
-          location_id: ctx.stockLocationId,
-          stocked_quantity: totalQps,
-        }])
+      try {
+        if (level) {
+          await inventoryService.updateInventoryLevels([{
+            id: level.id,
+            stocked_quantity: (level.stocked_quantity ?? 0) + totalQps,
+          }])
+        } else {
+          await inventoryService.createInventoryLevels([{
+            inventory_item_id: firstInventoryId,
+            location_id: ctx.stockLocationId,
+            stocked_quantity: totalQps,
+          }])
+        }
+      } catch (e: any) {
+        return {
+          ...baseResult,
+          error: `Restock failed at the inventory step for "${row.strainName}": ${e?.message ?? e}. inventory_item_id=${firstInventoryId} location_id=${ctx.stockLocationId}.`,
+        }
       }
 
       /* Latest-COA-wins + refresh other attributes from this receiving. */
@@ -524,7 +545,24 @@ export async function saveOneRow(
       title: row.strainName,
       metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },
     })
-    const inventoryItemId = (Array.isArray(created) ? created[0] : created).id
+    const inventoryItemId = (Array.isArray(created) ? created[0] : created)?.id
+    /* Defensive — if Medusa's response shape drifts or a transient
+     * race returns an empty result, every subsequent step (variants,
+     * stock level, workflow link) silently propagates undefined and
+     * the operator gets the cryptic "Item undefined is not stocked at
+     * location undefined" error. Fail loudly with actionable context. */
+    if (!inventoryItemId) {
+      return {
+        ...baseResult,
+        error: `"${row.strainName}" — createInventoryItems returned no id (response shape: ${JSON.stringify(created)?.slice(0, 200)}). This is usually a transient Medusa race; re-save the row.`,
+      }
+    }
+    if (!ctx.stockLocationId) {
+      return {
+        ...baseResult,
+        error: `Default stock location not resolved for "${row.strainName}". Run \`pnpm seed:us\` on the backend and retry.`,
+      }
+    }
 
     /* 2. Build variants on the shared inventory item — one per variant
      *    def in the profile. SKUs already computed above; reuse by idx.
@@ -579,28 +617,49 @@ export async function saveOneRow(
     })
 
     /* 3. Create the product with the variants in one workflow. */
-    const { result: productResult } = await createProductsWorkflow(container).run({
-      input: {
-        products: [{
-          title: row.strainName,
-          handle,
-          status: ProductStatus.PUBLISHED,
-          category_ids: [ctx.subcategoryIds[row.tier]],
-          options: [{ title: "Size", values: variantDefs.map((v) => v.label) }],
-          variants,
-          sales_channels: [{ id: ctx.salesChannelId }],
-        }],
-      },
-    })
-    const productId = productResult[0].id
+    let productId: string
+    try {
+      const { result: productResult } = await createProductsWorkflow(container).run({
+        input: {
+          products: [{
+            title: row.strainName,
+            handle,
+            status: ProductStatus.PUBLISHED,
+            category_ids: [ctx.subcategoryIds[row.tier]],
+            options: [{ title: "Size", values: variantDefs.map((v) => v.label) }],
+            variants,
+            sales_channels: [{ id: ctx.salesChannelId }],
+          }],
+        },
+      })
+      productId = productResult[0].id
+    } catch (e: any) {
+      /* Most common failures here:
+       *   - "Item undefined is not stocked at location undefined" →
+       *     inventoryItemId was undefined (handled above) OR the
+       *     workflow's internal link step couldn't find the location.
+       *   - duplicate handle conflict → catalog has a different product
+       *     with this slug. */
+      return {
+        ...baseResult,
+        error: `"${row.strainName}" — createProductsWorkflow failed: ${e?.message ?? e}. inventory_item_id=${inventoryItemId}, location_id=${ctx.stockLocationId}, handle=${handle}.`,
+      }
+    }
 
     /* 4. Set initial pool stock at the location. createInventoryItems
      *    doesn't seed levels — we have to do it explicitly. */
-    await inventoryService.createInventoryLevels([{
-      inventory_item_id: inventoryItemId,
-      location_id: ctx.stockLocationId,
-      stocked_quantity: totalQps,
-    }])
+    try {
+      await inventoryService.createInventoryLevels([{
+        inventory_item_id: inventoryItemId,
+        location_id: ctx.stockLocationId,
+        stocked_quantity: totalQps,
+      }])
+    } catch (e: any) {
+      return {
+        ...baseResult,
+        error: `"${row.strainName}" — product was created but seeding initial stock failed: ${e?.message ?? e}. inventory_item_id=${inventoryItemId}, location_id=${ctx.stockLocationId}, qty=${totalQps}. Product exists in catalog — delete it and retry.`,
+      }
+    }
 
     /* 5. Write attributes via the mbs-attributes module + link. */
     const attrs = await mbsAttrs.createProductAttributes({

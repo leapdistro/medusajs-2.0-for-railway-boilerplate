@@ -155,15 +155,18 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   /* 4. Audit trail. Always write — even if everything failed,
-   *    operators want to see what was attempted. */
+   *    operators want to see what was attempted.
+   *
+   *    Idempotent by invoice_number: each invoice should have ONE
+   *    receiving_record. On retry (same invoice number), we update
+   *    the existing row's line_results instead of inserting a new
+   *    one. Latest-wins is correct — earlier attempts are noise.
+   *    Audit before this change shipped: 8 rows for one invoice. */
   const history: any = req.scope.resolve(RECEIVING_HISTORY_MODULE)
   let historyId: string | undefined
   let historyError: string | undefined
   try {
     const totalQps = results.reduce((s, r) => s + (r.qtyQps || 0), 0)
-    /* TODO(post-recovery): persist computedSubtotal/computedTotal once
-     * the schema is restored with a manual ALTER migration. For now
-     * the client sends them but we drop them. */
     const recordPayload = {
       invoice_number: body.invoiceNumber,
       invoice_date: body.invoiceDate,
@@ -174,10 +177,20 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       line_results: results,
       notes: null,
     }
-    logger.info(`[receiving:save] writing history record (${results.length} line_results)…`)
-    const [record] = await history.createReceivingRecords([recordPayload])
-    historyId = record.id
-    logger.info(`[receiving:save] ✓ history record ${historyId}`)
+    const existing = body.invoiceNumber
+      ? await history.listReceivingRecords({ invoice_number: [body.invoiceNumber] }, { take: 1 }).catch(() => [])
+      : []
+    if (existing?.length > 0) {
+      logger.info(`[receiving:save] updating EXISTING history record ${existing[0].id} (${results.length} line_results)…`)
+      await history.updateReceivingRecords([{ id: existing[0].id, ...recordPayload }])
+      historyId = existing[0].id
+      logger.info(`[receiving:save] ✓ history record ${historyId} replaced`)
+    } else {
+      logger.info(`[receiving:save] writing NEW history record (${results.length} line_results)…`)
+      const [record] = await history.createReceivingRecords([recordPayload])
+      historyId = record.id
+      logger.info(`[receiving:save] ✓ history record ${historyId}`)
+    }
   } catch (e: any) {
     /* Surface FULL error including stack to terminal AND propagate to
      * response body so the operator sees it in the toast / browser
