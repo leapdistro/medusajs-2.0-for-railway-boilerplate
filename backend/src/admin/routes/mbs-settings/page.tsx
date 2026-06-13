@@ -664,11 +664,41 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
       const b = await saveSetting("preroll_owner_markup_per_box", preroll)
       onSaved(a)
       onSaved(b)
-      toast.success("Owner markup saved")
+      /* Auto-Apply on Save — the markup is the sole input to the
+       * computed price, so saving it without applying leaves the
+       * PriceList stale until the operator clicks Apply. Running
+       * both scopes inline removes the two-button trap. */
+      const [fr, pr] = await Promise.all([
+        applyScope("flower"),
+        applyScope("preroll"),
+      ])
+      const total = fr.propagated + pr.propagated
+      const skipped = fr.skipped + pr.skipped
+      toast.success(`Owner markup saved · ${total} prices propagated · ${skipped} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
       setSaving(false)
+    }
+  }
+
+  /* Shared apply helper — used by Save (auto-apply) AND the explicit
+   * Apply buttons. Returns the propagated/skipped counts so the
+   * caller can roll them into its own toast. Throws on HTTP error so
+   * Save's try/catch surfaces the failure. */
+  const applyScope = async (scope: "flower" | "preroll"): Promise<{ propagated: number; skipped: number }> => {
+    const res = await fetch("/admin/mbs/settings/owner-prices/apply", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body?.message ?? `Apply (${scope}) failed (${res.status})`)
+    const s = body.summary ?? {}
+    return {
+      propagated: (s.added ?? 0) + (s.updated ?? 0),
+      skipped: s.skipped ?? 0,
     }
   }
 
@@ -811,7 +841,12 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
     try {
       const next = await saveSetting("flower_distro_prices", v)
       onSaved(next)
-      toast.success("Flower distro prices saved")
+      /* Auto-Apply on Save — the saved table IS the price source;
+       * there's no preview value, so making the operator click two
+       * buttons is friction. The explicit Apply button below still
+       * exists for forced refresh after restocks. */
+      const result = await applyDistroFlower()
+      toast.success(`Distro prices saved · ${result.propagated} propagated · ${result.skipped} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -819,27 +854,31 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
     }
   }
 
+  /* Shared apply helper — used by Save (auto) AND the explicit
+   * Apply-to-All button. */
+  const applyDistroFlower = async (): Promise<{ propagated: number; skipped: number }> => {
+    const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "flower" }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+    const s = body.summary ?? {}
+    return {
+      propagated: (s.added ?? 0) + (s.updated ?? 0),
+      skipped: s.skipped ?? 0,
+    }
+  }
+
   const apply = async () => {
     setApplying(true)
     setConfirmApply(false)
     try {
-      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "flower" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      const propagated = (s.added ?? 0) + (s.updated ?? 0)
-      const reasons = s.skip_reasons ?? {}
-      /* Show top skip reason inline so the operator can act on it
-       * without diving into network logs. */
-      const topReason = Object.entries(reasons).sort((a, b) => (b[1] as number) - (a[1] as number))[0]
-      const suffix = topReason ? ` · top reason: ${topReason[0]} (${topReason[1]})` : ""
-      const fn = propagated > 0 ? toast.success : toast.warning
-      fn(`${propagated} prices propagated · ${s.skipped ?? 0} skipped${suffix}`)
+      const result = await applyDistroFlower()
+      const fn = result.propagated > 0 ? toast.success : toast.warning
+      fn(`${result.propagated} prices propagated · ${result.skipped} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Apply failed")
     } finally {
@@ -946,7 +985,9 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
     try {
       const next = await saveSetting("preroll_distro_prices", v)
       onSaved(next)
-      toast.success("Pre-roll distro prices saved")
+      /* Auto-Apply on Save — saved table IS the price source. */
+      const result = await applyDistroPreRoll()
+      toast.success(`Pre-roll distro prices saved · ${result.propagated} propagated · ${result.skipped} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -954,27 +995,29 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
     }
   }
 
+  const applyDistroPreRoll = async (): Promise<{ propagated: number; skipped: number }> => {
+    const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "preroll" }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+    const s = body.summary ?? {}
+    return {
+      propagated: (s.added ?? 0) + (s.updated ?? 0),
+      skipped: s.skipped ?? 0,
+    }
+  }
+
   const apply = async () => {
     setApplying(true)
     setConfirmApply(false)
     try {
-      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "preroll" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      const propagated = (s.added ?? 0) + (s.updated ?? 0)
-      const reasons = s.skip_reasons ?? {}
-      /* Show top skip reason inline so the operator can act on it
-       * without diving into network logs. */
-      const topReason = Object.entries(reasons).sort((a, b) => (b[1] as number) - (a[1] as number))[0]
-      const suffix = topReason ? ` · top reason: ${topReason[0]} (${topReason[1]})` : ""
-      const fn = propagated > 0 ? toast.success : toast.warning
-      fn(`${propagated} prices propagated · ${s.skipped ?? 0} skipped${suffix}`)
+      const result = await applyDistroPreRoll()
+      const fn = result.propagated > 0 ? toast.success : toast.warning
+      fn(`${result.propagated} prices propagated · ${result.skipped} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Apply failed")
     } finally {
