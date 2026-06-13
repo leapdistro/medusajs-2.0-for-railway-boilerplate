@@ -106,16 +106,17 @@ export default async function diagnoseOwnerPricing({ container }: ExecArgs) {
   const prerollMarkup = Number(await settings.getSetting("preroll_owner_markup_per_box").catch(() => 0))
   logger.info(`  current markups — flower: $${flowerMarkup}/qp · pre-roll: $${prerollMarkup}/box`)
 
-  const { data: variantRows } = await query.graph({
-    entity: "product_variant",
+  const { data: prodWithVariants } = await query.graph({
+    entity: "product",
     fields: [
-      "id", "title", "sku", "metadata",
-      "product.handle",
-      "price_set.id",
-      "inventory_items.inventory.metadata",
+      "id", "handle",
+      "variants.id", "variants.title", "variants.sku", "variants.metadata",
+      "variants.price_set.id",
+      "variants.inventory_items.inventory.metadata",
     ],
-    filters: { "product.handle": PRODUCT_HANDLE, deleted_at: null },
+    filters: { handle: PRODUCT_HANDLE },
   })
+  const variantRows = ((prodWithVariants as any[])?.[0]?.variants ?? []) as any[]
   if (!variantRows?.length) {
     logger.error(`❌ No variants found for handle "${PRODUCT_HANDLE}"`)
   } else {
