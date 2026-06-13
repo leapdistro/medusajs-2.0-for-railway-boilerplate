@@ -46,6 +46,7 @@
     "probe:apply-twice": "medusa exec ./src/scripts/probe-apply-twice.ts",
     "audit:receiving-invoice": "medusa exec ./src/scripts/audit-receiving-invoice.ts",
     "wipe:duplicate-receivings": "medusa exec ./src/scripts/wipe-duplicate-receivings.ts",
+    "reconstruct:receiving-history": "medusa exec ./src/scripts/reconstruct-receiving-history.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
     "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",
