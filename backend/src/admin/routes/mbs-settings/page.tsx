@@ -647,8 +647,6 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
   const [flower, setFlower] = useState<number>(0)
   const [preroll, setPreroll] = useState<number>(0)
   const [saving, setSaving] = useState(false)
-  const [applyingScope, setApplyingScope] = useState<"flower" | "preroll" | null>(null)
-  const [confirmScope, setConfirmScope] = useState<"flower" | "preroll" | null>(null)
 
   useEffect(() => {
     const f = rows["flower_owner_markup_per_qp"]?.value
@@ -702,40 +700,14 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
     }
   }
 
-  const apply = async (scope: "flower" | "preroll") => {
-    setApplyingScope(scope)
-    setConfirmScope(null)
-    try {
-      const res = await fetch("/admin/mbs/settings/owner-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      const propagated = (s.added ?? 0) + (s.updated ?? 0)
-      const reasons = s.skip_reasons ?? {}
-      const topReason = Object.entries(reasons).sort((a, b) => (b[1] as number) - (a[1] as number))[0]
-      const suffix = topReason ? ` · top reason: ${topReason[0]} (${topReason[1]})` : ""
-      const fn = propagated > 0 ? toast.success : toast.warning
-      fn(`${propagated} ${scope} prices propagated · ${s.skipped ?? 0} skipped${suffix}`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Apply failed")
-    } finally {
-      setApplyingScope(null)
-    }
-  }
-
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Markup added on top of landed cost for buyers in the <strong>owner_stores</strong> customer group. Flower markup is per QP unit (Half = 2×, LB = 4×). Pre-roll markup is per box. Save the numbers, then Apply propagates computed prices (landed cost × pool units + markup × pool units) to a customer-group-scoped PriceList.
+        Markup added on top of landed cost for buyers in the <strong>owner_stores</strong> customer group. Flower markup is per QP unit (Half = 2×, LB = 4×). Pre-roll markup is per box. Save propagates computed prices to a customer-group-scoped PriceList automatically.
       </Text>
 
       <div className="border divide-y">
-        <div className="grid grid-cols-3 items-center px-3 py-3 gap-3">
+        <div className="grid grid-cols-2 items-center px-3 py-3 gap-3">
           <Text size="small" weight="plus">Flower — per QP</Text>
           <div className="flex items-center gap-1">
             <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
@@ -750,17 +722,8 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
               className="text-right"
             />
           </div>
-          <Button
-            variant="secondary"
-            size="small"
-            onClick={() => setConfirmScope("flower")}
-            isLoading={applyingScope === "flower"}
-            disabled={!!applyingScope || saving}
-          >
-            Apply to All Flower
-          </Button>
         </div>
-        <div className="grid grid-cols-3 items-center px-3 py-3 gap-3">
+        <div className="grid grid-cols-2 items-center px-3 py-3 gap-3">
           <Text size="small" weight="plus">Pre-Roll — per box</Text>
           <div className="flex items-center gap-1">
             <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
@@ -775,36 +738,12 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
               className="text-right"
             />
           </div>
-          <Button
-            variant="secondary"
-            size="small"
-            onClick={() => setConfirmScope("preroll")}
-            isLoading={applyingScope === "preroll"}
-            disabled={!!applyingScope || saving}
-          >
-            Apply to All Pre-Roll
-          </Button>
         </div>
       </div>
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Markup</Button>
       </div>
-
-      {confirmScope && (
-        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">
-            Propagate Owner Stores prices to every matching {confirmScope === "flower" ? "flower" : "pre-roll"} variant?
-          </Text>
-          <Text size="small" className="text-ui-fg-subtle">
-            Computes price = (landed cost + markup) × pool units per variant and writes to a Medusa PriceList scoped to the <strong>owner_stores</strong> customer group. Variants without a landed cost (manually-created, never received) are skipped with reason <code>no_landed_cost</code>. Buyers NOT in the owner_stores group are unaffected.
-          </Text>
-          <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={() => apply(confirmScope)} isLoading={applyingScope === confirmScope}>Yes, Apply</Button>
-            <Button variant="secondary" onClick={() => setConfirmScope(null)} disabled={!!applyingScope}>Cancel</Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -817,8 +756,6 @@ const OwnerMarkupForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; 
 const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
   const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
   const [saving, setSaving] = useState(false)
-  const [applying, setApplying] = useState(false)
-  const [confirmApply, setConfirmApply] = useState(false)
   useEffect(() => {
     if (!row?.value) return
     const incoming = row.value as Partial<TierPrices>
@@ -841,12 +778,18 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
     try {
       const next = await saveSetting("flower_distro_prices", v)
       onSaved(next)
-      /* Auto-Apply on Save — the saved table IS the price source;
-       * there's no preview value, so making the operator click two
-       * buttons is friction. The explicit Apply button below still
-       * exists for forced refresh after restocks. */
-      const result = await applyDistroFlower()
-      toast.success(`Distro prices saved · ${result.propagated} propagated · ${result.skipped} skipped`)
+      /* Auto-Apply — saved table IS the price source. */
+      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "flower" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      const propagated = (s.added ?? 0) + (s.updated ?? 0)
+      toast.success(`Distro prices saved · ${propagated} propagated · ${s.skipped ?? 0} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -854,42 +797,10 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
     }
   }
 
-  /* Shared apply helper — used by Save (auto) AND the explicit
-   * Apply-to-All button. */
-  const applyDistroFlower = async (): Promise<{ propagated: number; skipped: number }> => {
-    const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope: "flower" }),
-    })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-    const s = body.summary ?? {}
-    return {
-      propagated: (s.added ?? 0) + (s.updated ?? 0),
-      skipped: s.skipped ?? 0,
-    }
-  }
-
-  const apply = async () => {
-    setApplying(true)
-    setConfirmApply(false)
-    try {
-      const result = await applyDistroFlower()
-      const fn = result.propagated > 0 ? toast.success : toast.warning
-      fn(`${result.propagated} prices propagated · ${result.skipped} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Apply failed")
-    } finally {
-      setApplying(false)
-    }
-  }
-
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Apply propagates these to a customer-group-scoped Medusa PriceList — buyers outside the group are unaffected.
+        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Save propagates these to a customer-group-scoped Medusa PriceList automatically — buyers outside the group are unaffected.
       </Text>
 
       <div className="border">
@@ -922,23 +833,7 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Distro Prices</Button>
-        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
-          Apply to All Variants
-        </Button>
       </div>
-
-      {confirmApply && (
-        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Propagate distro prices to every matching flower variant?</Text>
-          <Text size="small" className="text-ui-fg-subtle">
-            Writes to a Medusa PriceList scoped to the <strong>distro</strong> customer group. Variants are resolved via the same 3-strategy ladder used for tier prices (metadata → category+SKU → category+title). Buyers NOT in the distro group are unaffected — they continue to see default tier prices.
-          </Text>
-          <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
-            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -948,8 +843,6 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
   const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
   const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
   const [saving, setSaving] = useState(false)
-  const [applying, setApplying] = useState(false)
-  const [confirmApply, setConfirmApply] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -985,9 +878,18 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
     try {
       const next = await saveSetting("preroll_distro_prices", v)
       onSaved(next)
-      /* Auto-Apply on Save — saved table IS the price source. */
-      const result = await applyDistroPreRoll()
-      toast.success(`Pre-roll distro prices saved · ${result.propagated} propagated · ${result.skipped} skipped`)
+      /* Auto-Apply — saved table IS the price source. */
+      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "preroll" }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
+      const s = body.summary ?? {}
+      const propagated = (s.added ?? 0) + (s.updated ?? 0)
+      toast.success(`Pre-roll distro prices saved · ${propagated} propagated · ${s.skipped ?? 0} skipped`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -995,40 +897,10 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
     }
   }
 
-  const applyDistroPreRoll = async (): Promise<{ propagated: number; skipped: number }> => {
-    const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope: "preroll" }),
-    })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-    const s = body.summary ?? {}
-    return {
-      propagated: (s.added ?? 0) + (s.updated ?? 0),
-      skipped: s.skipped ?? 0,
-    }
-  }
-
-  const apply = async () => {
-    setApplying(true)
-    setConfirmApply(false)
-    try {
-      const result = await applyDistroPreRoll()
-      const fn = result.propagated > 0 ? toast.success : toast.warning
-      fn(`${result.propagated} prices propagated · ${result.skipped} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Apply failed")
-    } finally {
-      setApplying(false)
-    }
-  }
-
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Pre-Roll variants shown to buyers in the <strong>distro</strong> customer group. Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here. Apply propagates these to a customer-group-scoped Medusa PriceList — buyers outside the group are unaffected.
+        Selling prices for Pre-Roll variants shown to buyers in the <strong>distro</strong> customer group. Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here. Save propagates these to a customer-group-scoped Medusa PriceList automatically — buyers outside the group are unaffected.
       </Text>
 
       {loadError ? (
@@ -1067,23 +939,7 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Distro Prices</Button>
-        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
-          Apply to All Variants
-        </Button>
       </div>
-
-      {confirmApply && (
-        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Propagate distro prices to every matching pre-roll variant?</Text>
-          <Text size="small" className="text-ui-fg-subtle">
-            Writes to a Medusa PriceList scoped to the <strong>distro</strong> customer group. Variants are resolved via the same 3-strategy ladder used for tier prices. Buyers NOT in the distro group are unaffected.
-          </Text>
-          <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
-            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
