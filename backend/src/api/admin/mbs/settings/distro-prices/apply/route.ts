@@ -296,6 +296,51 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   }
 
+  /* Verify the writes persisted — see commit 737eaaa for the silent
+   * no-op bug we're guarding against. Re-read a sample of touched
+   * prices and assert amount matches expected. */
+  const sample = [...toUpdate, ...toAdd].slice(0, 3)
+  if (sample.length > 0) {
+    const { data: re } = await query.graph({
+      entity: "price_list",
+      fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
+      filters: { id: priceList.id },
+    })
+    const fresh: Record<string, number> = {}
+    for (const pl of (re as any[]) ?? []) {
+      for (const p of (pl.prices ?? []) as any[]) {
+        const amt = Number((p?.amount as any)?.value ?? (p?.amount as any)?.numeric ?? p?.amount)
+        if (p?.price_set_id && Number.isFinite(amt)) fresh[String(p.price_set_id)] = amt
+      }
+    }
+    const mismatches: Array<{ price_set_id: string; expected: number; actual: number | null }> = []
+    for (const u of sample) {
+      const actual = fresh[u.price_set_id] ?? null
+      if (actual == null || Math.abs(actual - u.amount) > 0.01) {
+        mismatches.push({ price_set_id: u.price_set_id, expected: u.amount, actual })
+      }
+    }
+    if (mismatches.length > 0) {
+      const first = mismatches[0]
+      const msg = `Apply reported success but writes did not persist (sample mismatch ${mismatches.length}/${sample.length}). Example: price_set ${first.price_set_id} expected $${first.expected.toFixed(2)} actual $${first.actual?.toFixed(2) ?? "null"}.`
+      logger.error(`[distro-prices/apply] ${msg}`)
+      res.status(500).json({
+        ok: false,
+        message: msg,
+        summary: {
+          scope,
+          price_list_id: priceList.id,
+          scanned,
+          added: 0,
+          updated: 0,
+          skipped: scanned,
+          skip_reasons: { ...skipReasons, write_did_not_persist: mismatches.length },
+        },
+      })
+      return
+    }
+  }
+
   res.json({
     ok: true,
     summary: {
