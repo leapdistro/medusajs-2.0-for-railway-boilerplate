@@ -577,9 +577,14 @@ export async function saveOneRow(
 
     /* 1. Create the shared inventory item first so we can pass its
      *    id into all 3 variants via inventory_items[] in one workflow
-     *    call. */
+     *    call. Inventory item SKU MUST be globally unique across the
+     *    whole catalog — using just `strainSlug` collides with any
+     *    other product carrying that strain name (e.g., a pre-roll
+     *    Candy Runtz blocking a flower Candy Runtz). The product
+     *    handle is already tier-namespaced (`${tier}-${strainSlug}`),
+     *    so use that as the inventory SKU too. */
     const created = await inventoryService.createInventoryItems({
-      sku: strainSlug,
+      sku: handle,
       requires_shipping: true,
       title: row.strainName,
       metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },
