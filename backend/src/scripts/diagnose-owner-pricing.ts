@@ -98,6 +98,50 @@ export default async function diagnoseOwnerPricing({ container }: ExecArgs) {
     return
   }
 
+  /* ─── Step 2b: Landed cost + expected owner price ──────────────── */
+  logger.info(`── Step 2b: landed cost + computed owner price for "${PRODUCT_HANDLE}" ──`)
+  const settings: any = container.resolve("mbs_settings" as any)
+  const flowerMarkup = Number(await settings.getSetting("flower_owner_markup_per_qp").catch(() => 0))
+  const prerollMarkup = Number(await settings.getSetting("preroll_owner_markup_per_box").catch(() => 0))
+  logger.info(`  current markups — flower: $${flowerMarkup}/qp · pre-roll: $${prerollMarkup}/box`)
+
+  const { data: variantRows } = await query.graph({
+    entity: "product_variant",
+    fields: [
+      "id", "title", "sku", "metadata",
+      "product.handle",
+      "price_set.id",
+      "inventory_items.inventory.metadata",
+    ],
+    filters: { "product.handle": PRODUCT_HANDLE, deleted_at: null },
+  })
+  if (!variantRows?.length) {
+    logger.error(`❌ No variants found for handle "${PRODUCT_HANDLE}"`)
+  } else {
+    const SIZE_POOL_UNITS: Record<string, number> = {
+      qp: 1, half: 2, lb: 4, "30pk": 1, "15pk": 1,
+    }
+    for (const v of variantRows as any[]) {
+      const invMeta = v.inventory_items?.[0]?.inventory?.metadata ?? null
+      const landed = Number(invMeta?.landed_per_qp)
+      const sizeKey: string | null = typeof v.metadata?.size_key === "string" ? v.metadata.size_key : null
+      const poolUnits = sizeKey ? SIZE_POOL_UNITS[sizeKey] : null
+      const isFlowerSize = sizeKey && ["qp", "half", "lb"].includes(sizeKey)
+      const markup = isFlowerSize ? flowerMarkup : prerollMarkup
+      logger.info(`  variant "${v.title}":`)
+      logger.info(`    metadata.size_key:                   ${sizeKey ?? "(missing)"}`)
+      logger.info(`    pool_units multiplier:               ${poolUnits ?? "(unmapped)"}`)
+      logger.info(`    inventory_item.landed_per_qp:        ${Number.isFinite(landed) ? "$" + landed : "(missing)"}`)
+      if (Number.isFinite(landed) && poolUnits) {
+        const expected = (landed + markup) * poolUnits
+        logger.info(`    EXPECTED owner price = (${landed} + ${markup}) × ${poolUnits} = $${expected.toFixed(2)}`)
+      } else {
+        logger.info(`    EXPECTED owner price: cannot compute (missing cost or size_key)`)
+      }
+    }
+  }
+  logger.info("")
+
   /* ─── Step 3: Calculated price for a real variant ─────────────── */
   logger.info(`── Step 3: calculated_price test for product "${PRODUCT_HANDLE}" ──`)
   const customerGroupIds = groups.map((g) => g.id).filter((id): id is string => Boolean(id))
