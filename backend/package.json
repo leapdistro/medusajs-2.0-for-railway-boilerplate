@@ -48,6 +48,7 @@
     "inspect:strain": "medusa exec ./src/scripts/inspect-strain.ts",
     "audit:strain-history": "medusa exec ./src/scripts/audit-strain-history.ts",
     "inspect:orders-qbo": "medusa exec ./src/scripts/inspect-orders-qbo.ts",
+    "find:customers": "medusa exec ./src/scripts/find-customers.ts",
     "wipe:duplicate-receivings": "medusa exec ./src/scripts/wipe-duplicate-receivings.ts",
     "reconstruct:receiving-history": "medusa exec ./src/scripts/reconstruct-receiving-history.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
