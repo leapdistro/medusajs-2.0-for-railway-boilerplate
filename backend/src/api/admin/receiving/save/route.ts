@@ -167,24 +167,45 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   let historyError: string | undefined
   try {
     const totalQps = results.reduce((s, r) => s + (r.qtyQps || 0), 0)
+    const existing = body.invoiceNumber
+      ? await history.listReceivingRecords({ invoice_number: [body.invoiceNumber] }, { take: 1 }).catch(() => [])
+      : []
+
+    /* Merge line_results by strain name when updating an existing
+     * record — latest attempt per strain wins, but prior successes
+     * for strains NOT in this batch are preserved. Stops a 2-strain
+     * retry of a 30-strain invoice from wiping the 28 prior successes
+     * out of the audit trail.
+     *
+     * Reasonable invariant: each invoice has one row per strain.
+     * Duplicates within an invoice are a data-entry mistake; we keep
+     * the latest version regardless. */
+    let mergedLineResults = results
+    let mergedTotalQps = totalQps
+    if (existing?.length > 0) {
+      const prior = (existing[0].line_results ?? []) as Array<{ strainName: string;[k: string]: any }>
+      const byStrain = new Map<string, any>()
+      for (const r of prior) byStrain.set(String(r.strainName ?? ""), r)
+      for (const r of results) byStrain.set(String(r.strainName ?? ""), r)
+      mergedLineResults = Array.from(byStrain.values()) as typeof results
+      mergedTotalQps = mergedLineResults.reduce((s, r: any) => s + (r.qtyQps || 0), 0)
+    }
+
     const recordPayload = {
       invoice_number: body.invoiceNumber,
       invoice_date: body.invoiceDate,
       supplier: body.supplier ?? {},
       shipping_total: String((body.shippingTotal ?? 0).toFixed(2)),
       invoice_total: String((body.total ?? 0).toFixed(2)),
-      total_qps: totalQps,
-      line_results: results,
+      total_qps: mergedTotalQps,
+      line_results: mergedLineResults,
       notes: null,
     }
-    const existing = body.invoiceNumber
-      ? await history.listReceivingRecords({ invoice_number: [body.invoiceNumber] }, { take: 1 }).catch(() => [])
-      : []
     if (existing?.length > 0) {
-      logger.info(`[receiving:save] updating EXISTING history record ${existing[0].id} (${results.length} line_results)…`)
+      logger.info(`[receiving:save] updating EXISTING history record ${existing[0].id} (merged ${mergedLineResults.length} line_results — ${results.length} new + prior preserved)…`)
       await history.updateReceivingRecords([{ id: existing[0].id, ...recordPayload }])
       historyId = existing[0].id
-      logger.info(`[receiving:save] ✓ history record ${historyId} replaced`)
+      logger.info(`[receiving:save] ✓ history record ${historyId} merged`)
     } else {
       logger.info(`[receiving:save] writing NEW history record (${results.length} line_results)…`)
       const [record] = await history.createReceivingRecords([recordPayload])
