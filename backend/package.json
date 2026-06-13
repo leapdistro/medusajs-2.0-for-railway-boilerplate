@@ -44,6 +44,7 @@
     "probe:update-pricelist": "medusa exec ./src/scripts/probe-update-pricelist.ts",
     "probe:batch-update": "medusa exec ./src/scripts/probe-batch-update.ts",
     "probe:apply-twice": "medusa exec ./src/scripts/probe-apply-twice.ts",
+    "audit:receiving-invoice": "medusa exec ./src/scripts/audit-receiving-invoice.ts",
     "test:anthropic": "medusa exec ./src/scripts/test-anthropic.ts",
     "test:extract": "medusa exec ./src/scripts/test-extract.ts",
     "test:coa-extract": "medusa exec ./src/scripts/test-coa-extract.ts",
