@@ -162,7 +162,13 @@ export async function applyOwnerPrices(
   const validSizesSet = new Set(Object.keys(sizeMultipliers))
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
-  const toUpdate: Array<{ id: string; amount: number }> = []
+  /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.
+   * Medusa's normalizePrices builds a hash from those fields to match
+   * against existing prices; a bare { id, amount } payload hashes to
+   * the empty string, doesn't match anything, gets silently filtered
+   * out, and the update is a no-op. See:
+   * @medusajs/pricing/services/pricing-module.js hashPrice() */
+  const toUpdate: Array<{ id: string; price_set_id: string; currency_code: string; amount: number }> = []
   let scanned = 0
   let skipped = 0
   const skipReasons: Record<string, number> = {}
@@ -230,7 +236,12 @@ export async function applyOwnerPrices(
 
     const existing = byPriceSet[String(priceSetId)]
     if (existing?.id) {
-      toUpdate.push({ id: String(existing.id), amount: newPrice })
+      toUpdate.push({
+        id: String(existing.id),
+        price_set_id: String(priceSetId),
+        currency_code: "usd",
+        amount: newPrice,
+      })
     } else {
       toAdd.push({ price_set_id: String(priceSetId), currency_code: "usd", amount: newPrice })
     }
@@ -261,7 +272,12 @@ export async function applyOwnerPrices(
     try {
       await pricingService.updatePriceListPrices([{
         price_list_id: priceList.id,
-        prices: toUpdate.map((u) => ({ id: u.id, amount: u.amount })),
+        prices: toUpdate.map((u) => ({
+          id: u.id,
+          price_set_id: u.price_set_id,
+          currency_code: u.currency_code,
+          amount: u.amount,
+        })),
       }])
       updated = toUpdate.length
     } catch (e: any) {
@@ -269,8 +285,13 @@ export async function applyOwnerPrices(
       for (const u of toUpdate) {
         try {
           await pricingService.updatePriceListPrices([{
-            id: priceList.id,
-            prices: [{ id: u.id, amount: u.amount }],
+            price_list_id: priceList.id,
+            prices: [{
+              id: u.id,
+              price_set_id: u.price_set_id,
+              currency_code: u.currency_code,
+              amount: u.amount,
+            }],
           }])
           updated += 1
         } catch (e2: any) {

@@ -169,7 +169,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   logger.info(`[distro-prices/apply] price-list ${priceList.id} has ${Object.keys(byPriceSet).length} existing prices`)
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
-  const toUpdate: Array<{ id: string; amount: number }> = []
+  /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.
+   * Medusa's normalizePrices hashes the row by those fields to match
+   * against existing prices; bare { id, amount } hashes to empty, gets
+   * filtered out, and the update is a silent no-op. */
+  const toUpdate: Array<{ id: string; price_set_id: string; currency_code: string; amount: number }> = []
   let scanned = 0
   let skipped = 0
   const skipReasons: Record<string, number> = {}
@@ -226,7 +230,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
        * and we'd push anyway. Skipping the comparison entirely is
        * cheaper than handling all BigNumber edge cases. The downside
        * (re-write a value that already matches) is negligible. */
-      toUpdate.push({ id: String(existing.id), amount: newPrice })
+      toUpdate.push({
+        id: String(existing.id),
+        price_set_id: String(priceSetId),
+        currency_code: "usd",
+        amount: newPrice,
+      })
     } else {
       toAdd.push({ price_set_id: String(priceSetId), currency_code: "usd", amount: newPrice })
     }
@@ -257,7 +266,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     try {
       await pricingService.updatePriceListPrices([{
         price_list_id: priceList.id,
-        prices: toUpdate.map((u) => ({ id: u.id, amount: u.amount })),
+        prices: toUpdate.map((u) => ({
+          id: u.id,
+          price_set_id: u.price_set_id,
+          currency_code: u.currency_code,
+          amount: u.amount,
+        })),
       }])
       updated = toUpdate.length
     } catch (e: any) {
@@ -265,8 +279,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       for (const u of toUpdate) {
         try {
           await pricingService.updatePriceListPrices([{
-            id: priceList.id,
-            prices: [{ id: u.id, amount: u.amount }],
+            price_list_id: priceList.id,
+            prices: [{
+              id: u.id,
+              price_set_id: u.price_set_id,
+              currency_code: u.currency_code,
+              amount: u.amount,
+            }],
           }])
           updated += 1
         } catch (e2: any) {
