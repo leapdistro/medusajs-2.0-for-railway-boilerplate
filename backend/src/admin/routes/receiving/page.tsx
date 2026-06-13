@@ -145,6 +145,21 @@ type NearMatch = {
   distance: number
 }
 
+/* Strain-vs-catalog classification returned by /check-duplicates
+ * (new shape). One of three states per row:
+ *   - restock: exact strain match at SAME tier → safe restock
+ *   - tierConflict: exact strain match at DIFFERENT tier → operator is
+ *       about to create a second product with the same strain name in
+ *       a different tier (often unintended). Save blocks unless the
+ *       operator explicitly confirms (`confirmedTierConflict`).
+ *   - near: typo-distance matches (existing fuzzy warning)
+ */
+type StrainClassification = {
+  restock: { productId: string; handle: string; title: string; tier: TierKey } | null
+  tierConflict: { productId: string; handle: string; title: string; tier: TierKey } | null
+  near: NearMatch[]
+}
+
 /* Per-row review state — extends the extracted line item with the
  * operator's dropdown picks + COA upload state. */
 type ReviewRow = {
@@ -178,6 +193,13 @@ type ReviewRow = {
    * the save handler hits the restock path instead of creating a
    * duplicate product. */
   nearMatches: NearMatch[]
+  /* Real-time strain-vs-catalog classification — re-fetched whenever
+   * strainName or tier changes. Drives the inline restock / tier-
+   * conflict banners + pre-save gate. */
+  classification: StrainClassification | null
+  /* Operator has acknowledged the tier conflict and wants to proceed
+   * with creating a NEW product anyway. Clears the pre-save block. */
+  confirmedTierConflict: boolean
 }
 
 type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: number }>
@@ -260,6 +282,8 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
       batchId: "",
       coaNotes: null,
       nearMatches: [],
+      classification: null,
+      confirmedTierConflict: false,
     }
   })
 }
@@ -281,6 +305,8 @@ const blankReviewRow = (): ReviewRow => ({
   batchId: "",
   coaNotes: null,
   nearMatches: [],
+  classification: null,
+  confirmedTierConflict: false,
 })
 
 /** Stub invoice used for the manual-entry path. Operator fills the
@@ -553,6 +579,60 @@ const ReviewView: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /* ─── Real-time strain/tier classification ───────────────────────
+   *
+   * Debounced — re-runs whenever any row's strainName or tier changes.
+   * Annotates each row with `classification` (restock / tierConflict /
+   * near). Drives the inline banner under each row + the pre-save gate.
+   *
+   * Keyed by the JSON of all (strain, tier) pairs so identical sequences
+   * skip the round-trip, but any change re-fires. */
+  const classificationKey = useMemo(
+    () => JSON.stringify(rows.map((r) => ({ s: r.strainName ?? "", t: r.tier ?? null }))),
+    [rows],
+  )
+  useEffect(() => {
+    const parsed = JSON.parse(classificationKey) as Array<{ s: string; t: string | null }>
+    if (parsed.every((p) => !p.s)) return
+    const t = setTimeout(() => {
+      let cancelled = false
+      fetch("/admin/receiving/check-duplicates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ rows: parsed.map((p) => ({ strainName: p.s, tier: p.t })) }),
+      })
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return
+          const out = (j.matches ?? []) as Array<StrainClassification & { strainName: string; tier: string | null }>
+          setRows((cur) => cur.map((row, i) => {
+            const c = out[i]
+            if (!c) return row
+            /* If the classification didn't move us out of a tier_conflict,
+             * keep the operator's prior acknowledgement. Otherwise clear
+             * it so a new conflict requires fresh confirmation. */
+            const stillConflict = !!c.tierConflict
+            return {
+              ...row,
+              classification: { restock: c.restock, tierConflict: c.tierConflict, near: c.near },
+              confirmedTierConflict: stillConflict ? row.confirmedTierConflict : false,
+            }
+          }))
+        })
+        .catch(() => { /* silent */ })
+      return () => { cancelled = true }
+    }, 300)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classificationKey])
+
+  /* Rows whose tier conflicts with an existing product and aren't yet
+   * acknowledged. Save is blocked while this list is non-empty. */
+  const unconfirmedConflicts = rows
+    .map((r, i) => ({ row: r, idx: i }))
+    .filter(({ row }) => row.classification?.tierConflict && !row.confirmedTierConflict)
+
   /* Live-computed totals from current rows. Differs from the AI-extracted
    * `invoice.subtotal` / `invoice.total` if the operator added/removed/
    * edited rows. Render both so divergence is visible. */
@@ -619,7 +699,11 @@ const ReviewView: React.FC<{
       strainName: m.title,
       tier: m.tier,
       nearMatches: [],
+      classification: null,
+      confirmedTierConflict: false,
     } : r))
+    /* The strain name / tier just changed — kick a fresh classification
+     * via the debounced check below. */
     setSaveResults(null)
   }, [])
 
@@ -642,7 +726,9 @@ const ReviewView: React.FC<{
       batchId: "",
       coaNotes: null,
       nearMatches: [],
-    }])
+      classification: null,
+      confirmedTierConflict: false,
+    } as ReviewRow])
     setSaveResults(null)
   }, [])
 
@@ -937,8 +1023,17 @@ const ReviewView: React.FC<{
           <Button variant="secondary" disabled={savingDraft} onClick={onSaveDraft}>
             {savingDraft ? "Saving…" : draftId ? "Update Draft" : "Save Draft"}
           </Button>
-          <Button variant="primary" disabled={!allValid || saving} onClick={onSave}>
-            {saving ? "Saving…" : `Save ${rows.length} Products`}
+          <Button
+            variant="primary"
+            disabled={!allValid || saving || unconfirmedConflicts.length > 0}
+            onClick={onSave}
+            title={unconfirmedConflicts.length > 0
+              ? `${unconfirmedConflicts.length} row(s) have tier conflicts. Confirm or change the tier on each before saving.`
+              : undefined}
+          >
+            {saving ? "Saving…" : unconfirmedConflicts.length > 0
+              ? `Resolve ${unconfirmedConflicts.length} Conflict${unconfirmedConflicts.length === 1 ? "" : "s"} First`
+              : `Save ${rows.length} Products`}
           </Button>
         </div>
       </div>
@@ -1174,6 +1269,43 @@ const ReviewView: React.FC<{
                   <Td>
                     <Input value={row.strainName}
                       onChange={(e) => updateRow(i, { strainName: e.target.value })} />
+                    {/* Restock badge — same strain at same tier exists. */}
+                    {row.classification?.restock && (
+                      <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(84,148,2,0.08)", border: "1px solid #549402", fontSize: 11, fontFamily: "monospace", color: "#3d6c01" }}>
+                        ↻ Restock — <strong>{row.classification.restock.title}</strong> ({row.classification.restock.tier}) inventory will be incremented.
+                      </div>
+                    )}
+                    {/* Tier-conflict gate — same strain at a different tier. */}
+                    {row.classification?.tierConflict && (
+                      <div style={{ marginTop: 4, padding: "6px 8px", background: "rgba(217,55,55,0.08)", border: "1.5px solid #D93737", fontSize: 11, fontFamily: "monospace", color: "#7F1D1D" }}>
+                        <div style={{ marginBottom: 4 }}>
+                          ⚠ <strong>{row.classification.tierConflict.title}</strong> already exists in <strong>{row.classification.tierConflict.tier}</strong>.
+                          Receiving as <strong>{row.tier}</strong> creates a separate product.
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "#0A0A0A" }}>
+                          <input
+                            type="checkbox"
+                            checked={row.confirmedTierConflict}
+                            onChange={(e) => updateRow(i, { confirmedTierConflict: e.target.checked })}
+                          />
+                          <span>Confirm — create as separate {row.tier} product</span>
+                        </label>
+                        {!row.confirmedTierConflict && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const tc = row.classification!.tierConflict!
+                              updateRow(i, { tier: tc.tier, confirmedTierConflict: false })
+                            }}
+                            style={{ marginTop: 4, background: "#0A0A0A", color: "#fff", border: "none", padding: "2px 8px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}
+                            title={`Switch tier to ${row.classification.tierConflict.tier} so this row restocks the existing product instead.`}
+                          >
+                            Or switch to {row.classification.tierConflict.tier} (restock)
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {/* Fuzzy near-matches — typo warnings. */}
                     {row.nearMatches.length > 0 && (
                       <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(201,138,0,0.08)", border: "1px solid #C98A00", fontSize: 11, fontFamily: "monospace" }}>
                         <div style={{ color: "#C98A00", marginBottom: 2 }}>⚠ Possible duplicate of:</div>
