@@ -308,9 +308,17 @@ const PreRollReceivingPage = () => {
           upc: r.upc.trim() || null,
         })),
       }
+      /* Idempotency key — fresh UUID per Save click. See receiving
+       * flower page for the why. */
+      const idempotencyKey = (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function")
+        ? (crypto as any).randomUUID()
+        : `rcv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const res = await fetch("/admin/receiving/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
         credentials: "include",
         body: JSON.stringify(body),
       })

@@ -913,9 +913,20 @@ const ReviewView: React.FC<{
           batchId: r.batchId.trim() || null,
         })),
       }
+      /* Idempotency key — fresh UUID per Save click. Survives the
+       * full request lifecycle (success or failure) so a retry from
+       * the same click replays the cached server response instead of
+       * re-running the save. Re-generated on the next click (any
+       * subsequent Save attempt is a new logical operation). */
+      const idempotencyKey = (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function")
+        ? (crypto as any).randomUUID()
+        : `rcv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const res = await fetch("/admin/receiving/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
         credentials: "include",
         body: JSON.stringify(payload),
       })

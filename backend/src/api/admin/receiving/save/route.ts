@@ -1,6 +1,12 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
+  acquireInflightLock,
+  getIdempotentResponse,
+  releaseInflightLock,
+  setIdempotentResponse,
+} from "../../../../lib/idempotency"
+import {
   buildSaveContext,
   computeShipPerLb,
   saveOneRow,
@@ -60,9 +66,64 @@ type Body = {
   profileKey?: string
 }
 
+const IDEMPOTENCY_NS = "receiving-save"
+
+/* Replace res.json/status with a recording wrapper so we can cache
+ * whatever the handler emitted under the idempotency key. The cached
+ * payload replays exactly on a re-arrival of the same key. */
+function makeRecordingRes(res: MedusaResponse) {
+  let captured: { status: number; body: any } | null = null
+  let statusCode = 200
+  const origStatus = res.status.bind(res)
+  const origJson = res.json.bind(res)
+  ;(res as any).status = (code: number) => {
+    statusCode = code
+    return origStatus(code)
+  }
+  ;(res as any).json = (body: any) => {
+    captured = { status: statusCode, body }
+    return origJson(body)
+  }
+  return { getCaptured: () => captured }
+}
+
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const body = (req.body ?? {}) as Body
+
+  /* Idempotency-Key: protects against double-clicks, network retries,
+   * and multi-tab races. See lib/idempotency.ts. Header is optional
+   * (legacy callers without a key still work); when present, we cache
+   * the response for 24h and replay on duplicate arrivals.
+   *
+   * In-flight lock (60s) prevents simultaneous parallel execution if
+   * two requests with the same key arrive before the first finishes;
+   * the second waits for the lock to release, then reads the cache. */
+  const idemKey = String(req.headers["idempotency-key"] ?? "").trim() || null
+  if (idemKey) {
+    const cached = await getIdempotentResponse(IDEMPOTENCY_NS, idemKey)
+    if (cached) {
+      res.setHeader("Idempotent-Replayed", "true")
+      res.status(cached.status).json(cached.body)
+      logger.info(`[receiving:save] replayed cached response for idempotency-key=${idemKey.slice(0, 8)}…`)
+      return
+    }
+    const gotLock = await acquireInflightLock(IDEMPOTENCY_NS, idemKey)
+    if (!gotLock) {
+      /* Another request with the same key is in flight. Tell the client
+       * to retry the GET-the-cached-result by re-sending the same key
+       * shortly. 409 is the closest semantic match. */
+      res.status(409).json({ ok: false, error: "Receiving save already in progress for this idempotency key. Retry shortly." })
+      return
+    }
+  }
+
+  /* Wire the recording wrapper so we can stash the response after the
+   * handler runs (only when idempotency is in play — avoid the
+   * allocation otherwise). */
+  const rec = idemKey ? makeRecordingRes(res) : null
+
+  try {
 
   if (!Array.isArray(body.rows) || body.rows.length === 0) {
     res.status(400).json({ ok: false, error: "rows[] is required" })
@@ -263,4 +324,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       ? results.find((r) => r.action === "failed")?.error
       : undefined,
   })
+
+  } finally {
+    /* Cache the response under the idempotency key so a duplicate
+     * arrival replays the same bytes. Lock release ensures any
+     * sibling request can proceed (it'll hit the cache). */
+    if (idemKey) {
+      const captured = rec?.getCaptured()
+      if (captured) {
+        await setIdempotentResponse(IDEMPOTENCY_NS, idemKey, captured.status, captured.body)
+      }
+      await releaseInflightLock(IDEMPOTENCY_NS, idemKey)
+    }
+  }
 }
