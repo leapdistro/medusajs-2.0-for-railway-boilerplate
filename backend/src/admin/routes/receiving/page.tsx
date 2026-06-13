@@ -1356,10 +1356,31 @@ const ReviewView: React.FC<{
 const SaveStatusPill: React.FC<{ result: SaveRowResult }> = ({ result }) => {
   if (result.action === "failed") {
     return (
-      <span title={result.error}
-        style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", border: "1px solid #B91C1C", color: "#B91C1C", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", cursor: "help" }}>
-        ✗ failed
-      </span>
+      <div style={{ marginTop: 4 }}>
+        <span
+          style={{ display: "inline-block", padding: "1px 6px", border: "1px solid #B91C1C", color: "#B91C1C", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          ✗ failed
+        </span>
+        {result.error && (
+          <div
+            style={{
+              marginTop: 4,
+              padding: "4px 6px",
+              background: "rgba(185,28,28,0.06)",
+              border: "1px solid #B91C1C",
+              color: "#7F1D1D",
+              fontFamily: "monospace",
+              fontSize: 10,
+              lineHeight: 1.4,
+              wordBreak: "break-word",
+              whiteSpace: "pre-wrap",
+            }}
+            title="Per-row error from the save handler — names the failing step + relevant ids so you can fix it directly."
+          >
+            {result.error}
+          </div>
+        )}
+      </div>
     )
   }
   const label = result.action === "created" ? "✓ created" : "✓ restocked"
