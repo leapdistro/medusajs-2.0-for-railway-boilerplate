@@ -162,17 +162,18 @@ export default defineMiddlewares({
     {
       /* Medusa's default bodyParser sizeLimit is ~1 MB, which truncates
        * any phone-photo product image upload. The ceiling is raised to
-       * 5 MB — enough headroom for modern phone photos (typically 2-5 MB)
-       * to arrive at the server — and the compressUploadsMiddleware
-       * normalises each image down to ~150-300 KB before storage.
+       * 15 MB — enough headroom for full-resolution modern phone photos
+       * (typically 8-12 MB at native quality) — and the
+       * compressUploadsMiddleware normalises each image down to
+       * ~150-300 KB JPEG before storage.
        *
-       * 5 MB is a deliberate balance: high enough that phone uploads
-       * succeed; low enough that operators aren't tempted to upload
-       * unprocessed DSLR JPEGs (which sharp would compress to the same
-       * 200KB output anyway, wasting bandwidth on the way in). */
+       * Must stay in sync with the admin's client-side
+       * __MAX_UPLOAD_FILE_SIZE__ in medusa-config.js; if they diverge,
+       * the lower number wins and the operator sees a confusing
+       * client-side rejection. */
       matcher: "/admin/uploads",
       method: "POST",
-      bodyParser: { sizeLimit: "5mb" },
+      bodyParser: { sizeLimit: "15mb" },
       middlewares: [compressUploadsMiddleware],
     },
   ],
