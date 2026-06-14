@@ -32,6 +32,21 @@ export interface MinioFileProviderOptions {
 
 const DEFAULT_BUCKET = 'medusa-media'
 
+/* Strip URL-unsafe chars from the filename before it becomes the bucket
+ * key. `#` is the killer — strain names like "CANDY CARTEL #11"
+ * uploaded raw produced URLs the browser truncated at the fragment
+ * delimiter, so the image disappeared from the storefront. Replace
+ * everything outside the URL "unreserved" set (RFC 3986) with `_`,
+ * collapse runs, trim edges. Original filename is still preserved on
+ * the object's `x-amz-meta-original-filename` metadata for traceability. */
+function sanitizeFilenameForUrl(name: string): string {
+  const safe = name
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+  return safe || 'file'
+}
+
 /**
  * Service to handle file storage using MinIO.
  */
@@ -191,7 +206,7 @@ class MinioFileProviderService extends AbstractFileProviderService {
 
     try {
       const parsedFilename = path.parse(file.filename)
-      const fileKey = `${parsedFilename.name}-${ulid()}${parsedFilename.ext}`
+      const fileKey = `${sanitizeFilenameForUrl(parsedFilename.name)}-${ulid()}${parsedFilename.ext}`
       
       // Handle different content types properly
       let content: Buffer
@@ -301,8 +316,11 @@ class MinioFileProviderService extends AbstractFileProviderService {
     }
 
     try {
-      // Use the filename directly as the key (matches S3 provider behavior for presigned uploads)
-      const fileKey = fileData.filename
+      // Use the (sanitized) filename directly as the key (matches S3 provider
+      // behavior for presigned uploads). Sanitization mirrors `upload()` so
+      // both code paths produce URL-safe keys.
+      const parsed = path.parse(fileData.filename)
+      const fileKey = `${sanitizeFilenameForUrl(parsed.name)}${parsed.ext}`
 
       // Generate presigned PUT URL that expires in 15 minutes
       const url = await this.client.presignedPutObject(

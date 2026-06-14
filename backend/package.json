@@ -39,6 +39,7 @@
     "audit:shipping-weights": "medusa exec ./src/scripts/audit-shipping-weights.ts",
     "backfill:net-grams": "medusa exec ./src/scripts/backfill-net-grams.ts",
     "fix:add-batch-id-column": "medusa exec ./src/scripts/add-batch-id-column.ts",
+    "fix:image-urls": "medusa exec ./src/scripts/fix-image-urls.ts",
     "diagnose:zero-totals": "medusa exec ./src/scripts/diagnose-zero-totals.ts",
     "diagnose:owner-pricing": "medusa exec ./src/scripts/diagnose-owner-pricing.ts",
     "probe:update-pricelist": "medusa exec ./src/scripts/probe-update-pricelist.ts",
