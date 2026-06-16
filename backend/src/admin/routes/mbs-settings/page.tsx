@@ -387,8 +387,8 @@ const EMPTY_TIER_PRICES: TierPrices = {
  * (default via tier-prices/apply, tier_2/tier_3 via group-prices/apply). */
 const FLOWER_LEVELS = [
   { key: "default", title: "Default Tier Prices",    settingKey: "flower_tier_prices",   group: null     as null | "tier_2" | "tier_3" },
-  { key: "tier_2",  title: "Tier 2 — Wholesale",     settingKey: "flower_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
-  { key: "tier_3",  title: "Tier 3 — Wholesale",     settingKey: "flower_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
+  { key: "tier_2",  title: "Chain of Stores",        settingKey: "flower_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
+  { key: "tier_3",  title: "Low Volume",             settingKey: "flower_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
 ] as const
 
 function readTierPrices(row?: SettingRow): TierPrices {
@@ -586,8 +586,8 @@ const EMPTY_PREROLL_TIER_PRICES: PreRollTierPrices = {}
  * Tier 3 are stacked here per the latest UX decision. */
 const PREROLL_LEVELS = [
   { key: "default", title: "Default Tier Prices",   settingKey: "pre_roll_tier_prices",  group: null     as null | "tier_2" | "tier_3" },
-  { key: "tier_2",  title: "Tier 2 — Wholesale",    settingKey: "preroll_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
-  { key: "tier_3",  title: "Tier 3 — Wholesale",    settingKey: "preroll_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
+  { key: "tier_2",  title: "Chain of Stores",       settingKey: "preroll_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
+  { key: "tier_3",  title: "Low Volume",            settingKey: "preroll_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
 ] as const
 
 const PreRollTierPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {

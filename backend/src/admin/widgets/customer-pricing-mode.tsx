@@ -19,13 +19,13 @@ const OPTIONS: { id: Mode; label: string; help: string }[] = [
   },
   {
     id: "tier_2",
-    label: "Tier 2",
-    help: "Sees the Tier 2 prices from the Flower / Pre-Roll Tier Prices tabs.",
+    label: "Chain of Stores",
+    help: "Sees the Chain of Stores prices from the Flower / Pre-Roll Tier Prices tabs.",
   },
   {
     id: "tier_3",
-    label: "Tier 3",
-    help: "Sees the Tier 3 prices from the Flower / Pre-Roll Tier Prices tabs.",
+    label: "Low Volume",
+    help: "Sees the Low Volume prices from the Flower / Pre-Roll Tier Prices tabs.",
   },
   {
     id: "owner_stores",
