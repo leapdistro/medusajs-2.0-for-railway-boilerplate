@@ -216,6 +216,153 @@ export async function findOrCreateCustomer(
   return { id: String(c.Id), displayName: c.DisplayName, created: true }
 }
 
+/* ─── Customer update (sparse, operator-initiated) ─── */
+
+export type CustomerUpdateInput = {
+  qboCustomerId: string
+  /** Wholesale account business name → DisplayName + CompanyName. */
+  businessName?: string | null
+  email?: string | null
+  phone?: string | null
+  addressLine1?: string | null
+  addressLine2?: string | null
+  city?: string | null
+  state?: string | null
+  zip?: string | null
+  country?: string | null
+  firstName?: string | null
+  lastName?: string | null
+  /** Notes context — same fields as Create. Read-modify-write merges
+   *  with current QBO Notes so manual operator additions survive. */
+  businessTypeLabel?: string | null
+  ein?: string | null
+  licenseNumber?: string | null
+}
+
+/**
+ * Sparse-update a QBO Customer in place. Used by the operator-driven
+ * "Push Updates to QBO" admin button after a buyer changes their
+ * /account profile, business, or addresses.
+ *
+ * Two-step protocol QBO requires for updates:
+ *   1. GET the current Customer to read SyncToken (QBO's optimistic-lock
+ *      counter — without it, the POST 400s with "Stale Object Error").
+ *   2. POST the updated payload with `sparse: true` so we overwrite
+ *      only the fields we send, leaving everything else (BalanceWithJobs,
+ *      PreferredDeliveryMethod, manual operator edits not in our schema)
+ *      untouched.
+ *
+ * Notes handling — we read the current Notes, find any auto-managed
+ * lines (Business Type / EIN / License) and rewrite them, leaving
+ * everything else intact. This preserves manual operator additions
+ * (e.g., free-form context) which would otherwise be wiped on every
+ * push. If no auto-managed lines existed (legacy customer created
+ * before EIN/license sync shipped), we append a new auto-managed block.
+ */
+export async function updateQboCustomer(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  input: CustomerUpdateInput,
+): Promise<{ id: string; displayName: string }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+
+  /* Step 1 — read current Customer for SyncToken + existing Notes. */
+  const currentResp = await qboFetch(fresh, `/customer/${input.qboCustomerId}`)
+  const current = currentResp?.Customer
+  if (!current?.Id) {
+    throw new Error(`Customer ${input.qboCustomerId} not found in QBO`)
+  }
+  const syncToken = String(current.SyncToken ?? "0")
+
+  /* Step 2 — build sparse payload. Only include fields the operator
+   * supplied (the storefront /account flow only writes a subset). */
+  const body: any = {
+    Id: input.qboCustomerId,
+    SyncToken: syncToken,
+    sparse: true,
+  }
+  if (typeof input.businessName === "string" && input.businessName.length > 0) {
+    body.DisplayName = input.businessName.slice(0, 500)
+    body.CompanyName = input.businessName.slice(0, 1024)
+  }
+  if (typeof input.email === "string" && input.email.length > 0) {
+    body.PrimaryEmailAddr = { Address: input.email }
+  }
+  if (typeof input.firstName === "string") {
+    body.GivenName = input.firstName.slice(0, 100)
+  }
+  if (typeof input.lastName === "string") {
+    body.FamilyName = input.lastName.slice(0, 100)
+  }
+  if (typeof input.phone === "string" && input.phone.length > 0) {
+    body.PrimaryPhone = { FreeFormNumber: input.phone }
+  }
+  if (input.addressLine1 || input.city || input.state || input.zip) {
+    body.BillAddr = {
+      Line1: input.addressLine1 ?? undefined,
+      Line2: input.addressLine2 ?? undefined,
+      City: input.city ?? undefined,
+      CountrySubDivisionCode: input.state ?? undefined,
+      PostalCode: input.zip ?? undefined,
+      Country: input.country ?? undefined,
+    }
+    /* Mirror to ShipAddr — same convention as Create. If the operator
+     * needs a separate ship-to, they edit it in QBO directly and we
+     * never overwrite it here because BillAddr is what we control. */
+    body.ShipAddr = { ...body.BillAddr }
+  }
+
+  /* Merge Notes — preserve manual operator additions, rewrite our
+   * structured lines. We look for "Key: value" lines matching our
+   * managed keys (Business Type / EIN / License) and replace them
+   * in place. Unmanaged lines pass through unchanged. */
+  const managedKeys = new Set(["Business Type", "EIN", "License"])
+  const managedNext: Record<string, string> = {}
+  if (typeof input.businessTypeLabel === "string" && input.businessTypeLabel.length > 0) {
+    managedNext["Business Type"] = input.businessTypeLabel
+  }
+  if (typeof input.ein === "string" && input.ein.length > 0) {
+    managedNext["EIN"] = input.ein
+  }
+  if (typeof input.licenseNumber === "string" && input.licenseNumber.length > 0) {
+    managedNext["License"] = input.licenseNumber
+  }
+
+  const currentNotes = typeof current.Notes === "string" ? current.Notes : ""
+  /* QBO's Notes are a single string; findOrCreateCustomer joins with
+   * " · " so split on that. Older Notes may use newlines — handle both
+   * separators defensively. */
+  const parts = currentNotes.split(/ · |\n/).map((s: string) => s.trim()).filter(Boolean)
+  const seenManaged = new Set<string>()
+  const merged: string[] = []
+  for (const part of parts) {
+    const m = part.match(/^([^:]+):\s*(.*)$/)
+    if (m && managedKeys.has(m[1].trim())) {
+      const key = m[1].trim()
+      if (managedNext[key] !== undefined) {
+        merged.push(`${key}: ${managedNext[key]}`)
+        seenManaged.add(key)
+      }
+      /* Else: managed key whose new value is empty → drop entirely. */
+      continue
+    }
+    merged.push(part)
+  }
+  /* Append any managed keys that weren't already in the Notes (legacy
+   * customers created before this slice). */
+  for (const key of Object.keys(managedNext)) {
+    if (!seenManaged.has(key)) merged.push(`${key}: ${managedNext[key]}`)
+  }
+  if (merged.length > 0) body.Notes = merged.join(" · ").slice(0, 2000)
+
+  const updated = await qboFetch(fresh, `/customer`, { method: "POST", body: JSON.stringify(body) })
+  const c = updated?.Customer
+  if (!c?.Id) {
+    throw new Error(`Customer update returned no Id: ${JSON.stringify(updated).slice(0, 200)}`)
+  }
+  return { id: String(c.Id), displayName: c.DisplayName }
+}
+
 /* ─── Customer attachment upload (Attachable API) ─── */
 
 /**
