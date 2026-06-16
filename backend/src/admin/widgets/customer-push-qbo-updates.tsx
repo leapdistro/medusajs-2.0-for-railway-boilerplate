@@ -59,25 +59,45 @@ const CustomerPushQboUpdatesWidget = ({ data }: DetailWidgetProps<CustomerLite>)
    * the common case is "nothing to do here". */
   if (!qboCustomerId || !isPending) return null
 
-  const onClick = async () => {
+  /* Shared runner — both Push (writes to QBO + clears flag) and Clear
+   * (only clears the flag, no QBO touch) hit a per-customer endpoint
+   * and then refresh the widget. Same shape, different path. */
+  const runAction = async (
+    path: "push-qbo-updates" | "clear-qbo-pending",
+    onSuccess: (json: any) => string,
+    failurePrefix: string,
+  ) => {
     if (!customer?.id) return
     setBusy(true)
     try {
-      const res = await fetch(`/admin/customers/${customer.id}/push-qbo-updates`, {
+      const res = await fetch(`/admin/customers/${customer.id}/${path}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`)
-      toast.success(`Pushed updates to QBO Customer ${json.qboCustomerId ?? qboCustomerId}`)
+      toast.success(onSuccess(json))
       await refresh()
     } catch (e: any) {
-      toast.error(`Push failed: ${e?.message ?? "unknown"}`)
+      toast.error(`${failurePrefix}: ${e?.message ?? "unknown"}`)
     } finally {
       setBusy(false)
     }
   }
+
+  const onPush = () =>
+    runAction(
+      "push-qbo-updates",
+      (json) => `Pushed updates to QBO Customer ${json.qboCustomerId ?? qboCustomerId}`,
+      "Push failed",
+    )
+  const onClear = () =>
+    runAction(
+      "clear-qbo-pending",
+      () => "Dismissed — pending flag cleared without pushing to QBO",
+      "Clear failed",
+    )
 
   const pendingSince = typeof meta.qbo_sync_pending_at === "string"
     ? new Date(meta.qbo_sync_pending_at)
@@ -96,9 +116,12 @@ const CustomerPushQboUpdatesWidget = ({ data }: DetailWidgetProps<CustomerLite>)
           name / phone / company / address / EIN / license to QBO Customer{" "}
           <span style={{ fontFamily: "monospace" }}>{qboCustomerId}</span>.
         </Text>
-        <div style={{ marginTop: 12 }}>
-          <Button variant="primary" onClick={onClick} isLoading={busy} disabled={busy}>
+        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+          <Button variant="primary" onClick={onPush} isLoading={busy} disabled={busy}>
             Push Updates to QBO
+          </Button>
+          <Button variant="secondary" onClick={onClear} isLoading={busy} disabled={busy}>
+            Clear (Don&apos;t Push)
           </Button>
         </div>
       </div>

@@ -50,23 +50,31 @@ const CustomersPendingQboUpdatesBanner = () => {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const pushOne = async (c: PendingCustomer) => {
+  /* Shared row-action runner — both Push and Clear hit a per-customer
+   * endpoint and, on success, drop the row from the list. The only
+   * differences are the path + the success-toast copy, so parameterize. */
+  const runRowAction = async (
+    c: PendingCustomer,
+    path: "push-qbo-updates" | "clear-qbo-pending",
+    successMessage: string,
+    failurePrefix: string,
+  ) => {
     setBusyIds((prev) => new Set(prev).add(c.id))
     try {
-      const res = await fetch(`/admin/customers/${c.id}/push-qbo-updates`, {
+      const res = await fetch(`/admin/customers/${c.id}/${path}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`)
-      toast.success(`Pushed ${c.email} to QBO`)
-      /* Optimistically remove this row instead of re-fetching the
-       * whole list — feels snappier and the next mount picks up
-       * authoritative state anyway. */
+      toast.success(successMessage)
+      /* Optimistically remove this row — both push and clear flip
+       * qbo_sync_pending = false, so either way the buyer disappears
+       * from the pending list on next fetch. */
       setList((prev) => prev.filter((x) => x.id !== c.id))
     } catch (e: any) {
-      toast.error(`Push failed for ${c.email}: ${e?.message ?? "unknown"}`)
+      toast.error(`${failurePrefix}: ${e?.message ?? "unknown"}`)
     } finally {
       setBusyIds((prev) => {
         const next = new Set(prev)
@@ -75,6 +83,11 @@ const CustomersPendingQboUpdatesBanner = () => {
       })
     }
   }
+
+  const pushOne = (c: PendingCustomer) =>
+    runRowAction(c, "push-qbo-updates", `Pushed ${c.email} to QBO`, `Push failed for ${c.email}`)
+  const clearOne = (c: PendingCustomer) =>
+    runRowAction(c, "clear-qbo-pending", `Dismissed pending update for ${c.email}`, `Clear failed for ${c.email}`)
 
   /* Hide entirely when there's nothing to do — banner only surfaces
    * when action is needed. */
@@ -113,15 +126,26 @@ const CustomersPendingQboUpdatesBanner = () => {
                   {since ? ` · pending since ${since}` : ""}
                 </Text>
               </div>
-              <Button
-                size="small"
-                variant="primary"
-                onClick={() => pushOne(c)}
-                isLoading={busyIds.has(c.id)}
-                disabled={busyIds.has(c.id)}
-              >
-                Push to QBO
-              </Button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button
+                  size="small"
+                  variant="secondary"
+                  onClick={() => clearOne(c)}
+                  isLoading={busyIds.has(c.id)}
+                  disabled={busyIds.has(c.id)}
+                >
+                  Clear
+                </Button>
+                <Button
+                  size="small"
+                  variant="primary"
+                  onClick={() => pushOne(c)}
+                  isLoading={busyIds.has(c.id)}
+                  disabled={busyIds.has(c.id)}
+                >
+                  Push to QBO
+                </Button>
+              </div>
             </div>
           )
         })}
