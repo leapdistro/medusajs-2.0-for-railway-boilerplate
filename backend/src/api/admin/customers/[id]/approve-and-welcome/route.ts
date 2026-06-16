@@ -1,7 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { findOrCreateCustomer, findQboTermIdByName, uploadCustomerAttachment } from "../../../../../lib/qbo-api"
-import { QBO_CONNECTION_MODULE } from "../../../../../modules/qbo-connection"
+import { pushCustomerToQbo } from "../../../../../lib/customer-to-qbo"
 
 const APPROVED_GROUP_NAME = (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
 
@@ -139,10 +138,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   /* QBO Customer push — non-blocking. If QBO isn't configured, the
    * connection is dead, or the API errors out, we still report
-   * approval success but flag the QBO state so the widget can show
-   * a "Retry QBO sync" affordance. Idempotent: skips if a
-   * qbo_customer_id is already stamped from a prior run. */
-  const qboResult = await pushCustomerToQbo(req, customer, logger).catch((e) => ({
+   * approval success. The lib stamps qbo_push_error on metadata so
+   * the admin widget can render a persistent error state + "Retry QBO
+   * Push" button (no welcome re-send) across page reloads. */
+  const qboResult = await pushCustomerToQbo(req.scope, customer, logger).catch((e) => ({
     state: "error" as const,
     message: e?.message ?? String(e),
   }))
@@ -157,169 +156,3 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   })
 }
 
-type QboPushResult =
-  | { state: "skipped"; reason: string }
-  | { state: "synced"; qboCustomerId: string; created: boolean }
-  | { state: "error"; message: string }
-
-async function pushCustomerToQbo(
-  req: MedusaRequest,
-  customer: {
-    id: string; email: string; phone?: string | null;
-    first_name?: string | null; last_name?: string | null;
-    metadata?: Record<string, any> | null;
-  },
-  logger: any,
-): Promise<QboPushResult> {
-  const customerService: any = req.scope.resolve(Modules.CUSTOMER)
-  let qbo: any
-  try {
-    qbo = req.scope.resolve(QBO_CONNECTION_MODULE)
-  } catch {
-    return { state: "skipped", reason: "QBO module not registered" }
-  }
-
-  const connRows = await qbo.listQboConnections({}, { take: 1 }).catch(() => [])
-  const conn = connRows[0]
-  if (!conn) {
-    return { state: "skipped", reason: "QBO not connected — visit /app/quickbooks to authorize" }
-  }
-
-  const meta = (customer.metadata ?? {}) as Record<string, any>
-
-  const existingQboId      = String(meta.qbo_customer_id ?? "")        || null
-  const existingEinAtt     = String(meta.qbo_ein_attachment_id ?? "")  || null
-  const existingLicenseAtt = String(meta.qbo_license_attachment_id ?? "") || null
-  const einDocUrl          = String(meta.ein_doc_url ?? "")            || null
-  const licenseDocUrl      = String(meta.license_doc_url ?? "")        || null
-
-  /* Idempotent: skip the whole push if customer is already synced AND
-   * both attachments are uploaded (or both source URLs are missing). */
-  const einAttachmentDone     = !!existingEinAtt     || !einDocUrl
-  const licenseAttachmentDone = !!existingLicenseAtt || !licenseDocUrl
-  if (existingQboId && einAttachmentDone && licenseAttachmentDone) {
-    return { state: "synced", qboCustomerId: existingQboId, created: false }
-  }
-
-  const businessName = String(meta.business_name ?? "").trim() || customer.email
-  /* GivenName/FamilyName live on the Medusa customer top-level fields
-   * (set from the apply form). Falling back to metadata.contact_name
-   * supports legacy customers pre-name-split who only had a combined
-   * "contact_name" key. */
-  const firstName = String(customer.first_name ?? "").trim() || null
-  const lastName  = String(customer.last_name ?? "").trim() || null
-  const contactName = String(meta.contact_name ?? "").trim() || null
-  const businessTypeLabel = String(meta.business_type_label ?? "").trim() || null
-
-  /* Map payment_terms → QBO SalesTerm Id. Net 15 → look up by name in
-   * the operator's QBO term list. Silent fall-through (terms unset)
-   * leaves SalesTermRef off → QBO Customer uses tenant-default terms. */
-  let salesTermId: string | null = null
-  if (meta.payment_terms === "net15") {
-    try {
-      salesTermId = await findQboTermIdByName(qbo, conn, "Net 15")
-    } catch (e: any) {
-      logger.warn(`[approve-and-welcome] could not look up Net 15 term: ${e?.message}`)
-    }
-  }
-
-  try {
-    /* (1) Customer create — skip if already synced (attachment-only retry path). */
-    let qboCustomerId = existingQboId
-    let created = false
-    if (!qboCustomerId) {
-      const result = await findOrCreateCustomer(qbo, conn, {
-        businessName,
-        email: customer.email,
-        /* customer.phone is the Medusa top-level field (set from the
-         * apply form's phone input). metadata.phone is not populated. */
-        phone: customer.phone ?? null,
-        addressLine1: meta.address_line1 ?? null,
-        addressLine2: meta.address_line2 ?? null,
-        city: meta.city ?? null,
-        state: meta.state ?? null,
-        zip: meta.zip ?? null,
-        country: meta.country ?? "US",
-        firstName,
-        lastName,
-        contactName,
-        businessTypeLabel,
-        salesTermId,
-        notes: `Wholesale account · approved ${new Date().toISOString().slice(0, 10)}`,
-      })
-      qboCustomerId = result.id
-      created = result.created
-    }
-
-    /* (2) Attachment push — best-effort, SEQUENTIAL. Each gets the source
-     *     URL from customer.metadata. Failures log but don't error the push;
-     *     unstamped attachments will retry on the next approve-and-welcome
-     *     run, so a flaky storage host doesn't permanently drop the doc.
-     *
-     *     Why sequential: QBO uses optimistic concurrency on the Customer
-     *     record. Two parallel /upload calls against the same Customer
-     *     collide — the second one returns "Stale Object Error" because
-     *     QBO sees the underlying Customer as modified mid-flight by the
-     *     first attachment's link. Caught 2026-05-21 on smokeydoke. The
-     *     round-trip cost (~1s vs ~0.5s for two parallel) is fine for an
-     *     admin action; correctness > throughput here. */
-    const businessSlug = (meta.business_name ?? customer.email).toString().toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-").slice(0, 40) || "customer"
-    let einAttachmentId = existingEinAtt
-    let licenseAttachmentId = existingLicenseAtt
-
-    if (!einAttachmentId && einDocUrl) {
-      try {
-        const r = await uploadCustomerAttachment(qbo, conn, {
-          customerId: qboCustomerId,
-          sourceUrl: einDocUrl,
-          fileName: `ein-${businessSlug}${fileExt(einDocUrl)}`,
-          note: "EIN document — uploaded during wholesale application",
-        })
-        einAttachmentId = r.id
-      } catch (e: any) {
-        logger.warn(`[approve-and-welcome] EIN attachment push failed: ${e?.message}`)
-      }
-    }
-    if (!licenseAttachmentId && licenseDocUrl) {
-      try {
-        const r = await uploadCustomerAttachment(qbo, conn, {
-          customerId: qboCustomerId,
-          sourceUrl: licenseDocUrl,
-          fileName: `resale-cert-${businessSlug}${fileExt(licenseDocUrl)}`,
-          note: "Resale certificate — uploaded during wholesale application",
-        })
-        licenseAttachmentId = r.id
-      } catch (e: any) {
-        logger.warn(`[approve-and-welcome] resale-cert attachment push failed: ${e?.message}`)
-      }
-    }
-
-    /* (3) Stamp the QBO id + attachment ids back on Medusa customer.
-     *     Only set qbo_attachments_pushed_at when nothing's left to do
-     *     (both files succeeded OR both were absent) — otherwise a missing
-     *     attachment will keep retrying. */
-    const allAttachmentsDone =
-      (!!einAttachmentId || !einDocUrl) &&
-      (!!licenseAttachmentId || !licenseDocUrl)
-    await customerService.updateCustomers(customer.id, {
-      metadata: {
-        ...meta,
-        qbo_customer_id: qboCustomerId,
-        ...(einAttachmentId     ? { qbo_ein_attachment_id: einAttachmentId }         : {}),
-        ...(licenseAttachmentId ? { qbo_license_attachment_id: licenseAttachmentId } : {}),
-        ...(allAttachmentsDone  ? { qbo_attachments_pushed_at: new Date().toISOString() } : {}),
-      },
-    })
-
-    return { state: "synced", qboCustomerId, created }
-  } catch (e: any) {
-    logger.warn(`[approve-and-welcome] qbo customer push failed for ${customer.email}: ${e?.message}`)
-    return { state: "error", message: e?.message ?? "QBO push failed" }
-  }
-}
-
-function fileExt(url: string): string {
-  const m = url.split("?")[0].match(/\.([a-z0-9]+)$/i)
-  return m ? `.${m[1].toLowerCase()}` : ""
-}

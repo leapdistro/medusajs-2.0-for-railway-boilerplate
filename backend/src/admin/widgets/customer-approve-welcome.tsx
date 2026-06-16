@@ -55,6 +55,15 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
   const welcomedAtDate = welcomedAt ? new Date(welcomedAt) : null
   const justSent = welcomedAtDate && (Date.now() - welcomedAtDate.getTime() < 60_000)
 
+  /* QBO sync state — persisted on customer.metadata by the push lib
+   * (lib/customer-to-qbo.ts). Mutually exclusive:
+   *   - qbo_push_error present → failed (red panel + Retry button)
+   *   - qbo_customer_id present → synced (green check + QBO id)
+   *   - neither → not yet attempted (nothing rendered) */
+  const qboCustomerId = customer?.metadata?.qbo_customer_id as string | undefined
+  const qboPushError = customer?.metadata?.qbo_push_error as string | undefined
+  const qboPushErrorAt = customer?.metadata?.qbo_push_error_at as string | undefined
+
   const onClick = async () => {
     if (justSent) {
       const sec = Math.round((Date.now() - welcomedAtDate!.getTime()) / 1000)
@@ -82,17 +91,51 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
           : `Welcome email re-sent to ${json.email}`
       )
       /* Surface QBO sync outcome — non-blocking step but operator
-       * needs to know if the customer didn't make it into QBO. */
+       * needs to know if the customer didn't make it into QBO. The
+       * persistent panel below renders the same state on every page
+       * load; this toast is for immediate feedback only. */
       const qbo = json.qbo as { state: string; message?: string; qboCustomerId?: string; created?: boolean } | undefined
       if (qbo?.state === "error") {
         toast.warning("QBO sync failed", {
-          description: `${qbo.message ?? "Retry from this widget after fixing the issue."}`,
+          description: `${qbo.message ?? "Click Retry QBO Push below after fixing the issue."}`,
         })
       } else if (qbo?.state === "synced" && qbo.created) {
         toast.success(`QBO Customer #${qbo.qboCustomerId} created`)
       }
       // Refresh widget state — picks up the group + new welcomed_at stamp
       // + the qbo_customer_id without forcing a full-page reload.
+      await refresh()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Network error")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /* Retry the QBO push without re-sending the welcome email. Hits
+   * lib/customer-to-qbo.ts via the dedicated retry-qbo-push route.
+   * On success the push lib clears qbo_push_error and stamps
+   * qbo_customer_id; the refresh below picks both up. */
+  const onRetryQbo = async () => {
+    if (!data?.id) return
+    setBusy(true)
+    try {
+      const res = await fetch(`/admin/customers/${data.id}/retry-qbo-push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json?.ok) {
+        toast.error(`QBO retry failed: ${json?.message ?? `HTTP ${res.status}`}`)
+        await refresh()
+        return
+      }
+      toast.success(
+        json.created
+          ? `Pushed to QBO · Customer #${json.qboCustomerId} created`
+          : `QBO already synced · Customer #${json.qboCustomerId}`,
+      )
       await refresh()
     } catch (e: any) {
       toast.error(e?.message ?? "Network error")
@@ -120,6 +163,13 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
       })}`
     : "Never sent"
 
+  const errorAtFormatted = qboPushErrorAt
+    ? new Date(qboPushErrorAt).toLocaleString(undefined, {
+        month: "short", day: "numeric", year: "numeric",
+        hour: "numeric", minute: "2-digit",
+      })
+    : null
+
   return (
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between px-6 py-4">
@@ -131,11 +181,6 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
               : "Add the customer to the \"approved\" group and send their first welcome / password-setup email."}
           </Text>
           <Text size="small" className="text-ui-fg-muted mt-1">{lastSentLine}</Text>
-          {customer?.metadata?.qbo_customer_id ? (
-            <Text size="small" className="text-ui-fg-muted mt-1">
-              QBO Customer #{String(customer.metadata.qbo_customer_id)}
-            </Text>
-          ) : null}
         </div>
         <Button
           variant={inApproved ? "secondary" : "primary"}
@@ -145,6 +190,45 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
           {label}
         </Button>
       </div>
+
+      {/* QBO sync state — persistent panel that survives page reloads.
+        * Three states: failed (red), synced (green), neither (hidden). */}
+      {qboPushError ? (
+        <div
+          className="px-6 py-4"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            borderLeft: "3px solid var(--ui-tag-red-text)",
+            background: "var(--ui-tag-red-bg)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <Text size="small" weight="plus" style={{ color: "var(--ui-tag-red-text)" }}>
+              QBO Sync Failed
+            </Text>
+            <Button variant="primary" size="small" onClick={onRetryQbo} isLoading={busy} disabled={busy}>
+              Retry QBO Push
+            </Button>
+          </div>
+          <Text size="small" className="text-ui-fg-subtle" style={{ wordBreak: "break-word" }}>
+            {qboPushError}
+          </Text>
+          {errorAtFormatted ? (
+            <Text size="xsmall" className="text-ui-fg-muted">
+              Last attempt: {errorAtFormatted}
+            </Text>
+          ) : null}
+        </div>
+      ) : qboCustomerId ? (
+        <div className="px-6 py-3 flex items-center gap-2">
+          <span style={{ color: "var(--ui-tag-green-text)", fontWeight: 600 }}>✓</span>
+          <Text size="small" className="text-ui-fg-subtle">
+            QBO Customer #{String(qboCustomerId)} synced
+          </Text>
+        </div>
+      ) : null}
     </Container>
   )
 }
