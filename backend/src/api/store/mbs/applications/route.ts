@@ -2,6 +2,7 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { randomBytes } from "crypto"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
+import { sendFeedNotification } from "../../../../lib/feed-notification"
 
 /**
  * Wholesale-application submission endpoint (public, gated by publishable
@@ -430,6 +431,20 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       `[/store/mbs/applications] emails skipped — RESEND_API_KEY/RESEND_FROM_EMAIL not set. ${isReapplication ? "Re-application" : "New application"} from ${businessName} (${email}). Customer: ${customerId ?? "(unknown)"}.`
     )
   }
+
+  /* Admin bell — informational, fires regardless of Resend config.
+   * Description encodes the customer id so the operator can paste it
+   * into the URL: /app/customers/<id>. The stock dashboard bell row
+   * doesn't render click-through URLs natively. */
+  await sendFeedNotification(req.scope, {
+    title: isReapplication
+      ? `Re-application: ${businessName}`
+      : `New wholesale application: ${businessName}`,
+    description:
+      `${firstName} ${lastName} (${email})\n` +
+      `${businessTypeLabel ? `${businessTypeLabel} · ` : ""}${city}, ${state}\n` +
+      (customerId ? `Open: /app/customers/${customerId}` : ""),
+  })
 
   return res.json({
     ok: true,

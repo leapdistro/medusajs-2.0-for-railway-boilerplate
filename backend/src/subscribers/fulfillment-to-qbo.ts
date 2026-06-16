@@ -1,6 +1,7 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { pushOrderToQbo } from "../lib/qbo-order-push"
+import { sendFeedNotification } from "../lib/feed-notification"
 
 /**
  * When an admin marks an order as Fulfilled (`order.fulfillment_created`
@@ -47,11 +48,13 @@ export default async function fulfillmentToQboHandler({
 
   const errMsg = outcome.error
   logger.warn(`[fulfillment-to-qbo] push failed (${outcome.code}) for order ${orderId}: ${errMsg}`)
+  let displayId: number | null = null
   try {
     const { Modules } = await import("@medusajs/framework/utils")
     const orderService: any = container.resolve(Modules.ORDER)
     const [order] = await orderService.listOrders({ id: [String(orderId)] }, { take: 1 })
     if (order) {
+      displayId = typeof order.display_id === "number" ? order.display_id : null
       await orderService.updateOrders(order.id, {
         metadata: {
           ...(order.metadata ?? {}),
@@ -63,6 +66,19 @@ export default async function fulfillmentToQboHandler({
   } catch (e: any) {
     logger.warn(`[fulfillment-to-qbo] couldn't stamp push error: ${e?.message}`)
   }
+
+  /* Admin bell — surface the failure so the operator notices without
+   * having to open every order. Description includes the failure code
+   * + first 200 chars of the error so the operator can decide whether
+   * to retry from the order detail's QBO widget or escalate. */
+  const orderLabel = displayId != null ? `#${displayId}` : `${String(orderId).slice(0, 8)}…`
+  await sendFeedNotification(container, {
+    title: `QBO push failed for order ${orderLabel}`,
+    description:
+      `Reason: ${outcome.code}\n` +
+      `${(errMsg ?? "").slice(0, 200)}\n` +
+      `Open: /app/orders/${orderId} — use the QBO widget to retry.`,
+  })
 }
 
 export const config: SubscriberConfig = {

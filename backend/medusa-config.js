@@ -158,6 +158,19 @@ const medusaConfig = {
               from: RESEND_FROM_EMAIL,
             },
           }] : []),
+          /* Local provider for the "feed" channel — powers the admin
+           * header bell. The provider itself is a no-op (just logs);
+           * the bell reads notifications directly from the DB by
+           * channel = "feed". Without a registered provider the
+           * createNotifications call would fail because the dispatch
+           * step has no target. */
+          {
+            resolve: '@medusajs/notification-local',
+            id: 'local',
+            options: {
+              channels: ['feed'],
+            },
+          },
         ]
       }
     }] : []),
