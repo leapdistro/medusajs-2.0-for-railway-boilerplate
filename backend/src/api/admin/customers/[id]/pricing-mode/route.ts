@@ -60,7 +60,20 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const groupByName: Record<string, string> = {}
   for (const g of groups) groupByName[g.name] = g.id
 
-  /* Sync group membership — remove from both pricing groups, then add
+  /* Fail loudly BEFORE we touch any membership if the requested target
+   * group doesn't exist. Old behavior silently skipped the add and left
+   * the customer with metadata.pricing_mode = "tier_X" but no group
+   * membership — storefront then fell through to default prices and the
+   * operator had no signal anything was wrong. Surface a clear seed
+   * instruction instead. */
+  if (requested && !groupByName[requested]) {
+    return res.status(400).json({
+      ok: false,
+      message: `\`${requested}\` customer group missing. Run \`pnpm seed:customer-groups\` on the backend, then retry.`,
+    })
+  }
+
+  /* Sync group membership — remove from all pricing groups, then add
    * to the requested one (if any). Safe to call remove for groups the
    * customer isn't in; Medusa no-ops. Single-object form per the
    * `approve-and-welcome` pattern elsewhere in this codebase. */
@@ -72,7 +85,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         customer_group_id: groupByName[name],
       }).catch(() => { /* already removed — fine */ })
     }
-    if (requested && groupByName[requested]) {
+    if (requested) {
       await customerService.addCustomerToGroup({
         customer_id: customer.id,
         customer_group_id: groupByName[requested],
