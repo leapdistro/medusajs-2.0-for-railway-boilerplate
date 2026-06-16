@@ -154,6 +154,44 @@ const DEFAULTS: Array<{
       "hashholes": { "15pk": 48 },
     },
   },
+  {
+    key: "flower_tier_2_prices",
+    description: "Tier 2 selling prices for Flower variants by tier × size (USD whole dollars). Scoped to the tier_2 customer group via a Medusa PriceList. Edited from the same Flower Tier Prices tab as the default + tier_3 tables; Save & Apply propagates all three in one click.",
+    value: {
+      classic: { qp: 230, half: 420, lb:  750 },
+      exotic:  { qp: 275, half: 510, lb:  925 },
+      super:   { qp: 320, half: 600, lb: 1100 },
+      snow:    { qp: 370, half: 690, lb: 1290 },
+      rapper:  { qp: 460, half: 870, lb: 1660 },
+    },
+  },
+  {
+    key: "flower_tier_3_prices",
+    description: "Tier 3 selling prices for Flower variants by tier × size (USD whole dollars). Scoped to the tier_3 customer group via a Medusa PriceList. Edited from the same Flower Tier Prices tab as the default + tier_2 tables; Save & Apply propagates all three in one click.",
+    value: {
+      classic: { qp: 215, half: 390, lb:  700 },
+      exotic:  { qp: 260, half: 480, lb:  870 },
+      super:   { qp: 305, half: 570, lb: 1050 },
+      snow:    { qp: 350, half: 660, lb: 1230 },
+      rapper:  { qp: 440, half: 830, lb: 1580 },
+    },
+  },
+  {
+    key: "preroll_tier_2_prices",
+    description: "Tier 2 selling prices for Pre-Roll variants by subcategory × size (USD whole dollars). Keyed (subcategory slug → variant sizeKey → dollars). Subcategories live-merged from Medusa. Scoped to the tier_2 customer group via a Medusa PriceList.",
+    value: {
+      "thc-a":     { "30pk": 54 },
+      "hashholes": { "15pk": 54 },
+    },
+  },
+  {
+    key: "preroll_tier_3_prices",
+    description: "Tier 3 selling prices for Pre-Roll variants by subcategory × size (USD whole dollars). Keyed (subcategory slug → variant sizeKey → dollars). Subcategories live-merged from Medusa. Scoped to the tier_3 customer group via a Medusa PriceList.",
+    value: {
+      "thc-a":     { "30pk": 51 },
+      "hashholes": { "15pk": 51 },
+    },
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {

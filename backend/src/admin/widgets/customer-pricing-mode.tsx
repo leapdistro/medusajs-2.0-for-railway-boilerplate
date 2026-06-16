@@ -9,13 +9,23 @@ type CustomerLite = {
   metadata?: Record<string, any> | null
 }
 
-type Mode = "default" | "owner_stores" | "distro"
+type Mode = "default" | "owner_stores" | "distro" | "tier_2" | "tier_3"
 
 const OPTIONS: { id: Mode; label: string; help: string }[] = [
   {
     id: "default",
     label: "Default tier prices",
     help: "Regular B2B buyer — sees the operator-set tier prices from Settings.",
+  },
+  {
+    id: "tier_2",
+    label: "Tier 2",
+    help: "Sees the Tier 2 prices from the Flower / Pre-Roll Tier Prices tabs.",
+  },
+  {
+    id: "tier_3",
+    label: "Tier 3",
+    help: "Sees the Tier 3 prices from the Flower / Pre-Roll Tier Prices tabs.",
   },
   {
     id: "owner_stores",
@@ -64,12 +74,13 @@ const CustomerPricingModeWidget = ({ data }: DetailWidgetProps<CustomerLite>) =>
 
   useEffect(() => { refresh() }, [refresh])
 
+  const rawMode = customer?.metadata?.pricing_mode
   const current: Mode =
-    customer?.metadata?.pricing_mode === "owner_stores"
-      ? "owner_stores"
-      : customer?.metadata?.pricing_mode === "distro"
-        ? "distro"
-        : "default"
+    rawMode === "owner_stores" ? "owner_stores"
+    : rawMode === "distro" ? "distro"
+    : rawMode === "tier_2" ? "tier_2"
+    : rawMode === "tier_3" ? "tier_3"
+    : "default"
 
   const onPick = async (next: Mode) => {
     if (!customer?.id || next === current) return

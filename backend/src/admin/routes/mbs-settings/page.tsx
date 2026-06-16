@@ -139,10 +139,10 @@ const MbsSettingsPage = () => {
               <ReasonListForm row={currentRow} onSaved={onSaved} keyName="denial_reasons" />
             )}
             {tab === "flower_tier_prices" && (
-              <TierPricesForm row={currentRow} onSaved={onSaved} />
+              <TierPricesForm rows={rows} onSaved={onSaved} />
             )}
             {tab === "pre_roll_tier_prices" && (
-              <PreRollTierPricesForm row={currentRow} onSaved={onSaved} />
+              <PreRollTierPricesForm rows={rows} onSaved={onSaved} />
             )}
             {tab === "owner_markup" && (
               <OwnerMarkupForm rows={rows} onSaved={onSaved} />
@@ -379,114 +379,191 @@ const EMPTY_TIER_PRICES: TierPrices = {
   rapper:  { qp: 0, half: 0, lb: 0 },
 }
 
-const TierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
-  const [v, setV] = useState<TierPrices>(EMPTY_TIER_PRICES)
-  const [saving, setSaving] = useState(false)
-  const [applying, setApplying] = useState(false)
-  const [confirmApply, setConfirmApply] = useState(false)
-  useEffect(() => {
-    if (!row?.value) return
-    const incoming = row.value as Partial<TierPrices>
-    setV({
-      classic: { ...EMPTY_TIER_PRICES.classic, ...(incoming.classic ?? {}) },
-      exotic:  { ...EMPTY_TIER_PRICES.exotic,  ...(incoming.exotic  ?? {}) },
-      super:   { ...EMPTY_TIER_PRICES.super,   ...(incoming.super   ?? {}) },
-      snow:    { ...EMPTY_TIER_PRICES.snow,    ...(incoming.snow    ?? {}) },
-      rapper:  { ...EMPTY_TIER_PRICES.rapper,  ...(incoming.rapper  ?? {}) },
-    })
-  }, [row])
+/* Pricing levels rendered inside the Flower / Pre-Roll Tier Prices
+ * tabs. Default = the everyone-else tier prices written to the variant's
+ * default USD row. tier_2 / tier_3 = customer-group-scoped PriceLists
+ * (same machinery as Distro / Owner Stores). One "Save & Apply All"
+ * button per tab writes all three settings + propagates all three
+ * (default via tier-prices/apply, tier_2/tier_3 via group-prices/apply). */
+const FLOWER_LEVELS = [
+  { key: "default", title: "Default Tier Prices",    settingKey: "flower_tier_prices",   group: null     as null | "tier_2" | "tier_3" },
+  { key: "tier_2",  title: "Tier 2 — Wholesale",     settingKey: "flower_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
+  { key: "tier_3",  title: "Tier 3 — Wholesale",     settingKey: "flower_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
+] as const
 
-  const setCell = (tier: TierKey, size: SizeKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
+function readTierPrices(row?: SettingRow): TierPrices {
+  if (!row?.value) return EMPTY_TIER_PRICES
+  const incoming = row.value as Partial<TierPrices>
+  return {
+    classic: { ...EMPTY_TIER_PRICES.classic, ...(incoming.classic ?? {}) },
+    exotic:  { ...EMPTY_TIER_PRICES.exotic,  ...(incoming.exotic  ?? {}) },
+    super:   { ...EMPTY_TIER_PRICES.super,   ...(incoming.super   ?? {}) },
+    snow:    { ...EMPTY_TIER_PRICES.snow,    ...(incoming.snow    ?? {}) },
+    rapper:  { ...EMPTY_TIER_PRICES.rapper,  ...(incoming.rapper  ?? {}) },
+  }
+}
+
+type ApplyLevelResult = {
+  ok: boolean
+  title: string
+  propagated: number
+  skipped: number
+  error?: string
+}
+type Level = { key: string; title: string; settingKey: string; group: null | "tier_2" | "tier_3" }
+
+/* Shared apply helper for both Flower and Pre-Roll tabs. Default level
+ * → tier-prices/apply (writes to variant base USD price). tier_2 /
+ * tier_3 → group-prices/apply (writes to customer-group-scoped PriceList).
+ * Catches HTTP failures per-call so one bad level doesn't abort the
+ * whole Save & Apply All. */
+async function applyLevel(lvl: Level, scope: "flower" | "preroll"): Promise<ApplyLevelResult> {
+  const url = lvl.group
+    ? "/admin/mbs/settings/group-prices/apply"
+    : "/admin/mbs/settings/tier-prices/apply"
+  const body: { scope: string; group?: string } = { scope }
+  if (lvl.group) body.group = lvl.group
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, title: lvl.title, propagated: 0, skipped: 0, error: j?.message ?? `HTTP ${res.status}` }
+    }
+    const s = j.summary ?? {}
+    return {
+      ok: true,
+      title: lvl.title,
+      propagated: (s.added ?? 0) + (s.updated ?? 0),
+      skipped: s.skipped ?? 0,
+    }
+  } catch (e: any) {
+    return { ok: false, title: lvl.title, propagated: 0, skipped: 0, error: e?.message ?? "network error" }
+  }
+}
+
+const TierPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const [values, setValues] = useState<Record<string, TierPrices>>({
+    default: EMPTY_TIER_PRICES,
+    tier_2:  EMPTY_TIER_PRICES,
+    tier_3:  EMPTY_TIER_PRICES,
+  })
+  const [busy, setBusy] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
+
+  useEffect(() => {
+    setValues({
+      default: readTierPrices(rows["flower_tier_prices"]),
+      tier_2:  readTierPrices(rows["flower_tier_2_prices"]),
+      tier_3:  readTierPrices(rows["flower_tier_3_prices"]),
+    })
+  }, [rows])
+
+  const setCell = (levelKey: string, tier: TierKey, size: SizeKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const n = parseFloat(e.target.value)
-    setV((p) => ({ ...p, [tier]: { ...p[tier], [size]: Number.isFinite(n) ? n : 0 } }))
+    setValues((prev) => ({
+      ...prev,
+      [levelKey]: {
+        ...prev[levelKey],
+        [tier]: { ...prev[levelKey][tier], [size]: Number.isFinite(n) ? n : 0 },
+      },
+    }))
   }
 
-  const save = async () => {
-    setSaving(true)
+  /* Save all three settings, then propagate all three in parallel. We
+   * don't bail on partial failure — if Tier 2 apply fails but Tier 3
+   * succeeds, we still want the Tier 3 prices live. Errors surface in
+   * the toast with the failing level called out. */
+  const saveAndApply = async () => {
+    setBusy(true)
+    setConfirmApply(false)
     try {
-      const next = await saveSetting("flower_tier_prices", v)
-      onSaved(next)
-      toast.success("Tier prices saved")
+      /* Step 1 — persist all three settings rows. */
+      const saved = await Promise.all(
+        FLOWER_LEVELS.map((lvl) => saveSetting(lvl.settingKey, values[lvl.key])),
+      )
+      for (const row of saved) onSaved(row)
+
+      /* Step 2 — propagate. Default → tier-prices/apply (writes to
+       * variant default price row). tier_2 / tier_3 → group-prices/apply
+       * (writes to customer-group-scoped PriceList). */
+      const results = await Promise.all(
+        FLOWER_LEVELS.map((lvl) => applyLevel(lvl, "flower")),
+      )
+      const ok = results.filter((r) => r.ok)
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length === 0) {
+        const summary = ok.map((r) => `${r.title}: ${r.propagated}↑ ${r.skipped}–`).join(" · ")
+        toast.success(`Saved & applied · ${summary}`)
+      } else {
+        const failedNames = failed.map((f) => f.title).join(", ")
+        toast.error(`Some applies failed: ${failedNames}. ${failed[0].error ?? ""}`)
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
-      setSaving(false)
-    }
-  }
-
-  const apply = async () => {
-    setApplying(true)
-    setConfirmApply(false)
-    try {
-      const res = await fetch("/admin/mbs/settings/tier-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "flower" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      toast.success(`${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Apply failed")
-    } finally {
-      setApplying(false)
+      setBusy(false)
     }
   }
 
   return (
-    <div className="flex flex-col gap-4 max-w-2xl">
+    <div className="flex flex-col gap-6 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Default selling prices for Flower variants (USD whole dollars). Used at receiving — when operator picks a tier for a new strain, that tier&apos;s prices auto-fill the QP / Half / LB variant prices. Per-variant overrides via standard Medusa admin still work.
+        Selling prices for Flower variants (USD whole dollars). The <strong>Default</strong> table is the price every approved buyer sees unless their Pricing Mode is set to Tier 2, Tier 3, Distro, or Owner Stores. <strong>Tier 2 / Tier 3</strong> are customer-group-scoped — only buyers assigned to those modes see them. One <em>Save &amp; Apply All</em> below writes all three settings and propagates them in one click.
       </Text>
 
-      <div className="border">
-        {/* Header row */}
-        <div className="grid grid-cols-4 border-b">
-          <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
-          {SIZE_ORDER.map((s) => (
-            <div key={s} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{SIZE_LABELS[s]}</div>
-          ))}
-        </div>
-        {/* Rows */}
-        {TIER_ORDER.map((tier, idx) => (
-          <div key={tier} className={`grid grid-cols-4${idx < TIER_ORDER.length - 1 ? " border-b" : ""}`}>
-            <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
-            {SIZE_ORDER.map((size) => (
-              <div key={size} className="p-1.5">
-                <Input
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step={1}
-                  value={v[tier][size] || ""}
-                  onChange={setCell(tier, size)}
-                  placeholder="0"
-                  className="text-right"
-                />
+      {FLOWER_LEVELS.map((lvl) => (
+        <div key={lvl.key} className="flex flex-col gap-2">
+          <Heading level="h3">{lvl.title}</Heading>
+          <div className="border">
+            <div className="grid grid-cols-4 border-b">
+              <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
+              {SIZE_ORDER.map((s) => (
+                <div key={s} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{SIZE_LABELS[s]}</div>
+              ))}
+            </div>
+            {TIER_ORDER.map((tier, idx) => (
+              <div key={tier} className={`grid grid-cols-4${idx < TIER_ORDER.length - 1 ? " border-b" : ""}`}>
+                <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
+                {SIZE_ORDER.map((size) => (
+                  <div key={size} className="p-1.5">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={1}
+                      value={values[lvl.key][tier][size] || ""}
+                      onChange={setCell(lvl.key, tier, size)}
+                      placeholder="0"
+                      className="text-right"
+                    />
+                  </div>
+                ))}
               </div>
             ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
 
       <div className="flex items-center gap-3 pt-2 border-t">
-        <Button variant="primary" onClick={save} isLoading={saving}>Save Tier Prices</Button>
-        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
-          Apply to All Variants
+        <Button variant="primary" onClick={() => setConfirmApply(true)} isLoading={busy}>
+          Save &amp; Apply All
         </Button>
       </div>
 
       {confirmApply && (
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Overwrite every matching flower variant?</Text>
+          <Text size="small" weight="plus">Save all three tables and overwrite every matching flower variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            Walks every variant in the catalog and resolves its tier + size in three steps: (1) metadata.tier_key + size_key (set by receiving), (2) product category handle + SKU last segment, (3) category handle + variant title. The matching USD price from the saved settings overwrites the variant&apos;s current price. Variants that can&apos;t be resolved (no matching category, custom SKU, etc.) are skipped — leaves truly custom variants alone.
+            Saves <strong>Default</strong>, <strong>Tier 2</strong>, and <strong>Tier 3</strong> settings, then propagates each. Default writes to the variant&apos;s base USD price; Tier 2 / Tier 3 write to customer-group-scoped PriceLists. Resolution walks metadata → category+SKU → category+title; unresolved variants are skipped. Per-variant manual edits in standard Medusa admin will be overwritten.
           </Text>
           <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
-            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+            <Button variant="danger" onClick={saveAndApply} isLoading={busy}>Yes, Save &amp; Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={busy}>Cancel</Button>
           </div>
         </div>
       )}
@@ -504,18 +581,33 @@ type PreRollTierPrices = Record<string, Record<string, number>>
 
 const EMPTY_PREROLL_TIER_PRICES: PreRollTierPrices = {}
 
-const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
-  const [v, setV] = useState<PreRollTierPrices>(EMPTY_PREROLL_TIER_PRICES)
+/* Pre-Roll levels — same shape as FLOWER_LEVELS but with the pre-roll
+ * settings keys. Distro stays in its own tab; only Default + Tier 2 +
+ * Tier 3 are stacked here per the latest UX decision. */
+const PREROLL_LEVELS = [
+  { key: "default", title: "Default Tier Prices",   settingKey: "pre_roll_tier_prices",  group: null     as null | "tier_2" | "tier_3" },
+  { key: "tier_2",  title: "Tier 2 — Wholesale",    settingKey: "preroll_tier_2_prices", group: "tier_2" as null | "tier_2" | "tier_3" },
+  { key: "tier_3",  title: "Tier 3 — Wholesale",    settingKey: "preroll_tier_3_prices", group: "tier_3" as null | "tier_2" | "tier_3" },
+] as const
+
+const PreRollTierPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const [values, setValues] = useState<Record<string, PreRollTierPrices>>({
+    default: EMPTY_PREROLL_TIER_PRICES,
+    tier_2:  EMPTY_PREROLL_TIER_PRICES,
+    tier_3:  EMPTY_PREROLL_TIER_PRICES,
+  })
   const [prerollSubs, setPrerollSubs] = useState<PrerollSubcategoryRow[]>([])
-  const [saving, setSaving] = useState(false)
-  const [applying, setApplying] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [confirmApply, setConfirmApply] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!row?.value) return
-    setV({ ...(row.value as PreRollTierPrices) })
-  }, [row])
+    setValues({
+      default: { ...((rows["pre_roll_tier_prices"]?.value as PreRollTierPrices | undefined) ?? {}) },
+      tier_2:  { ...((rows["preroll_tier_2_prices"]?.value as PreRollTierPrices | undefined) ?? {}) },
+      tier_3:  { ...((rows["preroll_tier_3_prices"]?.value as PreRollTierPrices | undefined) ?? {}) },
+    })
+  }, [rows])
 
   useEffect(() => {
     let cancelled = false
@@ -532,52 +624,49 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
     return () => { cancelled = true }
   }, [])
 
-  const setCell = (subKey: string, sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const setCell = (levelKey: string, subKey: string, sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const n = parseFloat(e.target.value)
-    setV((p) => ({
-      ...p,
-      [subKey]: { ...(p[subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
+    setValues((prev) => ({
+      ...prev,
+      [levelKey]: {
+        ...prev[levelKey],
+        [subKey]: { ...(prev[levelKey][subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
+      },
     }))
   }
 
-  const save = async () => {
-    setSaving(true)
+  const saveAndApply = async () => {
+    setBusy(true)
+    setConfirmApply(false)
     try {
-      const next = await saveSetting("pre_roll_tier_prices", v)
-      onSaved(next)
-      toast.success("Pre-roll tier prices saved")
+      const saved = await Promise.all(
+        PREROLL_LEVELS.map((lvl) => saveSetting(lvl.settingKey, values[lvl.key])),
+      )
+      for (const row of saved) onSaved(row)
+
+      const results = await Promise.all(
+        PREROLL_LEVELS.map((lvl) => applyLevel(lvl, "preroll")),
+      )
+      const ok = results.filter((r) => r.ok)
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length === 0) {
+        const summary = ok.map((r) => `${r.title}: ${r.propagated}↑ ${r.skipped}–`).join(" · ")
+        toast.success(`Saved & applied · ${summary}`)
+      } else {
+        const failedNames = failed.map((f) => f.title).join(", ")
+        toast.error(`Some applies failed: ${failedNames}. ${failed[0].error ?? ""}`)
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
-      setSaving(false)
-    }
-  }
-
-  const apply = async () => {
-    setApplying(true)
-    setConfirmApply(false)
-    try {
-      const res = await fetch("/admin/mbs/settings/tier-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "preroll" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      toast.success(`${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Apply failed")
-    } finally {
-      setApplying(false)
+      setBusy(false)
     }
   }
 
   return (
-    <div className="flex flex-col gap-4 max-w-2xl">
+    <div className="flex flex-col gap-6 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Default selling prices for Pre-Roll variants (USD whole dollars). Subcategories live-merged from Medusa — add a new Pre-Roll subcategory in Categories and it appears here with $0 placeholders. Used by receiving auto-fill + the home-page Pre-Rolls showcase.
+        Selling prices for Pre-Roll variants (USD whole dollars). Subcategories live-merged from Medusa — add a new Pre-Roll subcategory and it appears here with $0 placeholders. The <strong>Default</strong> table is the price every approved buyer sees unless their Pricing Mode is set to Tier 2, Tier 3, Distro, or Owner Stores. <strong>Tier 2 / Tier 3</strong> are customer-group-scoped. One <em>Save &amp; Apply All</em> below propagates everything.
       </Text>
 
       {loadError ? (
@@ -585,51 +674,55 @@ const PreRollTierPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r
       ) : prerollSubs.length === 0 ? (
         <Text size="small" className="text-ui-fg-subtle">Loading pre-roll subcategories…</Text>
       ) : (
-        <div className="border divide-y">
-          {prerollSubs.map((sub) => (
-            <div key={sub.key} className="px-3 py-3">
-              <Text size="small" weight="plus" className="mb-1.5">{sub.label}</Text>
-              <div className="flex flex-col gap-1.5">
-                {sub.variants.map((variant) => (
-                  <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
-                    <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
-                    <div className="flex items-center gap-1">
-                      <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
-                      <Input
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        step={1}
-                        value={v[sub.key]?.[variant.sizeKey] || ""}
-                        onChange={setCell(sub.key, variant.sizeKey)}
-                        placeholder="0"
-                        className="text-right"
-                      />
-                    </div>
+        PREROLL_LEVELS.map((lvl) => (
+          <div key={lvl.key} className="flex flex-col gap-2">
+            <Heading level="h3">{lvl.title}</Heading>
+            <div className="border divide-y">
+              {prerollSubs.map((sub) => (
+                <div key={sub.key} className="px-3 py-3">
+                  <Text size="small" weight="plus" className="mb-1.5">{sub.label}</Text>
+                  <div className="flex flex-col gap-1.5">
+                    {sub.variants.map((variant) => (
+                      <div key={variant.sizeKey} className="grid grid-cols-2 gap-2 items-center">
+                        <Text size="small" className="text-ui-fg-subtle">{variant.label}</Text>
+                        <div className="flex items-center gap-1">
+                          <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step={1}
+                            value={values[lvl.key][sub.key]?.[variant.sizeKey] || ""}
+                            onChange={setCell(lvl.key, sub.key, variant.sizeKey)}
+                            placeholder="0"
+                            className="text-right"
+                          />
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))
       )}
 
       <div className="flex items-center gap-3 pt-2 border-t">
-        <Button variant="primary" onClick={save} isLoading={saving}>Save Pre-Roll Tier Prices</Button>
-        <Button variant="secondary" onClick={() => setConfirmApply(true)} isLoading={applying}>
-          Apply to All Variants
+        <Button variant="primary" onClick={() => setConfirmApply(true)} isLoading={busy}>
+          Save &amp; Apply All
         </Button>
       </div>
 
       {confirmApply && (
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Overwrite every matching pre-roll variant?</Text>
+          <Text size="small" weight="plus">Save all three tables and overwrite every matching pre-roll variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            Walks every variant in the catalog and resolves its subcategory + size in three steps: (1) metadata.tier_key + size_key (set by receiving), (2) product category handle + SKU last segment, (3) category handle + variant title. The matching USD price from the saved settings overwrites the variant&apos;s current price. Variants that can&apos;t be resolved (no matching category, custom SKU, etc.) are skipped — leaves truly custom variants alone.
+            Saves <strong>Default</strong>, <strong>Tier 2</strong>, and <strong>Tier 3</strong> settings, then propagates each. Default writes to the variant&apos;s base USD price; Tier 2 / Tier 3 write to customer-group-scoped PriceLists. Resolution walks metadata → category+SKU → category+title; unresolved variants are skipped.
           </Text>
           <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={apply} isLoading={applying}>Yes, Apply</Button>
-            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={applying}>Cancel</Button>
+            <Button variant="danger" onClick={saveAndApply} isLoading={busy}>Yes, Save &amp; Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={busy}>Cancel</Button>
           </div>
         </div>
       )}
@@ -779,11 +872,11 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
       const next = await saveSetting("flower_distro_prices", v)
       onSaved(next)
       /* Auto-Apply — saved table IS the price source. */
-      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+      const res = await fetch("/admin/mbs/settings/group-prices/apply", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "flower" }),
+        body: JSON.stringify({ scope: "flower", group: "distro" }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
@@ -879,11 +972,11 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
       const next = await saveSetting("preroll_distro_prices", v)
       onSaved(next)
       /* Auto-Apply — saved table IS the price source. */
-      const res = await fetch("/admin/mbs/settings/distro-prices/apply", {
+      const res = await fetch("/admin/mbs/settings/group-prices/apply", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "preroll" }),
+        body: JSON.stringify({ scope: "preroll", group: "distro" }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)

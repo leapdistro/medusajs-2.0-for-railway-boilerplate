@@ -14,6 +14,10 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  *     landed cost + an admin-set markup.
  *   - "distro" — distributor customers. See pricing-modes slice —
  *     buyers in this group pay distro-tier prices from settings.
+ *   - "tier_2" / "tier_3" — additional wholesale price tables, set in
+ *     MBS Settings → Flower/Pre-Roll Tier Prices alongside the default
+ *     table. Mutually exclusive with each other and with distro /
+ *     owner_stores.
  *
  * Run: pnpm seed:customer-groups
  */
@@ -24,7 +28,7 @@ export default async function seedCustomerGroups({ container }: ExecArgs) {
   const APPROVED_GROUP_NAME =
     (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
 
-  const groups = [APPROVED_GROUP_NAME, "owner_stores", "distro"]
+  const groups = [APPROVED_GROUP_NAME, "owner_stores", "distro", "tier_2", "tier_3"]
 
   for (const name of groups) {
     const existing = await customerService.listCustomerGroups(

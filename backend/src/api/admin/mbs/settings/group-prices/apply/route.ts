@@ -3,20 +3,25 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 
 /**
- * POST /admin/mbs/settings/distro-prices/apply { scope: "flower" | "preroll" }
+ * POST /admin/mbs/settings/group-prices/apply
+ *   { scope: "flower" | "preroll", group: "distro" | "tier_2" | "tier_3" }
  *
- * Bulk-propagates the Distro tier prices from mbs-settings to a Medusa
- * PriceList scoped to the `distro` customer group. Buyers in that group
- * see Distro prices natively at cart-resolution time; buyers NOT in the
- * group see the default tier prices (written by tier-prices/apply).
+ * Bulk-propagates a customer-group-scoped price table from mbs-settings
+ * to a Medusa PriceList scoped to that customer group. Buyers in the
+ * group see this price natively at cart-resolution time; buyers NOT in
+ * the group fall through to the default tier price (written by
+ * tier-prices/apply).
+ *
+ * One route shared by Distro / Tier 2 / Tier 3 — same machinery, just
+ * different group + settings key + PriceList title per call.
  *
  * Why a PriceList instead of writing the price row directly:
  *   - PriceLists support customer_group rules natively
  *   - One PriceList per pricing mode keeps the system legible in admin
- *   - Operator can deactivate (status: "draft") to disable distro
- *     pricing without losing the table
+ *   - Operator can deactivate (status: "draft") to disable a mode
+ *     without losing the table
  *
- * Variant resolution mirrors the existing /tier-prices/apply endpoint:
+ * Variant resolution mirrors /tier-prices/apply:
  *   1. metadata.tier_key + metadata.size_key
  *   2. Category handle + SKU last segment
  *   3. Category handle + variant-title normalisation
@@ -26,6 +31,43 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
  */
 
 type TierMap = Record<string, Record<string, number>>
+
+type GroupKey = "distro" | "tier_2" | "tier_3"
+type Scope = "flower" | "preroll"
+
+/* Group config — one row per supported customer-group pricing mode.
+ * Settings keys are derived: <scope>_<key>_prices for tier_2/tier_3 and
+ * flower_distro_prices / preroll_distro_prices for distro (keeps the
+ * legacy key names so historical data doesn't need a migration). */
+const GROUPS: Record<GroupKey, {
+  groupName: string
+  priceListTitle: string
+  description: string
+  flowerSettingKey: string
+  prerollSettingKey: string
+}> = {
+  distro: {
+    groupName: "distro",
+    priceListTitle: "Distro Pricing",
+    description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
+    flowerSettingKey: "flower_distro_prices",
+    prerollSettingKey: "preroll_distro_prices",
+  },
+  tier_2: {
+    groupName: "tier_2",
+    priceListTitle: "Tier 2 Pricing",
+    description: "Tier 2 wholesale selling prices. Scoped to the `tier_2` customer group.",
+    flowerSettingKey: "flower_tier_2_prices",
+    prerollSettingKey: "preroll_tier_2_prices",
+  },
+  tier_3: {
+    groupName: "tier_3",
+    priceListTitle: "Tier 3 Pricing",
+    description: "Tier 3 wholesale selling prices. Scoped to the `tier_3` customer group.",
+    flowerSettingKey: "flower_tier_3_prices",
+    prerollSettingKey: "preroll_tier_3_prices",
+  },
+}
 
 const TITLE_TO_SIZE_KEY: Record<string, string> = {
   "½":           "half",
@@ -52,8 +94,6 @@ function sizeFromSku(sku: string | null | undefined): string | null {
   return parts[parts.length - 1]
 }
 
-const PRICE_LIST_TITLE = "Distro Pricing"
-
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
@@ -61,82 +101,77 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const customerService: any = req.scope.resolve(Modules.CUSTOMER)
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  const body = (req.body ?? {}) as { scope?: "flower" | "preroll" }
+  const body = (req.body ?? {}) as { scope?: Scope; group?: GroupKey }
   const scope = body.scope ?? "flower"
+  const group = body.group ?? "distro"
   if (scope !== "flower" && scope !== "preroll") {
     res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower" or "preroll"` })
     return
   }
+  const cfg = GROUPS[group]
+  if (!cfg) {
+    res.status(400).json({ ok: false, message: `Invalid group "${group}" — must be one of ${Object.keys(GROUPS).join(", ")}` })
+    return
+  }
 
-  const settingKey = scope === "flower" ? "flower_distro_prices" : "preroll_distro_prices"
+  const settingKey = scope === "flower" ? cfg.flowerSettingKey : cfg.prerollSettingKey
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({
       ok: false,
-      message: `${settingKey} not configured — save prices in MBS Settings → ${scope === "flower" ? "Flower Distro Prices" : "Pre-Roll Distro Prices"} first.`,
+      message: `${settingKey} not configured — save prices in MBS Settings first.`,
     })
     return
   }
 
-  /* Resolve the distro customer group — seed-customer-groups.ts
-   * creates it. Tolerate missing with a clear error so the operator
-   * knows to run the seed. */
-  const groups = await customerService.listCustomerGroups({ name: ["distro"] }, { take: 1 })
-  const distroGroup = groups?.[0]
-  if (!distroGroup?.id) {
+  /* Resolve the target customer group. seed-customer-groups.ts creates
+   * them; tolerate missing with a clear error so the operator knows to
+   * run the seed. */
+  const groups = await customerService.listCustomerGroups({ name: [cfg.groupName] }, { take: 1 })
+  const targetGroup = groups?.[0]
+  if (!targetGroup?.id) {
     res.status(400).json({
       ok: false,
-      message: "`distro` customer group missing. Run `pnpm seed:customer-groups` on the backend.",
+      message: `\`${cfg.groupName}\` customer group missing. Run \`pnpm seed:customer-groups\` on the backend.`,
     })
     return
   }
 
-  /* Find-or-create the PriceList. One PriceList shared by flower +
-   * preroll distro prices — different variants, same audience.
-   *
-   * Customer-group rule attribute MUST be `customer.groups.id` (plural,
-   * dotted). See pricing migration Migration20241212190401 — earlier
-   * Medusa used `customer_group_id`; current shape is `customer.groups.id`.
-   * Cart query-config + promotion rule-attributes-map confirm this. */
-  const RULES = { "customer.groups.id": [distroGroup.id] }
+  /* Find-or-create the PriceList. Customer-group rule attribute MUST be
+   * `customer.groups.id` (plural, dotted) — see pricing migration
+   * Migration20241212190401 for the legacy `customer_group_id` form. */
+  const RULES = { "customer.groups.id": [targetGroup.id] }
   const existingLists = await pricingService.listPriceLists(
-    { title: [PRICE_LIST_TITLE] },
+    { title: [cfg.priceListTitle] },
     { take: 1 },
   ).catch(() => [])
   let priceList = existingLists?.[0]
   if (!priceList?.id) {
     const [created] = await pricingService.createPriceLists([{
-      title: PRICE_LIST_TITLE,
-      description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
+      title: cfg.priceListTitle,
+      description: cfg.description,
       type: "override",
       status: "active",
       rules: RULES,
     }])
     priceList = created
-    logger.info(`[distro-prices/apply] created price list ${priceList?.id}`)
+    logger.info(`[group-prices/apply:${group}] created price list ${priceList?.id}`)
   } else {
-    /* Repair pass — if the existing list was created with the wrong
-     * rule attribute (earlier slice-4 ship used `customer.group_id`),
-     * overwrite to the canonical shape. Idempotent: if rules already
-     * match, the update is a no-op. */
+    /* Repair pass — overwrite rules to canonical shape; idempotent. */
     try {
       await pricingService.updatePriceLists([{ id: priceList.id, rules: RULES, status: "active" }])
-      logger.info(`[distro-prices/apply] refreshed rules on price list ${priceList.id}`)
+      logger.info(`[group-prices/apply:${group}] refreshed rules on price list ${priceList.id}`)
     } catch (e: any) {
-      logger.warn(`[distro-prices/apply] could not refresh rules: ${e?.message}`)
+      logger.warn(`[group-prices/apply:${group}] could not refresh rules: ${e?.message}`)
     }
   }
   if (!priceList?.id) {
-    res.status(500).json({ ok: false, message: "Could not create or load distro PriceList" })
+    res.status(500).json({ ok: false, message: `Could not create or load ${cfg.priceListTitle} PriceList` })
     return
   }
 
   const validTierKeys = new Set(Object.keys(prices))
 
-  /* Pull every variant + its price_set id. We need price_set.id (not
-   * price_set.prices.id) — PriceList prices target the SET, not an
-   * existing row. We also need a peek at existing list prices to
-   * decide add-vs-update. */
   const { data: variants } = await query.graph({
     entity: "product_variant",
     fields: [
@@ -148,11 +183,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     filters: { deleted_at: null },
   })
 
-  /* Existing list prices, keyed by price_set_id. Used to decide
-   * update-existing vs add-new. We fetch via query.graph (more
-   * reliable than `pricingService.listPrices({ price_list_id })`,
-   * which silently returned [] in 2.13 and made every re-apply
-   * try to ADD already-existing prices). */
+  /* Existing list prices, keyed by price_set_id — used to decide
+   * add-vs-update. Fetched via query.graph (more reliable than
+   * pricingService.listPrices, which silently returned [] in 2.13). */
   const { data: priceListExpanded } = await query.graph({
     entity: "price_list",
     fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
@@ -166,13 +199,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       }
     }
   }
-  logger.info(`[distro-prices/apply] price-list ${priceList.id} has ${Object.keys(byPriceSet).length} existing prices`)
+  logger.info(`[group-prices/apply:${group}] price-list ${priceList.id} has ${Object.keys(byPriceSet).length} existing prices`)
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
-  /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.
-   * Medusa's normalizePrices hashes the row by those fields to match
-   * against existing prices; bare { id, amount } hashes to empty, gets
-   * filtered out, and the update is a silent no-op. */
   const toUpdate: Array<{ id: string; price_set_id: string; currency_code: string; amount: number }> = []
   let scanned = 0
   let skipped = 0
@@ -225,11 +254,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const existing = byPriceSet[String(priceSetId)]
     if (existing?.id) {
-      /* Don't compare BigNumber amounts here — Number(bn) returns NaN
-       * in Medusa v2, so the comparison would always coerce to false
-       * and we'd push anyway. Skipping the comparison entirely is
-       * cheaper than handling all BigNumber edge cases. The downside
-       * (re-write a value that already matches) is negligible. */
       toUpdate.push({
         id: String(existing.id),
         price_set_id: String(priceSetId),
@@ -249,13 +273,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       await pricingService.addPriceListPrices([{ price_list_id: priceList.id, prices: toAdd }])
       added = toAdd.length
     } catch (e: any) {
-      logger.warn(`[distro-prices/apply] batch add failed: ${e?.message}. Falling back to one-by-one.`)
+      logger.warn(`[group-prices/apply:${group}] batch add failed: ${e?.message}. Falling back to one-by-one.`)
       for (const p of toAdd) {
         try {
           await pricingService.addPriceListPrices([{ price_list_id: priceList.id, prices: [p] }])
           added += 1
         } catch (e2: any) {
-          logger.warn(`[distro-prices/apply] add for ${p.price_set_id} failed: ${e2?.message}`)
+          logger.warn(`[group-prices/apply:${group}] add for ${p.price_set_id} failed: ${e2?.message}`)
           bumpSkip("add_failed")
         }
       }
@@ -275,7 +299,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       }])
       updated = toUpdate.length
     } catch (e: any) {
-      logger.warn(`[distro-prices/apply] batch update failed: ${e?.message}. Falling back to one-by-one.`)
+      logger.warn(`[group-prices/apply:${group}] batch update failed: ${e?.message}. Falling back to one-by-one.`)
       for (const u of toUpdate) {
         try {
           await pricingService.updatePriceListPrices([{
@@ -289,7 +313,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           }])
           updated += 1
         } catch (e2: any) {
-          logger.warn(`[distro-prices/apply] update ${u.id} failed: ${e2?.message}`)
+          logger.warn(`[group-prices/apply:${group}] update ${u.id} failed: ${e2?.message}`)
           bumpSkip("update_failed")
         }
       }
@@ -323,12 +347,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     if (mismatches.length > 0) {
       const first = mismatches[0]
       const msg = `Apply reported success but writes did not persist (sample mismatch ${mismatches.length}/${sample.length}). Example: price_set ${first.price_set_id} expected $${first.expected.toFixed(2)} actual $${first.actual?.toFixed(2) ?? "null"}.`
-      logger.error(`[distro-prices/apply] ${msg}`)
+      logger.error(`[group-prices/apply:${group}] ${msg}`)
       res.status(500).json({
         ok: false,
         message: msg,
         summary: {
           scope,
+          group,
           price_list_id: priceList.id,
           scanned,
           added: 0,
@@ -345,6 +370,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     ok: true,
     summary: {
       scope,
+      group,
       price_list_id: priceList.id,
       scanned,
       added,

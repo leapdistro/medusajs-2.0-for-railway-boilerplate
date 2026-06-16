@@ -2,23 +2,26 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 
 /**
- * POST /admin/customers/:id/pricing-mode { mode: "owner_stores" | "distro" | null }
+ * POST /admin/customers/:id/pricing-mode
+ *   { mode: "owner_stores" | "distro" | "tier_2" | "tier_3" | null }
  *
  * Sets (or clears) `customer.metadata.pricing_mode` AND keeps customer
  * group membership in sync. The metadata is what the admin widget
- * reads; the customer group is what Medusa price lists (slice 4) key
- * off for pricing at cart resolution time.
+ * reads; the customer group is what Medusa price lists key off for
+ * pricing at cart resolution time.
  *
- * "owner_stores" → buyer pays landed cost + admin markup
- * "distro"       → buyer pays operator-set distro tier prices
- * null/absent    → buyer pays default tier prices (everyone else)
+ * "owner_stores"   → landed cost + admin markup
+ * "distro"         → operator-set distro tier prices
+ * "tier_2"/"tier_3"→ operator-set tier_2/tier_3 prices (from Flower /
+ *                    Pre-Roll Tier Prices tabs)
+ * null/absent      → buyer pays default tier prices (everyone else)
  *
- * The two pricing groups are mutually exclusive — picking one removes
- * the customer from the other.
+ * All pricing groups are mutually exclusive — picking one removes the
+ * customer from the other three.
  */
 
-const VALID_MODES = ["owner_stores", "distro"] as const
-const PRICING_GROUP_NAMES = ["owner_stores", "distro"] as const
+const VALID_MODES = ["owner_stores", "distro", "tier_2", "tier_3"] as const
+const PRICING_GROUP_NAMES = ["owner_stores", "distro", "tier_2", "tier_3"] as const
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
@@ -91,6 +94,36 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   } catch (e: any) {
     logger.error(`[pricing-mode] update failed for ${customer.email}: ${e?.message}`)
     return res.status(500).json({ ok: false, message: e?.message ?? "Update failed" })
+  }
+
+  /* Belt-and-suspenders mutex check — re-read the customer's groups and
+   * fail loudly if more than one pricing group is present. Catches:
+   * (a) operator directly editing customer.groups via Medusa's native
+   * UI, (b) a race against a concurrent pricing-mode write, (c) any
+   * future code path that touches group membership and forgets the
+   * mutex. Storefront PriceList resolution would otherwise pick one of
+   * the two non-deterministically. */
+  try {
+    const [post] = await customerService.listCustomers(
+      { id: [customer.id] },
+      { take: 1, relations: ["groups"] },
+    )
+    const activePricingGroups = ((post?.groups ?? []) as Array<{ id?: string; name?: string }>)
+      .map((g) => g?.name)
+      .filter((n): n is string => Boolean(n) && (PRICING_GROUP_NAMES as readonly string[]).includes(n))
+    if (activePricingGroups.length > 1) {
+      logger.error(
+        `[pricing-mode] mutex violation for ${customer.email}: in ${activePricingGroups.length} pricing groups (${activePricingGroups.join(", ")}) after write to "${requested ?? "default"}"`,
+      )
+      return res.status(500).json({
+        ok: false,
+        message: `Pricing mode mutex violation — customer is in ${activePricingGroups.length} pricing groups (${activePricingGroups.join(", ")}). Manual cleanup required in Medusa admin.`,
+      })
+    }
+  } catch (e: any) {
+    /* Don't fail the whole request on a verification read error — the
+     * write itself succeeded. Log so we notice if this happens often. */
+    logger.warn(`[pricing-mode] post-write mutex check failed for ${customer.email}: ${e?.message}`)
   }
 
   logger.info(`[pricing-mode] ${customer.email} → ${requested ?? "default"}`)
