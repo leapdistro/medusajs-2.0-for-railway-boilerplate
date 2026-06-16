@@ -34,8 +34,8 @@ export const PasswordResetEmail = ({
 
       <P>
         {isWelcome
-          ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing.'
-          : 'Click the button below to set a new password for your Mind Body Spirit wholesale account. The link expires in about 15 minutes.'}
+          ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing. The link is good for 24 hours.'
+          : 'Click the button below to set a new password for your Mind Body Spirit wholesale account. The link is good for 24 hours.'}
       </P>
 
       <PrimaryButton href={resetUrl}>

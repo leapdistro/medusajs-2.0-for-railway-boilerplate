@@ -37,7 +37,21 @@ const medusaConfig = {
       authCors: AUTH_CORS,
       storeCors: STORE_CORS,
       jwtSecret: JWT_SECRET,
-      cookieSecret: COOKIE_SECRET
+      cookieSecret: COOKIE_SECRET,
+      /* Extend the global JWT TTL from Medusa's default 15-minute
+       * reset-password window to 24 hours. The buyer-facing pain was
+       * "I opened the welcome / reset email a couple hours later and
+       * the link said expired." 24h lets buyers come back to it the
+       * next day; tradeoff is a longer window in which a leaked email
+       * (compromised inbox, shared laptop, forwarded message) lets
+       * someone else set the password. Acceptable for B2B-only signups
+       * where the operator already vetted the account.
+       *
+       * Also bumps the Medusa session JWT from the default 1d to 24h
+       * (same value — no functional change for the login session;
+       * the NextAuth-side TTL mismatch handler still validates every
+       * 5 min via the jwt callback and strips on 401). */
+      jwtExpiresIn: "24h"
     },
     build: {
       rollupOptions: {

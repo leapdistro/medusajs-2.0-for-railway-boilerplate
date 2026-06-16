@@ -69,7 +69,7 @@ export default async function customerPasswordResetHandler({
   logger.info(`========== PASSWORD RESET LINK ==========`)
   logger.info(`Email: ${email}${isWelcome ? " (welcome-on-approval)" : ""}`)
   logger.info(`Reset URL: ${resetUrl}`)
-  logger.info(`(token expires per Medusa default — usually 15 min)`)
+  logger.info(`(token expires in 24h — set via projectConfig.http.jwtExpiresIn)`)
   logger.info(`=========================================`)
 
   // Send via Resend if the notification module is configured. Wrapped in
