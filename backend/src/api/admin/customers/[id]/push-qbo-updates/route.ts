@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { updateQboCustomer } from "../../../../../lib/qbo-api"
+import { pushCustomerToQbo } from "../../../../../lib/customer-to-qbo"
 import { QBO_CONNECTION_MODULE } from "../../../../../modules/qbo-connection"
 
 /**
@@ -59,16 +60,47 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   const meta = (customer.metadata ?? {}) as Record<string, any>
   const qboCustomerId = typeof meta.qbo_customer_id === "string" ? meta.qbo_customer_id : null
+
+  /* No QBO link yet → find-or-create via the shared push lib (same
+   * code path as approve-and-welcome). pushCustomerToQbo stamps
+   * qbo_customer_id + qbo_pushed_at on success, and clears any prior
+   * qbo_push_error. Then clear the pending flag and return. */
   if (!qboCustomerId) {
-    return res.status(400).json({
-      ok: false,
-      message: "This customer hasn't been pushed to QBO yet — the first order push will create them. Nothing to update.",
+    const outcome = await pushCustomerToQbo(req.scope, customer, {
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+      error: (m) => logger.error(m),
+    }).catch((e) => ({ state: "error" as const, message: e?.message ?? String(e) }))
+
+    if (outcome.state === "skipped") {
+      return res.status(400).json({ ok: false, message: outcome.reason })
+    }
+    if (outcome.state === "error") {
+      return res.status(502).json({ ok: false, message: outcome.message })
+    }
+
+    /* Re-read customer metadata — pushCustomerToQbo updated it
+     * (stamped qbo_customer_id etc.); clear the pending flag on top. */
+    const [refreshed] = await customerService.listCustomers({ id: [customer.id] }, { take: 1 })
+    const freshMeta = (refreshed?.metadata ?? {}) as Record<string, any>
+    await customerService.updateCustomers(customer.id, {
+      metadata: {
+        ...freshMeta,
+        qbo_sync_pending: false,
+        qbo_sync_pending_at: null,
+        qbo_last_synced_at: new Date().toISOString(),
+      },
+    })
+    return res.json({
+      ok: true,
+      qboCustomerId: outcome.qboCustomerId,
+      created: outcome.created,
     })
   }
 
   /* Resolve the address to push. is_default_billing takes priority;
    * fall back to address_1-bearing first address; finally null. */
-  const addresses = ((customer.addresses ?? []) as any[]) ?? []
+  const addresses = (customer.addresses ?? []) as any[]
   const billing = addresses.find((a) => a?.is_default_billing) ?? addresses.find((a) => a?.address_1) ?? null
 
   /* Business type label — same lookup as findOrCreateCustomer. The

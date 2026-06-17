@@ -53,11 +53,12 @@ const CustomerPushQboUpdatesWidget = ({ data }: DetailWidgetProps<CustomerLite>)
   const qboCustomerId = typeof meta.qbo_customer_id === "string" ? meta.qbo_customer_id : null
   const isPending = meta.qbo_sync_pending === true
 
-  /* Hide the whole widget when there's nothing to surface — no
-   * QBO link, no pending changes, or the customer hasn't synced at
-   * all yet. Reduces visual noise on customer detail pages where
-   * the common case is "nothing to do here". */
-  if (!qboCustomerId || !isPending) return null
+  /* Render whenever the buyer has pending changes — regardless of
+   * whether QBO already knows them. The push-qbo-updates route
+   * branches on qbo_customer_id (find-or-create when missing, sparse
+   * update when present), so the operator can always hit "Push" to
+   * make QBO match the current /account state. */
+  if (!isPending) return null
 
   /* Shared runner — both Push (writes to QBO + clears flag) and Clear
    * (only clears the flag, no QBO touch) hit a per-customer endpoint
@@ -113,8 +114,15 @@ const CustomerPushQboUpdatesWidget = ({ data }: DetailWidgetProps<CustomerLite>)
         <Text size="small" className="text-ui-fg-subtle">
           This buyer changed their profile, business info, or address since the last QBO push.
           {pendingLabel ? ` First pending change: ${pendingLabel}.` : ""} Click below to push
-          name / phone / company / address / EIN / license to QBO Customer{" "}
-          <span style={{ fontFamily: "monospace" }}>{qboCustomerId}</span>.
+          name / phone / company / address / EIN / license to QBO
+          {qboCustomerId ? (
+            <>
+              {" "}Customer{" "}
+              <span style={{ fontFamily: "monospace" }}>{qboCustomerId}</span>.
+            </>
+          ) : (
+            <> — the customer record will be created in QBO on this push (find-or-create).</>
+          )}
         </Text>
         <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
           <Button variant="primary" onClick={onPush} isLoading={busy} disabled={busy}>
