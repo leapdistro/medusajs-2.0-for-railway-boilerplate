@@ -46,6 +46,16 @@ import {
   ORDER_CANCELLED,
   isOrderCancelledData,
 } from './order-cancelled'
+import {
+  ContactTeamEmail,
+  CONTACT_TEAM,
+  isContactTeamData,
+} from './contact-team'
+import {
+  ContactApplicantEmail,
+  CONTACT_APPLICANT,
+  isContactApplicantData,
+} from './contact-applicant'
 
 export const EmailTemplates = {
   INVITE_USER,
@@ -58,6 +68,8 @@ export const EmailTemplates = {
   PAYMENT_INSTRUCTIONS,
   ORDER_SHIPPED,
   ORDER_CANCELLED,
+  CONTACT_TEAM,
+  CONTACT_APPLICANT,
 } as const
 
 export type EmailTemplateType = keyof typeof EmailTemplates
@@ -104,6 +116,14 @@ export function generateEmailTemplate(templateKey: string, data: unknown): React
       if (!isOrderCancelledData(data)) throw new MedusaError(MedusaError.Types.INVALID_DATA, `Invalid data for "${EmailTemplates.ORDER_CANCELLED}"`)
       return <OrderCancelledTemplate {...data} />
 
+    case EmailTemplates.CONTACT_TEAM:
+      if (!isContactTeamData(data)) throw new MedusaError(MedusaError.Types.INVALID_DATA, `Invalid data for "${EmailTemplates.CONTACT_TEAM}"`)
+      return <ContactTeamEmail {...data} />
+
+    case EmailTemplates.CONTACT_APPLICANT:
+      if (!isContactApplicantData(data)) throw new MedusaError(MedusaError.Types.INVALID_DATA, `Invalid data for "${EmailTemplates.CONTACT_APPLICANT}"`)
+      return <ContactApplicantEmail {...data} />
+
     default:
       throw new MedusaError(MedusaError.Types.INVALID_DATA, `Unknown template key: "${templateKey}"`)
   }
@@ -120,4 +140,6 @@ export {
   PaymentInstructionsTemplate,
   OrderShippedTemplate,
   OrderCancelledTemplate,
+  ContactTeamEmail,
+  ContactApplicantEmail,
 }
