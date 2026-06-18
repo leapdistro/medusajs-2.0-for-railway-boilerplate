@@ -85,19 +85,22 @@ const CustomerApplicationDocsWidget = ({ data }: DetailWidgetProps<CustomerLite>
   const [options, setOptions] = useState<BusinessTypeOption[]>([])
   const [saving, setSaving] = useState(false)
 
-  /* Load options from the public store route — same payload the apply
-   * form's dropdown uses, archived entries filtered server-side. */
+  /* Load options from the ADMIN route — same payload shape as the
+   * public /store/mbs/business-types (archived filtered server-side),
+   * but uses admin auth which the widget already sends via
+   * credentials:include. The public /store route requires
+   * x-publishable-api-key header that admin widgets don't carry,
+   * which is why the dropdown was empty in the first ship. */
   useEffect(() => {
     let cancelled = false
-    fetch("/store/mbs/business-types", { credentials: "include" })
+    fetch("/admin/mbs/business-types", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j: { business_types?: BusinessTypeOption[] }) => {
         if (cancelled) return
         setOptions(j.business_types ?? [])
       })
       .catch(() => {
-        /* Soft-fail — operator just sees the current label as
-         * read-only fallback. Bell isn't worth blocking page render. */
+        /* Soft-fail — operator sees current label as read-only fallback. */
       })
     return () => { cancelled = true }
   }, [])
