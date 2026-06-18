@@ -38,7 +38,17 @@ const STOREFRONT_BASE = process.env.STOREFRONT_URL || 'https://mbs-storefront-bl
 export const Base: React.FC<BaseProps> = ({ preview, children }) => {
   return (
     <Html>
-      <Head />
+      {/* Force-light rendering — opts out of Apple Mail iOS / Outlook
+        * dark-mode auto-inversion. Without these, clients that detect
+        * a light theme "helpfully" invert the body to dark while
+        * leaving images alone → the black PNG logo ends up on a dark
+        * background and disappears. Both meta names are intentional:
+        * `color-scheme` is the modern web standard, `supported-
+        * color-schemes` is Outlook 2019+'s recognised variant. */}
+      <Head>
+        <meta name="color-scheme" content="light only" />
+        <meta name="supported-color-schemes" content="light only" />
+      </Head>
       <Preview>{preview}</Preview>
       <Tailwind>
         <Body
