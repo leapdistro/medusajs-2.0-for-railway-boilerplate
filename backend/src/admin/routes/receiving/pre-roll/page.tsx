@@ -45,6 +45,17 @@ type Subcategory = string
 type StrainType = (typeof STRAIN_TYPES)[number]
 type BestFor = (typeof BEST_FOR)[number]["key"]
 
+/* Industry-canonical mapping mirrored from the flower receiving page:
+ * Sativa = uplifting/day, Indica = sedating/night, Hybrid = evening
+ * middle. Applied on strainType change so bestFor stays in sync;
+ * operator can tweak bestFor afterward but if strainType changes
+ * again the auto-derive re-fires (the "always re-derive" call). */
+const TYPE_TO_BEST_FOR: Record<StrainType, BestFor> = {
+  Sativa: "day",
+  Hybrid: "evening",
+  Indica: "night",
+}
+
 type CoaState =
   | { state: "idle" }
   | { state: "uploading" }
@@ -176,7 +187,17 @@ const PreRollReceivingPage = () => {
   }, [supplier, invoiceNumber, invoiceDate, rows])
 
   const updateRow = useCallback((idx: number, patch: Partial<Row>) => {
-    setRows((cur) => cur.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+    setRows((cur) => cur.map((r, i) => {
+      if (i !== idx) return r
+      /* Auto-derive bestFor on strainType change per TYPE_TO_BEST_FOR.
+       * Always overwrites; operator can still tweak bestFor after AS
+       * LONG AS strainType doesn't change again. */
+      const next = { ...r, ...patch }
+      if (patch.strainType !== undefined && patch.strainType !== r.strainType) {
+        next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType as StrainType] : ""
+      }
+      return next
+    }))
   }, [])
 
   const addRow = () => setRows((cur) => [...cur, blankRow(subcats?.[0]?.key ?? "")])

@@ -684,7 +684,19 @@ const ReviewView: React.FC<{
   const allValid = rows.length > 0 && rows.every(isRowComplete)
 
   const updateRow = useCallback((idx: number, patch: Partial<ReviewRow>) => {
-    setRows((cur) => cur.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+    setRows((cur) => cur.map((r, i) => {
+      if (i !== idx) return r
+      /* Auto-derive bestFor whenever strainType is set/changed —
+       * Sativa→day, Hybrid→evening, Indica→night per TYPE_TO_BEST_FOR.
+       * Overwrites any prior bestFor (the user's "always re-derive"
+       * call). Operator can still tweak bestFor after AS LONG AS
+       * strainType doesn't change again. */
+      const next = { ...r, ...patch }
+      if (patch.strainType !== undefined && patch.strainType !== r.strainType) {
+        next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType] : null
+      }
+      return next
+    }))
     /* Stale results would mislead the operator after they edit. Clear
      * them on any row change. */
     setSaveResults(null)
@@ -758,7 +770,16 @@ const ReviewView: React.FC<{
    * the toolbar disappears (operator's signal that the bulk op landed). */
   const bulkApply = useCallback((patch: Partial<ReviewRow>) => {
     if (selected.size === 0) return
-    setRows((cur) => cur.map((r, i) => selected.has(i) ? { ...r, ...patch } : r))
+    setRows((cur) => cur.map((r, i) => {
+      if (!selected.has(i)) return r
+      /* Mirror updateRow's auto-derive: when bulk Type is applied,
+       * bestFor follows for every selected row. */
+      const next = { ...r, ...patch }
+      if (patch.strainType !== undefined && patch.strainType !== r.strainType) {
+        next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType] : null
+      }
+      return next
+    }))
     setSelected(new Set())
   }, [selected])
 
