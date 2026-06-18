@@ -1,11 +1,14 @@
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { DetailWidgetProps } from "@medusajs/framework/types"
-import { Button, Container, Heading, Text } from "@medusajs/ui"
+import { Button, Container, Heading, Select, Text, toast } from "@medusajs/ui"
+import { useCallback, useEffect, useState } from "react"
 
 type CustomerLite = {
   id: string
   metadata?: Record<string, any> | null
 }
+
+type BusinessTypeOption = { id: string; label: string }
 
 type DocKind = "image" | "pdf" | "other"
 
@@ -71,13 +74,76 @@ const CustomerApplicationDocsWidget = ({ data }: DetailWidgetProps<CustomerLite>
   const meta = data?.metadata ?? {}
   const einUrl = typeof meta.ein_doc_url === "string" ? meta.ein_doc_url : ""
   const licenseUrl = typeof meta.license_doc_url === "string" ? meta.license_doc_url : ""
-  const businessTypeLabel = typeof meta.business_type_label === "string" ? meta.business_type_label : ""
+
+  /* Live state for the business type dropdown. Seeded from the
+   * customer's stamped metadata, mutated locally on Select change so
+   * the dropdown feels snappy, then synced to the backend route. */
+  const initialId = typeof meta.business_type === "string" ? meta.business_type : ""
+  const initialLabel = typeof meta.business_type_label === "string" ? meta.business_type_label : ""
+  const [currentId, setCurrentId] = useState<string>(initialId)
+  const [currentLabel, setCurrentLabel] = useState<string>(initialLabel)
+  const [options, setOptions] = useState<BusinessTypeOption[]>([])
+  const [saving, setSaving] = useState(false)
+
+  /* Load options from the public store route — same payload the apply
+   * form's dropdown uses, archived entries filtered server-side. */
+  useEffect(() => {
+    let cancelled = false
+    fetch("/store/mbs/business-types", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: { business_types?: BusinessTypeOption[] }) => {
+        if (cancelled) return
+        setOptions(j.business_types ?? [])
+      })
+      .catch(() => {
+        /* Soft-fail — operator just sees the current label as
+         * read-only fallback. Bell isn't worth blocking page render. */
+      })
+    return () => { cancelled = true }
+  }, [])
 
   /* Hide entirely for customers without uploaded application docs —
-   * keeps the page clean for non-application customers (manually-created,
-   * legacy, etc.). business_type alone isn't enough to render: it shows
-   * up *alongside* the docs when the customer is an applicant. */
+   * keeps the page clean for non-application customers. */
   if (!einUrl && !licenseUrl) return null
+
+  const onPick = async (nextId: string) => {
+    if (!data?.id) return
+    const prevId = currentId
+    const prevLabel = currentLabel
+    /* Optimistic — show the new value immediately, roll back on error. */
+    const optimisticLabel = options.find((o) => o.id === nextId)?.label ?? currentLabel
+    setCurrentId(nextId)
+    setCurrentLabel(optimisticLabel)
+    setSaving(true)
+    try {
+      const res = await fetch(`/admin/customers/${data.id}/business-type`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: nextId }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json?.ok) throw new Error(json?.message ?? `HTTP ${res.status}`)
+      setCurrentLabel(json.business_type_label ?? optimisticLabel)
+      toast.success(`Business type → ${json.business_type_label ?? "—"}`)
+    } catch (e: any) {
+      /* Roll back on failure. */
+      setCurrentId(prevId)
+      setCurrentLabel(prevLabel)
+      toast.error(`Update failed: ${e?.message ?? "unknown"}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /* If the customer's current type is no longer in the live options
+   * list (operator archived it after this customer was set), surface
+   * it as a placeholder option so the dropdown still renders the
+   * current value with a clear "(archived)" suffix. */
+  const currentInOptions = currentId && options.some((o) => o.id === currentId)
+  const renderOptions: BusinessTypeOption[] = currentInOptions || !currentId
+    ? options
+    : [...options, { id: currentId, label: `${currentLabel || currentId} (archived)` }]
 
   return (
     <Container className="divide-y p-0">
@@ -87,14 +153,23 @@ const CustomerApplicationDocsWidget = ({ data }: DetailWidgetProps<CustomerLite>
           Files uploaded during this customer's wholesale application.
         </Text>
       </div>
-      {businessTypeLabel && (
-        <div className="flex items-center gap-3 px-6 py-3">
-          <Text size="xsmall" weight="plus" className="text-ui-fg-subtle uppercase tracking-wide">
-            Business Type
-          </Text>
-          <Text size="small">{businessTypeLabel}</Text>
+      <div className="flex items-center gap-3 px-6 py-3">
+        <Text size="xsmall" weight="plus" className="text-ui-fg-subtle uppercase tracking-wide" style={{ minWidth: 110 }}>
+          Business Type
+        </Text>
+        <div style={{ minWidth: 240, maxWidth: 360, flex: 1 }}>
+          <Select value={currentId} onValueChange={onPick} disabled={saving}>
+            <Select.Trigger>
+              <Select.Value placeholder="— Pick a business type —" />
+            </Select.Trigger>
+            <Select.Content>
+              {renderOptions.map((o) => (
+                <Select.Item key={o.id} value={o.id}>{o.label}</Select.Item>
+              ))}
+            </Select.Content>
+          </Select>
         </div>
-      )}
+      </div>
       <div className="grid grid-cols-1 gap-4 px-6 py-4 md:grid-cols-2">
         {einUrl && <DocCard label="EIN Document" url={einUrl} />}
         {licenseUrl && <DocCard label="Resale Certificate" url={licenseUrl} />}
