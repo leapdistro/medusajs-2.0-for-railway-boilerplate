@@ -33,6 +33,7 @@ const TABS = [
   { id: "contact_info",            label: "Contact Info"            },
   { id: "cancellation_reasons",    label: "Cancellation Reasons"    },
   { id: "denial_reasons",          label: "Denial Reasons"          },
+  { id: "business_types",          label: "Business Types"          },
   { id: "flower_tier_prices",      label: "Flower Tier Prices"      },
   { id: "pre_roll_tier_prices",    label: "Pre-Roll Tier Prices"    },
   { id: "owner_markup",            label: "Owner Markup"            },
@@ -137,6 +138,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "denial_reasons" && (
               <ReasonListForm row={currentRow} onSaved={onSaved} keyName="denial_reasons" />
+            )}
+            {tab === "business_types" && (
+              <ReasonListForm row={currentRow} onSaved={onSaved} keyName="business_types" />
             )}
             {tab === "flower_tier_prices" && (
               <TierPricesForm rows={rows} onSaved={onSaved} />
@@ -277,7 +281,7 @@ type Reason = { id: string; label: string; archived: boolean }
 
 const slugify = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")
 
-const ReasonListForm = ({ row, onSaved, keyName }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void; keyName: "cancellation_reasons" | "denial_reasons" }) => {
+const ReasonListForm = ({ row, onSaved, keyName }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void; keyName: "cancellation_reasons" | "denial_reasons" | "business_types" }) => {
   const [items, setItems] = useState<Reason[]>([])
   const [newLabel, setNewLabel] = useState("")
   const [saving, setSaving] = useState(false)
@@ -299,12 +303,17 @@ const ReasonListForm = ({ row, onSaved, keyName }: { row?: SettingRow; onSaved: 
     setItems((p) => p.filter((r) => r.id !== id))
   }
 
+  /* "Reasons" → "Business Types" copy swap when this form is rendered
+   * for the business_types tab. Same shape + behaviour underneath; just
+   * makes the toast + button label honest. */
+  const noun = keyName === "business_types" ? "Business Types" : "Reasons"
+
   const save = async () => {
     setSaving(true)
     try {
       const next = await saveSetting(keyName, items)
       onSaved(next)
-      toast.success("Reasons saved")
+      toast.success(`${noun} saved`)
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -345,7 +354,7 @@ const ReasonListForm = ({ row, onSaved, keyName }: { row?: SettingRow; onSaved: 
       </div>
 
       <div>
-        <Button variant="primary" onClick={save} isLoading={saving}>Save Reasons</Button>
+        <Button variant="primary" onClick={save} isLoading={saving}>Save {noun}</Button>
       </div>
     </div>
   )
