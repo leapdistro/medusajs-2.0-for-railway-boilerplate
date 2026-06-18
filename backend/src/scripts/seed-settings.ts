@@ -72,13 +72,22 @@ const DEFAULTS: Array<{
     key: "business_types",
     description: "Buyer-selectable business categories on the wholesale application. Used to validate the apply form's business_type field and to render the dropdown options. Operator can add / archive entries in admin settings.",
     value: [
-      { id: "smoke_shop",   label: "Smoke Shop",   archived: false },
-      { id: "vape_shop",    label: "Vape Shop",    archived: false },
-      { id: "dispensary",   label: "Dispensary",   archived: false },
-      { id: "tobacco_shop", label: "Tobacco Shop", archived: false },
-      { id: "ecommerce",    label: "E-commerce",   archived: false },
-      { id: "wholesale",    label: "Wholesale",    archived: false },
-      { id: "distro",       label: "Distro",       archived: false },
+      /* smoke_shop id retained (was "Smoke Shop") — relabeled to
+       * Smoke/Vape Shop to fold vape into the same bucket. Existing
+       * applications referencing the smoke_shop id keep resolving. */
+      { id: "smoke_shop",   label: "Smoke/Vape Shop", archived: false },
+      /* C-Store — new, primary corner-store accounts. */
+      { id: "c_store",      label: "C-Store",         archived: false },
+      { id: "dispensary",   label: "Dispensary",      archived: false },
+      { id: "tobacco_shop", label: "Tobacco Shop",    archived: false },
+      { id: "ecommerce",    label: "E-commerce",      archived: false },
+      { id: "wholesale",    label: "Wholesale",       archived: false },
+      { id: "distro",       label: "Distro",          archived: false },
+      /* vape_shop archived — historical applications keep resolving
+       * the id; new applications go through the merged Smoke/Vape
+       * Shop entry above. NOT deleted so old data still has a
+       * label to render. */
+      { id: "vape_shop",    label: "Vape Shop",       archived: true },
     ],
   },
   {
