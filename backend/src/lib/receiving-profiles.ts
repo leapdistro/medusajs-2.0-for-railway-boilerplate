@@ -19,7 +19,7 @@
  * config keeps the diff focused when adding the next category.
  */
 
-export type ProfileKey = "flower" | "pre-roll"
+export type ProfileKey = "flower" | "pre-roll" | "flower-thc-p"
 
 /** A variant axis value (one row in the review grid maps to N variants per profile). */
 export type VariantDef = {
@@ -221,11 +221,52 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   inputToPoolMultiplier: 1,
 }
 
+/* ─── Flower — THC-P ─── */
+
+/* THC-P is a case-pack flower product: retail-ready 8-jar box, 3.5g per
+ * jar. Categorized under Flower > THC-P (not Pre-Rolls). No tier ladder
+ * — only one price cell per pricing mode (default + distro).
+ * Sold case-only (buyer's minimum order = 1 box = 8 jars). */
+export const FLOWER_THCP_PROFILE: ReceivingProfile = {
+  key: "flower-thc-p",
+  displayName: "Flower — THC-P",
+  parentCategoryName: "Flower",
+  subcategories: [
+    /* Single subcategory. Every row lands under Flower > THC-P. */
+    { key: "thc-p", medusaName: "THC-P", label: "THC-P" },
+  ],
+  variants: [
+    /* One variant: 8-jar retail box. 8 × 3.5g = 28g cannabis weight per
+     * box. grams=28 drives per-gram price display on the storefront
+     * (matches Flower). Sold case-only — no per-jar variant. */
+    { sizeKey: "8pk", label: "8-jar Box (28g)", multiplier: 1, grams: 28 },
+  ],
+  fields: {
+    strainType: true,
+    bestFor: true,
+    effects: true,
+    cannabinoids: true,
+    coaRequired: true,
+    /* Retail-ready packaged product — UPC barcode expected. */
+    upc: true,
+  },
+  /* Reuses the "tier" pricing shape: settings key holds a nested lookup
+   * (subcatKey → sizeKey → dollars). For THC-P there's one subcatKey
+   * ("thc-p") and one sizeKey ("8pk"). Not semantically a tier ladder;
+   * the shape just fits receiving-save's existing lookup path. */
+  pricingModel: "tier",
+  tierPricesSettingKey: "thcp_flower_prices",
+  unitLabel: { singular: "Box", plural: "Boxes" },
+  inputUnitLabel: { singular: "box", plural: "boxes" },
+  inputToPoolMultiplier: 1,
+}
+
 /* ─── Registry ─── */
 
 export const PROFILES: Record<ProfileKey, ReceivingProfile> = {
   flower: FLOWER_PROFILE,
   "pre-roll": PREROLL_PROFILE,
+  "flower-thc-p": FLOWER_THCP_PROFILE,
 }
 
 export function getProfile(key: ProfileKey): ReceivingProfile {

@@ -43,8 +43,19 @@ const PREROLL_KEY_BY_MODE: Record<string, string> = {
   distro:       "preroll_distro_prices",
   owner_stores: "pre_roll_tier_prices",
 }
-const FLOWER_DEFAULT_KEY  = "flower_tier_prices"
-const PREROLL_DEFAULT_KEY = "pre_roll_tier_prices"
+/* THC-P Flower has fewer pricing modes today (default + distro only).
+ * tier_2 / tier_3 fall back to default until an operator adds the
+ * corresponding setting keys — no null gap on the home page.
+ * owner_stores mirrors flower's simplification: shows default price. */
+const THCP_FLOWER_KEY_BY_MODE: Record<string, string> = {
+  distro:       "thcp_flower_distro_prices",
+  tier_2:       "thcp_flower_prices",
+  tier_3:       "thcp_flower_prices",
+  owner_stores: "thcp_flower_prices",
+}
+const FLOWER_DEFAULT_KEY      = "flower_tier_prices"
+const PREROLL_DEFAULT_KEY     = "pre_roll_tier_prices"
+const THCP_FLOWER_DEFAULT_KEY = "thcp_flower_prices"
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
@@ -73,28 +84,30 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
    * value so a typo doesn't blank out the home page. */
   const rawMode = (customer.metadata as Record<string, any> | undefined)?.pricing_mode
   const mode = typeof rawMode === "string" ? rawMode : null
-  const flowerKey  = FLOWER_KEY_BY_MODE[mode ?? ""]  ?? FLOWER_DEFAULT_KEY
-  const prerollKey = PREROLL_KEY_BY_MODE[mode ?? ""] ?? PREROLL_DEFAULT_KEY
+  const flowerKey     = FLOWER_KEY_BY_MODE[mode ?? ""]      ?? FLOWER_DEFAULT_KEY
+  const prerollKey    = PREROLL_KEY_BY_MODE[mode ?? ""]     ?? PREROLL_DEFAULT_KEY
+  const thcpFlowerKey = THCP_FLOWER_KEY_BY_MODE[mode ?? ""] ?? THCP_FLOWER_DEFAULT_KEY
 
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const [flowerPrices, preRollPrices] = await Promise.all([
+  const [flowerPrices, preRollPrices, thcpFlowerPrices] = await Promise.all([
     settings.getSetting(flowerKey).catch(() => null),
     settings.getSetting(prerollKey).catch(() => null),
+    settings.getSetting(thcpFlowerKey).catch(() => null),
   ])
 
   return res.json({
     ok: true,
     /* Legacy field name — flower-only callers still read this. */
     tier_prices: flowerPrices ?? null,
-    /* Split shape for clarity at call sites. The two ladders have
-     * different keying (flower: tier × size; pre-roll: subcategory ×
-     * size) so they're surfaced as separate top-level fields. */
+    /* Split shape for clarity at call sites. The three ladders have
+     * different keying (flower: tier × size; pre-roll + THC-P Flower:
+     * subcategory × size) so they're surfaced as separate top-level
+     * fields. */
     flower_tier_prices: flowerPrices ?? null,
     pre_roll_tier_prices: preRollPrices ?? null,
-    /* Echo back the resolved mode + source keys for debugging. The
-     * storefront ignores these, but they're handy when verifying
-     * "why is buyer X seeing price Y" in production. */
+    thcp_flower_prices: thcpFlowerPrices ?? null,
+    /* Echo back the resolved mode + source keys for debugging. */
     pricing_mode: mode ?? "default",
-    sources: { flower: flowerKey, preroll: prerollKey },
+    sources: { flower: flowerKey, preroll: prerollKey, thcp_flower: thcpFlowerKey },
   })
 }

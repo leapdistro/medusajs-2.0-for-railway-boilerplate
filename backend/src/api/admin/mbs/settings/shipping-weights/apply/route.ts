@@ -35,6 +35,7 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 type ShippingRates = {
   flower?: { qp?: number; half?: number; lb?: number }
   preroll?: Record<string, Record<string, number>>
+  thcp_flower?: Record<string, Record<string, number>>
 }
 
 const SKU_SIZE_MAP: Record<string, "qp" | "half" | "lb"> = {
@@ -66,7 +67,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
   const rates = (await settings.getSetting("shipping_rates")) as ShippingRates | null
-  if (!rates || (!rates.flower && !rates.preroll)) {
+  if (!rates || (!rates.flower && !rates.preroll && !rates.thcp_flower)) {
     res.status(400).json({ ok: false, message: "shipping_rates setting is empty — save rates first." })
     return
   }
@@ -102,6 +103,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     if (tier && size) {
       if (tier === "classic" || tier === "exotic" || tier === "super" || tier === "snow" || tier === "rapper") {
         dollars = (rates.flower as any)?.[size]
+      } else if (tier === "thc-p") {
+        /* THC-P Flower rides its own bucket — see receiving-save.ts
+         * lookupShippingRate for the matching read path. */
+        dollars = rates.thcp_flower?.[tier]?.[size]
       } else {
         dollars = rates.preroll?.[tier]?.[size]
       }

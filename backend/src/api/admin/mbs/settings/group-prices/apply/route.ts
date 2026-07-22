@@ -33,18 +33,21 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
 type TierMap = Record<string, Record<string, number>>
 
 type GroupKey = "distro" | "tier_2" | "tier_3"
-type Scope = "flower" | "preroll"
+type Scope = "flower" | "preroll" | "thcp_flower"
 
 /* Group config — one row per supported customer-group pricing mode.
  * Settings keys are derived: <scope>_<key>_prices for tier_2/tier_3 and
  * flower_distro_prices / preroll_distro_prices for distro (keeps the
- * legacy key names so historical data doesn't need a migration). */
+ * legacy key names so historical data doesn't need a migration).
+ * THC-P Flower only supports distro today; tier_2/tier_3 keys are
+ * placeholders that read undefined and return a clear operator error. */
 const GROUPS: Record<GroupKey, {
   groupName: string
   priceListTitle: string
   description: string
   flowerSettingKey: string
   prerollSettingKey: string
+  thcpFlowerSettingKey: string
 }> = {
   distro: {
     groupName: "distro",
@@ -52,6 +55,7 @@ const GROUPS: Record<GroupKey, {
     description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
     flowerSettingKey: "flower_distro_prices",
     prerollSettingKey: "preroll_distro_prices",
+    thcpFlowerSettingKey: "thcp_flower_distro_prices",
   },
   tier_2: {
     groupName: "tier_2",
@@ -59,6 +63,9 @@ const GROUPS: Record<GroupKey, {
     description: "Tier 2 wholesale selling prices. Scoped to the `tier_2` customer group.",
     flowerSettingKey: "flower_tier_2_prices",
     prerollSettingKey: "preroll_tier_2_prices",
+    /* Not seeded — request returns "not configured" until an operator
+     * enables tier_2 pricing for THC-P Flower. */
+    thcpFlowerSettingKey: "thcp_flower_tier_2_prices",
   },
   tier_3: {
     groupName: "tier_3",
@@ -66,6 +73,7 @@ const GROUPS: Record<GroupKey, {
     description: "Tier 3 wholesale selling prices. Scoped to the `tier_3` customer group.",
     flowerSettingKey: "flower_tier_3_prices",
     prerollSettingKey: "preroll_tier_3_prices",
+    thcpFlowerSettingKey: "thcp_flower_tier_3_prices",
   },
 }
 
@@ -104,8 +112,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body ?? {}) as { scope?: Scope; group?: GroupKey }
   const scope = body.scope ?? "flower"
   const group = body.group ?? "distro"
-  if (scope !== "flower" && scope !== "preroll") {
-    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower" or "preroll"` })
+  if (scope !== "flower" && scope !== "preroll" && scope !== "thcp_flower") {
+    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower", "preroll", or "thcp_flower"` })
     return
   }
   const cfg = GROUPS[group]
@@ -114,7 +122,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  const settingKey = scope === "flower" ? cfg.flowerSettingKey : cfg.prerollSettingKey
+  const settingKey =
+    scope === "flower" ? cfg.flowerSettingKey
+    : scope === "preroll" ? cfg.prerollSettingKey
+    : cfg.thcpFlowerSettingKey
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({

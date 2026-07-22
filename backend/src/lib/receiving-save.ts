@@ -144,6 +144,10 @@ function asNumber(v: string | number | null | undefined): number | null {
 export type ShippingRates = {
   flower?: { qp?: number; half?: number; lb?: number }
   preroll?: Record<string, Record<string, number>>
+  /* THC-P Flower: same nesting as preroll (subcatKey → sizeKey → dollars).
+   * One cell today (thc-p → 8pk); shape allows future sizes without a
+   * settings migration. */
+  thcp_flower?: Record<string, Record<string, number>>
 }
 
 export type SaveContext = {
@@ -183,6 +187,12 @@ export function lookupShippingRate(
   if (!rates) return null
   if (tierKey === "classic" || tierKey === "exotic" || tierKey === "super" || tierKey === "snow" || tierKey === "rapper") {
     const r = (rates.flower as any)?.[sizeKey]
+    return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
+  }
+  if (tierKey === "thc-p") {
+    /* THC-P Flower rides its own bucket so THC-A flower rates (flat
+     * qp/half/lb) don't collide with THC-P's case-pack size key. */
+    const r = rates.thcp_flower?.[tierKey]?.[sizeKey]
     return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
   }
   const r = rates.preroll?.[tierKey]?.[sizeKey]

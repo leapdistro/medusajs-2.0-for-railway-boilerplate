@@ -23,12 +23,17 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
  * Variants that none of the three can resolve are SKIPPED — we don't
  * have enough info to price them, so leaving them alone is correct.
  *
- * Body: { scope: "flower" | "preroll" }
- *   - "flower":  reads flower_tier_prices, scoped to category handles
- *     matching its keys (classic / exotic / super / snow / rapper)
- *   - "preroll": reads pre_roll_tier_prices, scoped to anything else
- *     present in its key set (thc-a / hashholes / future subcategories
- *     added in Medusa admin — they auto-extend the scope)
+ * Body: { scope: "flower" | "preroll" | "thcp_flower" }
+ *   - "flower":       reads flower_tier_prices, scoped to category handles
+ *                     matching its keys (classic / exotic / super / snow / rapper)
+ *   - "preroll":      reads pre_roll_tier_prices, scoped to anything else
+ *                     present in its key set (thc-a / hashholes / future
+ *                     subcategories added in Medusa admin)
+ *   - "thcp_flower":  reads thcp_flower_prices, scoped to the "thc-p"
+ *                     category handle (single subcat, single 8pk variant).
+ *                     Rides its own scope because THC-P flower's key set
+ *                     ("thc-p") would collide with pre-roll variant sizes
+ *                     if shared.
  */
 
 type TierMap = Record<string, Record<string, number>>
@@ -68,14 +73,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const pricingService: any = req.scope.resolve(Modules.PRICING)
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  const body = (req.body ?? {}) as { scope?: "flower" | "preroll" }
+  const body = (req.body ?? {}) as { scope?: "flower" | "preroll" | "thcp_flower" }
   const scope = body.scope ?? "flower"
-  if (scope !== "flower" && scope !== "preroll") {
-    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower" or "preroll"` })
+  if (scope !== "flower" && scope !== "preroll" && scope !== "thcp_flower") {
+    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower", "preroll", or "thcp_flower"` })
     return
   }
 
-  const settingKey = scope === "flower" ? "flower_tier_prices" : "pre_roll_tier_prices"
+  const settingKey =
+    scope === "flower" ? "flower_tier_prices"
+    : scope === "preroll" ? "pre_roll_tier_prices"
+    : "thcp_flower_prices"
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({

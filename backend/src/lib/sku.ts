@@ -36,6 +36,28 @@ export function abbrev3(s: string | null | undefined): string {
 }
 
 /**
+ * Subcategory abbreviation overrides — collision-avoidance for
+ * subcategories whose generic first-3-alphanum collapse would produce
+ * the same key. Applied ONLY to the subcategory slot in generateSku;
+ * abbrev3 elsewhere (category, type) stays purely mechanical.
+ *
+ * Locked map:
+ *   THC-A → thc   (baseline; predates split, preserves legacy SKUs)
+ *   THC-P → thp   (added when Flower split into THC-A / THC-P;
+ *                  generic abbrev3 would produce "thc" and collide)
+ */
+const SUBCAT_ABBREV_OVERRIDES: Record<string, string> = {
+  "thc-p": "thp",
+}
+
+function subcatAbbrev(s: string | null | undefined): string {
+  const raw = (s ?? "").toLowerCase().trim()
+  const override = SUBCAT_ABBREV_OVERRIDES[raw]
+  if (override) return override
+  return abbrev3(raw)
+}
+
+/**
  * Split on word boundaries (whitespace, hyphens, underscores) and take
  * first 3 alphanumeric chars from each word, hyphenated.
  */
@@ -60,7 +82,7 @@ export function generateSku(parts: SkuParts): string {
   const segs: string[] = []
   const cat = abbrev3(parts.category)
   if (cat) segs.push(cat)
-  const sub = abbrev3(parts.subcategory)
+  const sub = subcatAbbrev(parts.subcategory)
   if (sub) segs.push(sub)
   if (parts.type) {
     const t = abbrev3(parts.type)

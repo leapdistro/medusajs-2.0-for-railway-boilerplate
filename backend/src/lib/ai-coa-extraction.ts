@@ -38,7 +38,20 @@ export type ExtractCoaResult = {
   error?: string
 }
 
-const PROMPT = `You are a precise data extractor for cannabis lab Certificate of Analysis (COA) PDFs. Extract the following from the attached PDF and return ONLY valid JSON matching this schema (no markdown code fences, no prose, no explanation):
+/** Primary cannabinoid the extractor should target. Drives rule 1 of the
+ *  prompt. THC-P Flower COAs report THCP where THC-A Flower COAs report
+ *  THCa; the extractor targets whichever the caller expects. Undefined
+ *  keeps the historical behavior (THCa-first with THC-P fallback). */
+export type PrimaryCannabinoid = "THC-A" | "THC-P"
+
+function buildPrompt(primary?: PrimaryCannabinoid): string {
+  const rule1 =
+    primary === "THC-P"
+      ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of THCP (tetrahydrocannabiphorol). Look for labels like "THCP", "THC-P", "Δ9-THCP", "THCPa". Return as a number only — no "%", no quotes. e.g. 3.24. If the COA reports both acid (THCPa) and neutral (THCP) forms, return the RAW acid value.`
+      : primary === "THC-A"
+      ? `1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).`
+      : `1. thcaPercent: the % weight of the PRIMARY compliance cannabinoid on this COA. Prefer THCa when present (labels: "THCa", "THC-A", "THCA", "Δ9-THCa"). If THCa is absent or below LOQ, use THCP instead (labels: "THCP", "THC-P", "Δ9-THCP", "THCPa"). Return as a number only — no "%", no quotes. If raw + decarbed values both appear, use RAW.`
+  return `You are a precise data extractor for cannabis lab Certificate of Analysis (COA) PDFs. Extract the following from the attached PDF and return ONLY valid JSON matching this schema (no markdown code fences, no prose, no explanation):
 
 {
   "thcaPercent": number|null,
@@ -48,12 +61,13 @@ const PROMPT = `You are a precise data extractor for cannabis lab Certificate of
 }
 
 Rules:
-1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).
-2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the THCa value alone. Return as number only.
+${rule1}
+2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the primary cannabinoid value alone. Return as number only.
 3. batchId: the lab's unique identifier for THIS test/sample. Look for labels like "Sample ID", "Sample #", "Sample No.", "Test ID", "Test #", "Batch ID", "Batch #", "Lab ID", "Report ID", "Order #", "Certificate #". Return the identifier exactly as printed, including any prefix/format (e.g. "S-12345", "1A4-N7-K2", "2024-0098-A"). Prefer the most specific test-level ID over a general report ID. Strip surrounding whitespace only. Return as a string.
 4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null. Do NOT guess. Do NOT return 0 or empty string for missing values.
-5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", or "Two IDs present (Sample + Order), used Sample". null if clean.
+5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", "Both THCa and THCP present, used THCa per rule", or "Two IDs present (Sample + Order), used Sample". null if clean.
 6. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
+}
 
 function extractJsonObject(text: string): string | null {
   const start = text.indexOf("{")
@@ -76,7 +90,10 @@ function extractJsonObject(text: string): string | null {
   return null
 }
 
-export async function extractCoa(pdfBytes: Buffer): Promise<ExtractCoaResult> {
+export async function extractCoa(
+  pdfBytes: Buffer,
+  primary?: PrimaryCannabinoid,
+): Promise<ExtractCoaResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return { ok: false, raw: "", inputTokens: 0, outputTokens: 0, error: "ANTHROPIC_API_KEY env var not set" }
@@ -99,7 +116,7 @@ export async function extractCoa(pdfBytes: Buffer): Promise<ExtractCoaResult> {
               type: "document",
               source: { type: "base64", media_type: "application/pdf", data: base64 },
             },
-            { type: "text", text: PROMPT },
+            { type: "text", text: buildPrompt(primary) },
           ],
         },
       ],

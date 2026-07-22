@@ -113,6 +113,14 @@ const DEFAULTS: Array<{
           "15pk": 30,
         },
       },
+      /* THC-P Flower: one variant (8-jar retail box). Keyed like preroll
+       * (subcatKey → sizeKey → dollars) even though there's only one
+       * cell today, so the shape can grow without a settings migration. */
+      thcp_flower: {
+        "thc-p": {
+          "8pk": 25,
+        },
+      },
     },
   },
   {
@@ -199,6 +207,20 @@ const DEFAULTS: Array<{
     value: {
       "thc-a":     { "30pk": 51 },
       "hashholes": { "15pk": 51 },
+    },
+  },
+  {
+    key: "thcp_flower_prices",
+    description: "Default selling prices for THC-P Flower variants (USD whole dollars). Case-pack model — 8-jar retail box, 3.5g per jar. Keyed (subcategory slug → variant sizeKey → dollars) mirroring pre_roll_tier_prices; single cell today (thc-p → 8pk) but the shape can grow without a settings migration.",
+    value: {
+      "thc-p": { "8pk": 90 },
+    },
+  },
+  {
+    key: "thcp_flower_distro_prices",
+    description: "Distro selling prices for THC-P Flower variants (USD whole dollars). Case-pack model. Keyed (subcategory slug → variant sizeKey → dollars). Scoped to the distro customer group via a Medusa PriceList.",
+    value: {
+      "thc-p": { "8pk": 72 },
     },
   },
 ]
