@@ -55,7 +55,19 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
    * to attach products anyway. */
   const merged: SubcategoryDef[] = children.map((cat) => {
     const profileMatch = profile.subcategories.find((s) => s.medusaName === cat.name)
-    if (profileMatch) return profileMatch
+    if (profileMatch) {
+      /* If the subcategory declares its own variants (pre-roll case
+       * where each subcat has different pack sizes), use those.
+       * Otherwise fall back to profile.variants — mirrors
+       * getVariantsForRow so the admin UI sees the same variant list
+       * receiving-save will use. Without this, THC-P Flower's single
+       * subcategory (which relies on profile.variants) came back with
+       * no variants and hung the settings + receiving admin. */
+      if (profileMatch.variants && profileMatch.variants.length > 0) {
+        return profileMatch
+      }
+      return { ...profileMatch, variants: profile.variants }
+    }
 
     /* Default derivation for unknown-to-profile categories. */
     const fromMeta = parseVariantsFromCategoryMetadata(cat.metadata)
