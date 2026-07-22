@@ -52,20 +52,28 @@ export default async function seedFlowerCannabinoidCats({ container }: ExecArgs)
     )
   }
 
-  /* Step 1 — ensure THC-A exists under Flower */
+  /* Step 1 — ensure THC-A exists under Flower.
+   *   Handle MUST be "flower-thc-a" (not "thc-a"): Medusa product_category
+   *   handles are globally unique, and Pre-Rolls > THC-A already owns
+   *   "thc-a". Since this THC-A intermediate node isn't user-clickable
+   *   (it's just a section header on /products/flower), the handle is
+   *   internal-only — code that walks the tree looks for it by handle
+   *   `flower-thc-a`. */
+  const THCA_HANDLE = "flower-thc-a"
   let thca = allCats.find((c) => c.name === "THC-A" && c.parent_category_id === flower.id)
   if (!thca) {
     const { result } = await createProductCategoriesWorkflow(container).run({
       input: {
         product_categories: [{
           name: "THC-A",
+          handle: THCA_HANDLE,
           is_active: true,
           parent_category_id: flower.id,
         }],
       },
     })
     thca = { id: result[0].id, name: "THC-A", parent_category_id: flower.id }
-    logger.info(`+ Flower > THC-A created (${thca.id})`)
+    logger.info(`+ Flower > THC-A created (${thca.id}, handle=${THCA_HANDLE})`)
   } else {
     logger.info(`· Flower > THC-A already exists (${thca.id})`)
   }
