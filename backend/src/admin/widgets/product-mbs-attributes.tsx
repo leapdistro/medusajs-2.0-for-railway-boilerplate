@@ -69,6 +69,22 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
+  /* Primary-cannabinoid label switch. Field is still `thca_percent` in
+   * the schema (not renamed to avoid a migration), but the operator-
+   * facing label + placeholder change based on the product's category
+   * assignment. THC-P Flower carries a "THC-P" category → label "THCp %".
+   * Everything else keeps "THCa %". Case-insensitive matches so operator
+   * casing quirks don't misfire. */
+  const isThcp = useMemo(() => {
+    const cats = (data as any)?.categories as Array<{ name?: string; handle?: string }> | undefined
+    return (cats ?? []).some(
+      (c) => (c?.handle ?? "").toLowerCase() === "thc-p"
+          || (c?.name ?? "").toLowerCase() === "thc-p",
+    )
+  }, [data])
+  const cannabinoidLabel = isThcp ? "THCp" : "THCa"
+  const cannabinoidPlaceholder = isThcp ? "3.5" : "26.4"
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -218,13 +234,13 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
           />
         </div>
         <div className="flex flex-col gap-y-2">
-          <Label size="small" weight="plus">THCa %</Label>
+          <Label size="small" weight="plus">{cannabinoidLabel} %</Label>
           <Input
             type="number"
             step="0.1"
             value={form.thca_percent}
             onChange={(e) => setForm({ ...form, thca_percent: e.target.value })}
-            placeholder="26.4"
+            placeholder={cannabinoidPlaceholder}
           />
         </div>
         <div className="flex flex-col gap-y-2">
