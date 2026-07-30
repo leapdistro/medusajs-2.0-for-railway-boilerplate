@@ -95,6 +95,15 @@ export type ReceivingProfile = {
   displayName: string
   /** Top-level Medusa product_category name (parent). Must already exist in catalog. */
   parentCategoryName: string
+  /** Optional: handle of an intermediate category whose *children* are the
+   *  subcategory list. When unset, the receiving profile endpoint
+   *  enumerates children of `parentCategoryName` directly. Set this when
+   *  the parent has intermediate nodes above the subcategories — e.g.
+   *  Flower splits into THC-A (intermediate) / THC-P / MOONROCKS, and
+   *  the tier ladder (Classic/Exotic/Super/Snowcaps/Rapper) lives under
+   *  the THC-A intermediate. Without this, unrelated Flower siblings
+   *  would leak into the tier dropdown. */
+  subcategoryParentHandle?: string
   /** Sub-categories the operator picks per row. Resolved to category IDs via Medusa query. */
   subcategories: SubcategoryDef[]
   /** Variant axis values. N variants get created per row, sharing one InventoryItem (pool). */
@@ -127,6 +136,11 @@ export const FLOWER_PROFILE: ReceivingProfile = {
   key: "flower",
   displayName: "Flower",
   parentCategoryName: "Flower",
+  /* Tier categories were reparented under an intermediate "THC-A" node
+   * by seed-flower-cannabinoid-cats.ts. Enumerate children of that node
+   * so unrelated Flower siblings (THC-P, MOONROCKS, …) don't leak into
+   * the tier dropdown. Handle set by the seed script. */
+  subcategoryParentHandle: "flower-thc-a",
   subcategories: [
     /* `medusaName` matches seed-flower-categories.ts. `snow` keeps the legacy
      * "Snowcaps" label so we don't create a duplicate category. */

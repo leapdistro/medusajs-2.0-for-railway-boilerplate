@@ -40,13 +40,18 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     fields: ["id", "name", "handle", "parent_category_id", "metadata"],
   })
   const cats = (allCats as Array<{ id: string; name: string; handle?: string; parent_category_id?: string | null; metadata?: any }>) ?? []
-  const parent = cats.find((c) => c.name === profile.parentCategoryName && !c.parent_category_id)
-  if (!parent) {
-    /* Parent category missing in Medusa — return profile config as-is.
+  /* Enumeration root: profile.subcategoryParentHandle wins when set (lets
+   * Flower enumerate under the "flower-thc-a" intermediate node). Else
+   * fall back to the top-level parent by name. */
+  const enumRoot = profile.subcategoryParentHandle
+    ? cats.find((c) => c.handle === profile.subcategoryParentHandle)
+    : cats.find((c) => c.name === profile.parentCategoryName && !c.parent_category_id)
+  if (!enumRoot) {
+    /* Enumeration root missing in Medusa — return profile config as-is.
      * Receiving save will throw with a clear seed-script error anyway. */
     return res.json({ profile, source: "profile-only" })
   }
-  const children = cats.filter((c) => c.parent_category_id === parent.id)
+  const children = cats.filter((c) => c.parent_category_id === enumRoot.id)
 
   /* Merge: live children drive the list; profile entries override
    * default derivations when names match. Profile-only entries (those
