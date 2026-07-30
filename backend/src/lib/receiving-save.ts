@@ -223,11 +223,14 @@ export async function buildSaveContext(
   }
 
   /* Look up each configured sub-category by name under the profile's
-   * parent category. Mirror of seed-*-categories.ts shape — parent
-   * row has no parent_category_id, children point to it via that id. */
+   * subcategory-enumeration root. Mirror of the profile endpoint at
+   * api/admin/receiving/profile/[key]/route.ts — when profile declares
+   * subcategoryParentHandle (Flower → "flower-thc-a" intermediate),
+   * subcategories live under that node; otherwise they're direct
+   * children of parentCategoryName. */
   const { data: allCats } = await query.graph({
     entity: "product_category",
-    fields: ["id", "name", "parent_category_id"],
+    fields: ["id", "name", "handle", "parent_category_id"],
   })
   const parentCat = (allCats as any[]).find(
     (c) => c.name === profile.parentCategoryName && !c.parent_category_id,
@@ -237,10 +240,18 @@ export async function buildSaveContext(
       `"${profile.parentCategoryName}" parent category missing. Run the matching seed script (e.g. \`pnpm seed:flower-categories\` or \`pnpm seed:preroll-categories\`) to create the category tree.`,
     )
   }
+  const enumRoot = profile.subcategoryParentHandle
+    ? (allCats as any[]).find((c) => c.handle === profile.subcategoryParentHandle)
+    : parentCat
+  if (!enumRoot) {
+    throw new Error(
+      `"${profile.parentCategoryName}" enumeration root (handle "${profile.subcategoryParentHandle}") missing. Run the matching seed script (e.g. \`pnpm seed:flower-cannabinoid-cats\`) to create the intermediate category.`,
+    )
+  }
   const subcategoryIds: Record<string, string> = {}
   for (const sub of profile.subcategories) {
     const cat = (allCats as any[]).find(
-      (c) => c.name === sub.medusaName && c.parent_category_id === parentCat.id,
+      (c) => c.name === sub.medusaName && c.parent_category_id === enumRoot.id,
     )
     if (!cat) {
       throw new Error(
