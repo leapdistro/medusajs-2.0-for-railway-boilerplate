@@ -39,7 +39,10 @@ const TABS = [
   { id: "owner_markup",            label: "Owner Markup"            },
   { id: "flower_distro_prices",    label: "Flower Distro Prices"    },
   { id: "preroll_distro_prices",   label: "Pre-Roll Distro Prices"  },
-  { id: "thcp_flower_prices",      label: "THC-P Flower"            },
+  /* THC-P Flower tab retired 2026-08 alongside the deactivated category.
+   * The thcp_flower_prices setting row lingers in the DB (settings key
+   * lookup by /store/mbs/tier-prices still tolerates its absence) but
+   * operators no longer see or edit it. */
   { id: "shipping_rates",          label: "Shipping Rates"          },
 ] as const
 type TabId = typeof TABS[number]["id"]
@@ -157,9 +160,6 @@ const MbsSettingsPage = () => {
             )}
             {tab === "preroll_distro_prices" && (
               <DistroPreRollPricesForm row={currentRow} onSaved={onSaved} />
-            )}
-            {tab === "thcp_flower_prices" && (
-              <ThcpFlowerPricesForm rows={rows} onSaved={onSaved} />
             )}
             {tab === "shipping_rates" && (
               <ShippingRatesForm row={currentRow} onSaved={onSaved} />
@@ -1050,180 +1050,18 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
   )
 }
 
-/* ───────────────────── THC-P Flower Prices ─────────────────────
- * Editor for THC-P Flower selling prices — Default + Distro only,
- * on a single tab. Each table has its own Save & Apply button that
- * writes the setting and propagates prices to matching variants
- * (via /tier-prices/apply for default, /group-prices/apply for
- * distro, both with scope="thcp_flower"). */
-type ThcpFlowerPrices = Record<string, Record<string, number>>
-const EMPTY_THCP_PRICES: ThcpFlowerPrices = {}
-
-const ThcpFlowerPricesForm = ({
-  rows,
-  onSaved,
-}: {
-  rows: Record<string, SettingRow>
-  onSaved: (r: SettingRow | null) => void
-}) => {
-  const [defaultV, setDefaultV] = useState<ThcpFlowerPrices>(EMPTY_THCP_PRICES)
-  const [distroV, setDistroV] = useState<ThcpFlowerPrices>(EMPTY_THCP_PRICES)
-  const [savingDefault, setSavingDefault] = useState(false)
-  const [savingDistro, setSavingDistro] = useState(false)
-  const [variants, setVariants] = useState<Array<{ sizeKey: string; label: string }>>([])
-  const [loadError, setLoadError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const d = rows["thcp_flower_prices"]?.value as ThcpFlowerPrices | undefined
-    const g = rows["thcp_flower_distro_prices"]?.value as ThcpFlowerPrices | undefined
-    if (d) setDefaultV({ ...d })
-    if (g) setDistroV({ ...g })
-  }, [rows])
-
-  /* Pull the current variant set from the receiving profile so the size
-   * columns stay in sync with FLOWER_THCP_PROFILE (single source of
-   * truth). If profile hasn't been seeded yet, show a clear error. */
-  useEffect(() => {
-    let cancelled = false
-    fetch("/admin/receiving/profile/flower-thc-p", { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((j: { profile?: { subcategories?: Array<{ key: string; variants?: Array<{ sizeKey: string; label: string }> }> } }) => {
-        if (cancelled) return
-        const thcp = (j.profile?.subcategories ?? []).find((s) => s.key === "thc-p")
-        setVariants(thcp?.variants ?? [])
-      })
-      .catch((e: any) => {
-        if (cancelled) return
-        setLoadError(`Could not load THC-P profile: ${e?.message}`)
-      })
-    return () => { cancelled = true }
-  }, [])
-
-  const setCell = (which: "default" | "distro", sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const n = parseFloat(e.target.value)
-    const setter = which === "default" ? setDefaultV : setDistroV
-    setter((p) => ({
-      ...p,
-      "thc-p": { ...(p["thc-p"] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
-    }))
-  }
-
-  const saveDefault = async () => {
-    setSavingDefault(true)
-    try {
-      const next = await saveSetting("thcp_flower_prices", defaultV)
-      onSaved(next)
-      /* Auto-Apply — write prices onto every matching variant.weight-price
-       * row so buyers outside a customer group see the new price. */
-      const res = await fetch("/admin/mbs/settings/tier-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "thcp_flower" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      toast.success(`Default prices saved · ${s.updated ?? 0} variants updated · ${s.skipped ?? 0} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Save failed")
-    } finally {
-      setSavingDefault(false)
-    }
-  }
-
-  const saveDistro = async () => {
-    setSavingDistro(true)
-    try {
-      const next = await saveSetting("thcp_flower_distro_prices", distroV)
-      onSaved(next)
-      const res = await fetch("/admin/mbs/settings/group-prices/apply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "thcp_flower", group: "distro" }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.message ?? `Apply failed (${res.status})`)
-      const s = body.summary ?? {}
-      const propagated = (s.added ?? 0) + (s.updated ?? 0)
-      toast.success(`Distro prices saved · ${propagated} propagated · ${s.skipped ?? 0} skipped`)
-    } catch (e: any) {
-      toast.error(e?.message ?? "Save failed")
-    } finally {
-      setSavingDistro(false)
-    }
-  }
-
-  const renderTable = (which: "default" | "distro", model: ThcpFlowerPrices) => (
-    <div className="border">
-      <div className={`grid grid-cols-${Math.max(2, variants.length + 1)} border-b`}>
-        <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Subcategory</div>
-        {variants.map((v) => (
-          <div key={v.sizeKey} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">
-            {v.label}
-          </div>
-        ))}
-      </div>
-      <div className={`grid grid-cols-${Math.max(2, variants.length + 1)}`}>
-        <div className="px-3 py-2 font-medium text-sm flex items-center">THC-P</div>
-        {variants.map((v) => (
-          <div key={v.sizeKey} className="p-1.5 flex items-center gap-1">
-            <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
-            <Input
-              type="number"
-              inputMode="decimal"
-              min={0}
-              step={1}
-              value={model["thc-p"]?.[v.sizeKey] || ""}
-              onChange={setCell(which, v.sizeKey)}
-              placeholder="0"
-              className="text-right"
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-
-  return (
-    <div className="flex flex-col gap-6 max-w-2xl">
-      <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for THC-P Flower (case-pack 8-jar retail box, 3.5g/jar). <strong>Default</strong> applies to every approved buyer. <strong>Distro</strong> is scoped to the <code>distro</code> customer group and rides a customer-group PriceList. Save on either table writes the setting and propagates matching variant prices automatically.
-      </Text>
-
-      {loadError ? (
-        <Text size="small" className="text-ui-fg-error">{loadError}</Text>
-      ) : variants.length === 0 ? (
-        <Text size="small" className="text-ui-fg-subtle">Loading THC-P profile…</Text>
-      ) : (
-        <>
-          <div>
-            <Heading level="h2" className="mb-2">Default Prices</Heading>
-            {renderTable("default", defaultV)}
-            <div className="flex items-center gap-3 pt-3">
-              <Button variant="primary" onClick={saveDefault} isLoading={savingDefault}>Save Default Prices</Button>
-            </div>
-          </div>
-
-          <div>
-            <Heading level="h2" className="mb-2">Distro Prices</Heading>
-            {renderTable("distro", distroV)}
-            <div className="flex items-center gap-3 pt-3">
-              <Button variant="primary" onClick={saveDistro} isLoading={savingDistro}>Save Distro Prices</Button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
+/* THC-P Flower Prices editor removed 2026-08 alongside the deactivated
+ * category — see git history for the last live version. The
+ * thcp_flower_prices / thcp_flower_distro_prices setting rows remain
+ * in the DB but are no longer edited from the admin UI. */
 
 /* ─────────────────────────── Shipping Rates ─────────────────────────── */
 type ShippingRates = {
   flower: { qp: number; half: number; lb: number }
   preroll: Record<string, Record<string, number>>
-  thcp_flower: Record<string, Record<string, number>>
+  /* thcp_flower field preserved for back-compat with historical
+   * settings rows — no longer surfaced in the UI. */
+  thcp_flower?: Record<string, Record<string, number>>
 }
 
 type PrerollSubcategoryRow = {
@@ -1283,17 +1121,6 @@ const ShippingRatesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Se
       preroll: {
         ...p.preroll,
         [subKey]: { ...(p.preroll[subKey] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
-      },
-    }))
-  }
-
-  const setThcpFlower = (sizeKey: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const n = parseFloat(e.target.value)
-    setV((p) => ({
-      ...p,
-      thcp_flower: {
-        ...p.thcp_flower,
-        "thc-p": { ...(p.thcp_flower["thc-p"] ?? {}), [sizeKey]: Number.isFinite(n) ? n : 0 },
       },
     }))
   }
@@ -1409,32 +1236,9 @@ const ShippingRatesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Se
         )}
       </div>
 
-      {/* THC-P Flower section — single subcat + single 8pk variant */}
-      <div>
-        <Heading level="h2" className="mb-2">THC-P Flower</Heading>
-        <div className="border">
-          <div className="grid grid-cols-2 border-b">
-            <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Subcategory</div>
-            <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">8-jar Box</div>
-          </div>
-          <div className="grid grid-cols-2">
-            <div className="px-3 py-2 font-medium text-sm flex items-center">THC-P</div>
-            <div className="p-1.5 flex items-center gap-1">
-              <Text size="xsmall" className="text-ui-fg-subtle">$</Text>
-              <Input
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step={1}
-                value={v.thcp_flower["thc-p"]?.["8pk"] || ""}
-                onChange={setThcpFlower("8pk")}
-                placeholder="0"
-                className="text-right"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* THC-P Flower shipping section removed 2026-08 alongside the
+          deactivated category. thcp_flower field on the settings row
+          preserved for back-compat with historical stored values. */}
 
       <div className="flex items-center gap-3 pt-2 border-t">
         <Button variant="primary" onClick={save} isLoading={saving}>Save Shipping Rates</Button>

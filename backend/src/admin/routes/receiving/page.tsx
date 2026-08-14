@@ -2007,9 +2007,10 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
 /* Cannabinoid switcher — the three tier-ladder branches share the
  * same form shape (5-tier ladder, QP/Half/LB variants, same fields).
  * Only the target profile, category, and tier-price settings key
- * differ per branch. THC-P (case-pack, no tier ladder) has a
- * fundamentally different shape and keeps its own route for now;
- * link out to it for discoverability. */
+ * differ per branch. THC-P was retired from the receiving flow
+ * (2026-08); the FLOWER_THCP_PROFILE config lingers so MBS Settings'
+ * THC-P history + variant lookup keeps working, but no operator can
+ * receive new THC-P inventory. */
 type Cannabinoid = "thc-a" | "cbd" | "cbg"
 const CANNABINOID_OPTIONS: Array<{ key: Cannabinoid; label: string; profileKey: string; settingsKey: string; draftKind: string }> = [
   { key: "thc-a", label: "THC-A", profileKey: "flower",     settingsKey: "flower_tier_prices", draftKind: "flower" },
@@ -2110,11 +2111,6 @@ const ReceivingPage = () => {
               {opt.label}
             </Button>
           ))}
-          {/* THC-P uses a different form shape (case-pack, no tier ladder)
-              and keeps its own route until full consolidation lands. */}
-          <a href="/app/receiving/flower-thc-p" className="ml-2 text-ui-fg-interactive text-sm underline">
-            THC-P →
-          </a>
         </div>
       </div>
       {extracted ? (
