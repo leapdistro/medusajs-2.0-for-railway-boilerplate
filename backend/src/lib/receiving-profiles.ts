@@ -133,6 +133,13 @@ export type ReceivingProfile = {
    *  (1 lb = 4 QPs). Pre-rolls: 1 (1 box = 1 box). Drives both the pool
    *  stocked-quantity write and the landed-cost-per-pool-unit math. */
   inputToPoolMultiplier: number
+  /** Optional intermediate name inserted into the QBO Category chain
+   *  between the parent (Flower) and the tier leaf (Classic). Split
+   *  cannabinoid branches so a CBD Classic product lands under
+   *  `Flower > CBD > Classic` in QBO instead of merging with THC-A's
+   *  `Flower > Classic`. Undefined = no intermediate (THC-A stays
+   *  `Flower > Classic` for back-compat with existing QBO Categories). */
+  qboCategoryBranch?: string
 }
 
 /* ─── Flower ─── */
@@ -293,16 +300,21 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   displayName: "Flower — CBD",
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbd",
+  qboCategoryBranch: "CBD",
   subcategories: [
-    /* Sub-category keys match category handles (cbd-classic etc.) so
-     * the receiving-save resolver finds them via handle lookup. medusaName
-     * is the display name — same "Classic"/"Exotic"/… label as THC-A
-     * because Medusa allows duplicate NAMES (only handles must be unique). */
-    { key: "cbd-classic",  medusaName: "Classic",  label: "Classic" },
-    { key: "cbd-exotic",   medusaName: "Exotic",   label: "Exotic" },
-    { key: "cbd-super",    medusaName: "Super",    label: "Super" },
-    { key: "cbd-snowcaps", medusaName: "Snowcaps", label: "Snowcaps" },
-    { key: "cbd-rapper",   medusaName: "Rapper",   label: "Rapper" },
+    /* Bare tier keys so the tier-price lookup (ctx.tierPrices[row.tier])
+     * hits the same shape used by THC-A's flower_tier_prices — CBD's
+     * flower_cbd_prices is keyed { classic, exotic, super, snow, rapper }.
+     * The subcategory NAMES are still "Classic"/"Exotic"/… (Medusa
+     * allows duplicate names; handles are the globally-unique piece,
+     * and CBD tier handles are cbd-classic / cbd-exotic / … per the
+     * seed). The (name === "Classic" AND parent === flower-cbd) join
+     * in buildSaveContext scopes the resolution to CBD's tier tree. */
+    { key: "classic",  medusaName: "Classic",  label: "Classic" },
+    { key: "exotic",   medusaName: "Exotic",   label: "Exotic" },
+    { key: "super",    medusaName: "Super",    label: "Super" },
+    { key: "snow",     medusaName: "Snowcaps", label: "Snowcaps" },
+    { key: "rapper",   medusaName: "Rapper",   label: "Rapper" },
   ],
   variants: [
     { sizeKey: "qp",   label: "QP", multiplier: 1, grams: 113 },
@@ -331,12 +343,14 @@ export const FLOWER_CBG_PROFILE: ReceivingProfile = {
   displayName: "Flower — CBG",
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbg",
+  qboCategoryBranch: "CBG",
   subcategories: [
-    { key: "cbg-classic",  medusaName: "Classic",  label: "Classic" },
-    { key: "cbg-exotic",   medusaName: "Exotic",   label: "Exotic" },
-    { key: "cbg-super",    medusaName: "Super",    label: "Super" },
-    { key: "cbg-snowcaps", medusaName: "Snowcaps", label: "Snowcaps" },
-    { key: "cbg-rapper",   medusaName: "Rapper",   label: "Rapper" },
+    /* Bare tier keys — see FLOWER_CBD_PROFILE.subcategories comment. */
+    { key: "classic",  medusaName: "Classic",  label: "Classic" },
+    { key: "exotic",   medusaName: "Exotic",   label: "Exotic" },
+    { key: "super",    medusaName: "Super",    label: "Super" },
+    { key: "snow",     medusaName: "Snowcaps", label: "Snowcaps" },
+    { key: "rapper",   medusaName: "Rapper",   label: "Rapper" },
   ],
   variants: [
     { sizeKey: "qp",   label: "QP", multiplier: 1, grams: 113 },

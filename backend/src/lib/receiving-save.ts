@@ -403,14 +403,21 @@ export async function saveOneRow(
   } catch { /* leave optional fields undefined */ }
 
   /* Category hierarchy for QBO Category mirroring. Profile gives us the
-   * parent name + subcategory medusaName. */
+   * parent name + optional branch intermediate + subcategory medusaName.
+   * Branch is only inserted when the profile declares qboCategoryBranch
+   * (CBD / CBG) — THC-A intentionally stays `Flower > Classic` (no
+   * intermediate) so existing QBO Categories keep matching after the
+   * CBD/CBG rollout. */
   let subcategoryMedusaName: string | undefined
   try {
     subcategoryMedusaName = getSubcategory(ctx.profile, row.tier).medusaName
   } catch { /* leave undefined */ }
+  const branchLevel: string[] = ctx.profile.qboCategoryBranch
+    ? [ctx.profile.qboCategoryBranch]
+    : []
   const categoryPath: string[] = subcategoryMedusaName
-    ? [ctx.profile.parentCategoryName, subcategoryMedusaName]
-    : [ctx.profile.parentCategoryName]
+    ? [ctx.profile.parentCategoryName, ...branchLevel, subcategoryMedusaName]
+    : [ctx.profile.parentCategoryName, ...branchLevel]
 
   const baseResult: SaveRowResult = {
     strainName: row.strainName,
