@@ -56,6 +56,13 @@ const THCP_FLOWER_KEY_BY_MODE: Record<string, string> = {
 const FLOWER_DEFAULT_KEY      = "flower_tier_prices"
 const PREROLL_DEFAULT_KEY     = "pre_roll_tier_prices"
 const THCP_FLOWER_DEFAULT_KEY = "thcp_flower_prices"
+/* CBD + CBG default price tables — visible to every approved buyer.
+ * No per-mode variants today (segmentation-first: the cbd_cbg customer
+ * group exists but doesn't override pricing until operator adds
+ * group-scoped tables). If we ever add cbd_cbg-mode overrides, wire a
+ * FLOWER_CBD_KEY_BY_MODE + FLOWER_CBG_KEY_BY_MODE map here. */
+const FLOWER_CBD_DEFAULT_KEY  = "flower_cbd_prices"
+const FLOWER_CBG_DEFAULT_KEY  = "flower_cbg_prices"
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
@@ -89,25 +96,34 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const thcpFlowerKey = THCP_FLOWER_KEY_BY_MODE[mode ?? ""] ?? THCP_FLOWER_DEFAULT_KEY
 
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const [flowerPrices, preRollPrices, thcpFlowerPrices] = await Promise.all([
+  const [flowerPrices, preRollPrices, thcpFlowerPrices, cbdFlowerPrices, cbgFlowerPrices] = await Promise.all([
     settings.getSetting(flowerKey).catch(() => null),
     settings.getSetting(prerollKey).catch(() => null),
     settings.getSetting(thcpFlowerKey).catch(() => null),
+    settings.getSetting(FLOWER_CBD_DEFAULT_KEY).catch(() => null),
+    settings.getSetting(FLOWER_CBG_DEFAULT_KEY).catch(() => null),
   ])
 
   return res.json({
     ok: true,
     /* Legacy field name — flower-only callers still read this. */
     tier_prices: flowerPrices ?? null,
-    /* Split shape for clarity at call sites. The three ladders have
-     * different keying (flower: tier × size; pre-roll + THC-P Flower:
-     * subcategory × size) so they're surfaced as separate top-level
-     * fields. */
+    /* Split shape for clarity at call sites. Every ladder is surfaced
+     * as its own top-level field. Flower branches (THC-A, CBD, CBG) key
+     * by (tier × size); THC-P + pre-roll key by (subcategory × size). */
     flower_tier_prices: flowerPrices ?? null,
     pre_roll_tier_prices: preRollPrices ?? null,
     thcp_flower_prices: thcpFlowerPrices ?? null,
+    flower_cbd_prices: cbdFlowerPrices ?? null,
+    flower_cbg_prices: cbgFlowerPrices ?? null,
     /* Echo back the resolved mode + source keys for debugging. */
     pricing_mode: mode ?? "default",
-    sources: { flower: flowerKey, preroll: prerollKey, thcp_flower: thcpFlowerKey },
+    sources: {
+      flower: flowerKey,
+      preroll: prerollKey,
+      thcp_flower: thcpFlowerKey,
+      flower_cbd: FLOWER_CBD_DEFAULT_KEY,
+      flower_cbg: FLOWER_CBG_DEFAULT_KEY,
+    },
   })
 }

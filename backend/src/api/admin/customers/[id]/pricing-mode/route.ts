@@ -3,7 +3,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 
 /**
  * POST /admin/customers/:id/pricing-mode
- *   { mode: "owner_stores" | "distro" | "tier_2" | "tier_3" | null }
+ *   { mode: "owner_stores" | "distro" | "tier_2" | "tier_3" | "cbd_cbg" | null }
  *
  * Sets (or clears) `customer.metadata.pricing_mode` AND keeps customer
  * group membership in sync. The metadata is what the admin widget
@@ -14,14 +14,17 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  * "distro"         → operator-set distro tier prices
  * "tier_2"/"tier_3"→ operator-set tier_2/tier_3 prices (from Flower /
  *                    Pre-Roll Tier Prices tabs)
+ * "cbd_cbg"        → dedicated CBD/CBG customers (segmentation-first;
+ *                    default CBD/CBG price tables apply, group can grow
+ *                    its own overrides via a PriceList later)
  * null/absent      → buyer pays default tier prices (everyone else)
  *
  * All pricing groups are mutually exclusive — picking one removes the
- * customer from the other three.
+ * customer from the other four.
  */
 
-const VALID_MODES = ["owner_stores", "distro", "tier_2", "tier_3"] as const
-const PRICING_GROUP_NAMES = ["owner_stores", "distro", "tier_2", "tier_3"] as const
+const VALID_MODES = ["owner_stores", "distro", "tier_2", "tier_3", "cbd_cbg"] as const
+const PRICING_GROUP_NAMES = ["owner_stores", "distro", "tier_2", "tier_3", "cbd_cbg"] as const
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)

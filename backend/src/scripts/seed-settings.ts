@@ -223,6 +223,28 @@ const DEFAULTS: Array<{
       "thc-p": { "8pk": 72 },
     },
   },
+  {
+    key: "flower_cbd_prices",
+    description: "Default selling prices for CBD Flower variants by tier × size (USD whole dollars). Keyed (tier slug → variant sizeKey → dollars). Full tier ladder (Classic → Rapper) mirroring flower_tier_prices; visible to every approved buyer. Optional group-scoped overrides can be added later for the cbd_cbg customer group.",
+    value: {
+      classic: { qp: 180, half: 320, lb:  560 },
+      exotic:  { qp: 220, half: 400, lb:  720 },
+      super:   { qp: 260, half: 480, lb:  880 },
+      snow:    { qp: 300, half: 560, lb: 1040 },
+      rapper:  { qp: 380, half: 720, lb: 1360 },
+    },
+  },
+  {
+    key: "flower_cbg_prices",
+    description: "Default selling prices for CBG Flower variants by tier × size (USD whole dollars). Keyed (tier slug → variant sizeKey → dollars). Full tier ladder (Classic → Rapper) mirroring flower_tier_prices; visible to every approved buyer. Optional group-scoped overrides can be added later for the cbd_cbg customer group.",
+    value: {
+      classic: { qp: 180, half: 320, lb:  560 },
+      exotic:  { qp: 220, half: 400, lb:  720 },
+      super:   { qp: 260, half: 480, lb:  880 },
+      snow:    { qp: 300, half: 560, lb: 1040 },
+      rapper:  { qp: 380, half: 720, lb: 1360 },
+    },
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {

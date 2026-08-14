@@ -18,6 +18,11 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
  *     MBS Settings → Flower/Pre-Roll Tier Prices alongside the default
  *     table. Mutually exclusive with each other and with distro /
  *     owner_stores.
+ *   - "cbd_cbg" — dedicated CBD/CBG buyer segment. Mutex with the
+ *     other 4 pricing modes. Default CBD/CBG price tables
+ *     (flower_cbd_prices / flower_cbg_prices) apply to any approved
+ *     buyer; this group exists so the operator can eventually attach
+ *     group-scoped PriceList overrides for CBD/CBG-heavy accounts.
  *
  * Run: pnpm seed:customer-groups
  */
@@ -28,7 +33,7 @@ export default async function seedCustomerGroups({ container }: ExecArgs) {
   const APPROVED_GROUP_NAME =
     (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
 
-  const groups = [APPROVED_GROUP_NAME, "owner_stores", "distro", "tier_2", "tier_3"]
+  const groups = [APPROVED_GROUP_NAME, "owner_stores", "distro", "tier_2", "tier_3", "cbd_cbg"]
 
   for (const name of groups) {
     const existing = await customerService.listCustomerGroups(

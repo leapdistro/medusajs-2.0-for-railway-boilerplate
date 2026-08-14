@@ -64,6 +64,15 @@ export type SaveRow = {
   coaOriginalName: string | null
   thcaPercent: string | null
   totalCannabinoidsPercent: string | null
+  /** Branch-specific cannabinoid % fields — populated when the receiving
+   *  profile is CBD / CBG / THC-P. Storefront adapter falls back to
+   *  thcaPercent for legacy records, so THC-A rows keep working
+   *  unchanged. d9Percent is optional across every branch (Texas
+   *  compliance formula input for CBD/CBG; informational for THC-A). */
+  cbdPercent?: string | null
+  cbgPercent?: string | null
+  thcpPercent?: string | null
+  d9Percent?: string | null
   /** Lab Sample/Test/Batch ID from the COA — printed on labels.
    *  Free-form text since lab formats vary. */
   batchId?: string | null
@@ -527,6 +536,10 @@ export async function saveOneRow(
         best_for: row.bestFor,
         effects: row.effects,
         thca_percent: row.thcaPercent,
+        cbd_percent: row.cbdPercent ?? null,
+        cbg_percent: row.cbgPercent ?? null,
+        thcp_percent: row.thcpPercent ?? null,
+        d9_percent: row.d9Percent ?? null,
         total_cannabinoids_percent: row.totalCannabinoidsPercent,
         coa_url: row.coaUrl,
         batch_id: row.batchId ?? null,
@@ -734,6 +747,10 @@ export async function saveOneRow(
       best_for: row.bestFor,
       effects: row.effects,
       thca_percent: row.thcaPercent,
+      cbd_percent: row.cbdPercent ?? null,
+      cbg_percent: row.cbgPercent ?? null,
+      thcp_percent: row.thcpPercent ?? null,
+      d9_percent: row.d9Percent ?? null,
       total_cannabinoids_percent: row.totalCannabinoidsPercent,
       coa_url: row.coaUrl,
       batch_id: row.batchId ?? null,

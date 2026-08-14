@@ -6,30 +6,49 @@ import {
 } from "@medusajs/medusa/core-flows"
 
 /**
- * Splits the Flower category into THC-A and THC-P branches.
+ * Splits the Flower category into THC-A, THC-P, CBD, and CBG branches.
  *
  * End state:
  *   Flower
- *     ├── THC-A
- *     │     ├── Classic
- *     │     ├── Exotic
- *     │     ├── Super
- *     │     ├── Snowcaps
- *     │     └── Rapper
- *     └── THC-P
+ *     ├── THC-A                (handle: flower-thc-a)
+ *     │     └── Classic / Exotic / Super / Snowcaps / Rapper
+ *     ├── THC-P                (leaf — case-pack branch, no tier ladder)
+ *     ├── CBD                  (handle: flower-cbd)   ← ADDED
+ *     │     └── Classic / Exotic / Super / Snowcaps / Rapper
+ *     │        (handles: cbd-classic / cbd-exotic / …)
+ *     └── CBG                  (handle: flower-cbg)   ← ADDED
+ *           └── Classic / Exotic / Super / Snowcaps / Rapper
+ *              (handles: cbg-classic / cbg-exotic / …)
  *
  * Operations (all idempotent — safe to re-run):
- *   1. Ensure THC-A exists under Flower.
+ *   1. Ensure THC-A intermediate exists under Flower.
  *   2. Reparent the 5 tier categories from Flower → THC-A.
- *   3. Ensure THC-P exists under Flower.
+ *   3. Ensure THC-P leaf exists under Flower.
+ *   4. Ensure CBD intermediate + its 5 tier children exist.
+ *   5. Ensure CBG intermediate + its 5 tier children exist.
  *
- * URLs stay flat on the storefront: /products/flower/<tier>/<handle>
- * continues to work; router aliases /flower/<tier> to /flower/thc-a/<tier>.
+ * Category HANDLES are globally unique in Medusa (product_category
+ * enforces this), so CBD/CBG tier children carry a branch prefix
+ * (cbd-classic, cbg-exotic, …). Category NAMES don't need to be
+ * unique — the storefront renders "Classic" under the "CBD" section
+ * header, disambiguating via parent context.
  *
  * Run: pnpm seed:flower-cannabinoid-cats
  */
 
 const TIER_NAMES = ["Classic", "Exotic", "Super", "Snowcaps", "Rapper"]
+
+/** Tier metadata keyed by handle suffix — drives sort order + tier_key on
+ *  each CBD/CBG tier category so the storefront's tier resolution and
+ *  home-page tile ordering match THC-A. tier_key here is what the
+ *  storefront's medusa-adapter reads first via metadata.tier_key. */
+const TIER_META: Array<{ name: string; handleSuffix: string; tierKey: string; sortOrder: number }> = [
+  { name: "Classic",  handleSuffix: "classic",  tierKey: "classic",  sortOrder: 10 },
+  { name: "Exotic",   handleSuffix: "exotic",   tierKey: "exotic",   sortOrder: 20 },
+  { name: "Super",    handleSuffix: "super",    tierKey: "super",    sortOrder: 30 },
+  { name: "Snowcaps", handleSuffix: "snowcaps", tierKey: "snow",     sortOrder: 40 },
+  { name: "Rapper",   handleSuffix: "rapper",   tierKey: "rapper",   sortOrder: 50 },
+]
 
 export default async function seedFlowerCannabinoidCats({ container }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
@@ -127,6 +146,75 @@ export default async function seedFlowerCannabinoidCats({ container }: ExecArgs)
   } else {
     logger.info(`· Flower > THC-P already exists (${thcp.id})`)
   }
+
+  /* Steps 4 + 5 — CBD + CBG branches, each with 5-tier children.
+   * Handles: intermediate = "flower-cbd" / "flower-cbg"; tier children =
+   * "cbd-<suffix>" / "cbg-<suffix>" (branch prefix required — Medusa
+   * category handles are globally unique and THC-A already claims bare
+   * "classic"/"exotic"/… handles). */
+  const ensureBranchWithTiers = async (
+    branchName: "CBD" | "CBG",
+    branchHandle: "flower-cbd" | "flower-cbg",
+    handlePrefix: "cbd" | "cbg",
+    branchSortOrder: number,
+  ) => {
+    allCats = await readAll()
+    let branch = allCats.find(
+      (c) => c.name === branchName && c.parent_category_id === flower.id,
+    )
+    if (!branch) {
+      const { result } = await createProductCategoriesWorkflow(container).run({
+        input: {
+          product_categories: [{
+            name: branchName,
+            handle: branchHandle,
+            is_active: true,
+            parent_category_id: flower.id,
+            metadata: { sortOrder: branchSortOrder },
+          }],
+        },
+      })
+      branch = { id: result[0].id, name: branchName, parent_category_id: flower.id }
+      logger.info(`+ Flower > ${branchName} created (${branch.id}, handle=${branchHandle})`)
+    } else {
+      logger.info(`· Flower > ${branchName} already exists (${branch.id})`)
+    }
+
+    allCats = await readAll()
+    let createdTiers = 0
+    for (const t of TIER_META) {
+      const tierHandle = `${handlePrefix}-${t.handleSuffix}`
+      /* Look up by handle (globally unique) — NOT by name, since "Classic"
+       * under CBD collides with "Classic" under THC-A on a name lookup. */
+      const existing = allCats.find((c) => (c as { handle?: string }).handle === tierHandle)
+      if (existing) {
+        logger.info(`  · ${branchName} > ${t.name} already exists (handle=${tierHandle})`)
+        continue
+      }
+      await createProductCategoriesWorkflow(container).run({
+        input: {
+          product_categories: [{
+            name: t.name,
+            handle: tierHandle,
+            is_active: true,
+            parent_category_id: branch.id,
+            metadata: {
+              /* tier_key drives the storefront's medusa-adapter tier
+               * resolution (preferred over handle-prefix stripping). */
+              tier_key: t.tierKey,
+              sortOrder: t.sortOrder,
+            },
+          }],
+        },
+      })
+      logger.info(`  + ${branchName} > ${t.name} created (handle=${tierHandle})`)
+      createdTiers += 1
+    }
+    logger.info(`  → ${branchName}: ${createdTiers} new tier(s) created`)
+  }
+
+  await ensureBranchWithTiers("CBD", "flower-cbd", "cbd", 70)
+  await ensureBranchWithTiers("CBG", "flower-cbg", "cbg", 80)
 
   logger.info("─────────────────────────────────")
   logger.info(`✓ Reparented ${reparented} tier categorie(s) under THC-A`)

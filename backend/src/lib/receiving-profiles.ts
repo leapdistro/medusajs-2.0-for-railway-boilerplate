@@ -19,7 +19,12 @@
  * config keeps the diff focused when adding the next category.
  */
 
-export type ProfileKey = "flower" | "pre-roll" | "flower-thc-p"
+export type ProfileKey =
+  | "flower"          // Flower — THC-A (tier ladder)
+  | "flower-cbd"      // Flower — CBD (tier ladder, mirrors THC-A)
+  | "flower-cbg"      // Flower — CBG (tier ladder, mirrors THC-A)
+  | "flower-thc-p"    // Flower — THC-P (case-pack, no tier ladder)
+  | "pre-roll"
 
 /** A variant axis value (one row in the review grid maps to N variants per profile). */
 export type VariantDef = {
@@ -275,12 +280,92 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
   inputToPoolMultiplier: 1,
 }
 
+/* ─── Flower — CBD ─── */
+
+/* Mirrors FLOWER_PROFILE structure — CBD carries the same 5-tier ladder
+ * (Classic → Rapper) and identical variant axes (QP / Half / LB). What
+ * differs vs THC-A: (a) subcategoryParentHandle points at flower-cbd,
+ * (b) subcategory keys carry the cbd- prefix so the storefront's
+ * medusa-adapter branch detection resolves correctly, (c) tier pricing
+ * lookup uses flower_cbd_prices instead of flower_tier_prices. */
+export const FLOWER_CBD_PROFILE: ReceivingProfile = {
+  key: "flower-cbd",
+  displayName: "Flower — CBD",
+  parentCategoryName: "Flower",
+  subcategoryParentHandle: "flower-cbd",
+  subcategories: [
+    /* Sub-category keys match category handles (cbd-classic etc.) so
+     * the receiving-save resolver finds them via handle lookup. medusaName
+     * is the display name — same "Classic"/"Exotic"/… label as THC-A
+     * because Medusa allows duplicate NAMES (only handles must be unique). */
+    { key: "cbd-classic",  medusaName: "Classic",  label: "Classic" },
+    { key: "cbd-exotic",   medusaName: "Exotic",   label: "Exotic" },
+    { key: "cbd-super",    medusaName: "Super",    label: "Super" },
+    { key: "cbd-snowcaps", medusaName: "Snowcaps", label: "Snowcaps" },
+    { key: "cbd-rapper",   medusaName: "Rapper",   label: "Rapper" },
+  ],
+  variants: [
+    { sizeKey: "qp",   label: "QP", multiplier: 1, grams: 113 },
+    { sizeKey: "half", label: "½",  multiplier: 2, grams: 227 },
+    { sizeKey: "lb",   label: "LB", multiplier: 4, grams: 454 },
+  ],
+  fields: {
+    strainType: true,
+    bestFor: true,
+    effects: true,
+    cannabinoids: true,
+    coaRequired: true,
+    upc: false,
+  },
+  pricingModel: "tier",
+  tierPricesSettingKey: "flower_cbd_prices",
+  unitLabel: { singular: "QP", plural: "QPs" },
+  inputUnitLabel: { singular: "lb", plural: "lbs" },
+  inputToPoolMultiplier: 4,
+}
+
+/* ─── Flower — CBG ─── */
+
+export const FLOWER_CBG_PROFILE: ReceivingProfile = {
+  key: "flower-cbg",
+  displayName: "Flower — CBG",
+  parentCategoryName: "Flower",
+  subcategoryParentHandle: "flower-cbg",
+  subcategories: [
+    { key: "cbg-classic",  medusaName: "Classic",  label: "Classic" },
+    { key: "cbg-exotic",   medusaName: "Exotic",   label: "Exotic" },
+    { key: "cbg-super",    medusaName: "Super",    label: "Super" },
+    { key: "cbg-snowcaps", medusaName: "Snowcaps", label: "Snowcaps" },
+    { key: "cbg-rapper",   medusaName: "Rapper",   label: "Rapper" },
+  ],
+  variants: [
+    { sizeKey: "qp",   label: "QP", multiplier: 1, grams: 113 },
+    { sizeKey: "half", label: "½",  multiplier: 2, grams: 227 },
+    { sizeKey: "lb",   label: "LB", multiplier: 4, grams: 454 },
+  ],
+  fields: {
+    strainType: true,
+    bestFor: true,
+    effects: true,
+    cannabinoids: true,
+    coaRequired: true,
+    upc: false,
+  },
+  pricingModel: "tier",
+  tierPricesSettingKey: "flower_cbg_prices",
+  unitLabel: { singular: "QP", plural: "QPs" },
+  inputUnitLabel: { singular: "lb", plural: "lbs" },
+  inputToPoolMultiplier: 4,
+}
+
 /* ─── Registry ─── */
 
 export const PROFILES: Record<ProfileKey, ReceivingProfile> = {
   flower: FLOWER_PROFILE,
-  "pre-roll": PREROLL_PROFILE,
+  "flower-cbd": FLOWER_CBD_PROFILE,
+  "flower-cbg": FLOWER_CBG_PROFILE,
   "flower-thc-p": FLOWER_THCP_PROFILE,
+  "pre-roll": PREROLL_PROFILE,
 }
 
 export function getProfile(key: ProfileKey): ReceivingProfile {

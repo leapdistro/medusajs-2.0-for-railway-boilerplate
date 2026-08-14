@@ -32,4 +32,14 @@ export const ProductAttributes = model.define("product_attributes", {
    * "Sample #2024-0098"). Printed on the wholesale label so buyers can
    * cross-reference the original COA. */
   batch_id: model.text().nullable(),
+  /* Per-cannabinoid % fields — populated by receiving based on the
+   * product's flower branch. Adapter falls back to thca_percent if the
+   * branch-specific field is null so legacy records keep displaying. All
+   * nullable — a THC-A product has no cbd_percent, and vice versa.
+   * d9_percent stays nullable for every branch (used by CBD/CBG Texas
+   * total-THC compliance line but also renderable on THC-A COAs). */
+  cbd_percent: model.text().nullable(),
+  cbg_percent: model.text().nullable(),
+  thcp_percent: model.text().nullable(),
+  d9_percent: model.text().nullable(),
 })
