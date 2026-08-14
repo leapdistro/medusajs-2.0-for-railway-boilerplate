@@ -577,6 +577,7 @@ export async function saveOneRow(
         inventoryItemId: firstInventoryId,
         baseSku: baseSku({
           category: ctx.profile.parentCategoryName,
+          branch: ctx.profile.qboCategoryBranch,
           subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
           type: row.strainType,
           strain: row.strainName,
@@ -598,6 +599,9 @@ export async function saveOneRow(
     const variantDefs = getVariantsForRow(ctx.profile, row.tier)
     const skuParts = {
       category: ctx.profile.parentCategoryName,
+      /* Injects "cbd"/"cbg" between cat-3 and subcat-3 for CBD/CBG
+       * profiles; undefined for THC-A so existing SKUs stay identical. */
+      branch: ctx.profile.qboCategoryBranch,
       subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
       type: row.strainType,
       strain: row.strainName,

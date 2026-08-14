@@ -1,12 +1,19 @@
 /**
  * SKU generation — single source of truth for the variant SKU pattern.
  *
- * Pattern (locked 2026-05-12):
+ * Pattern (locked 2026-05-12, branch slot added 2026-08):
  *
- *   <cat-3>-<subcat-3>-<type-3>?-<strain-abbrev>?-<size>
+ *   <cat-3>-<branch-3>?-<subcat-3>-<type-3>?-<strain-abbrev>?-<size>
  *
  *   cat-3      First 3 alphanumeric chars of the category name (Flower → flo,
  *              Pre-Rolls → pre, Drinks → dri).
+ *   branch-3   Optional cannabinoid branch (CBD → cbd, CBG → cbg). Inserted
+ *              only when the receiving profile declares qboCategoryBranch —
+ *              disambiguates CBD Classic Blue Dream from THC-A Classic Blue
+ *              Dream, which would otherwise generate the same SKU and
+ *              collide on the DB variant.sku unique constraint. THC-A
+ *              leaves it undefined so existing SKUs stay identical (no
+ *              migration).
  *   subcat-3   Same rule on the sub-category (Super → sup, THC-A → thc,
  *              Hashholes → has, Snowcaps → sno).
  *   type-3     First 3 chars of the strain type if applicable
@@ -23,6 +30,8 @@
  * Examples:
  *   flo-sup-hyb-pin-exp-qp                  — QP of Pineapple Express (Super, Hybrid)
  *   flo-cla-ind-gol-ros-run-half            — Half of Gold Rose Runtz (Classic, Indica)
+ *   flo-cbd-cla-hyb-blu-dre-qp              — QP of Blue Dream, CBD Classic (branch slot set)
+ *   flo-cbg-sup-ind-pur-kus-lb              — LB of Purple Kush, CBG Super
  *   pre-thc-sat-pin-exp-30pk                — 30-pack pre-rolls of Pineapple Express
  *   dri-sod-12oz                            — 12oz Soda (no type, no strain)
  *
@@ -72,6 +81,11 @@ export function strainAbbrev(strain: string | null | undefined): string {
 
 export type SkuParts = {
   category: string                        // top-level (Flower, Pre-Rolls, Drinks, ...)
+  /** Optional cannabinoid branch (CBD, CBG). Sourced from
+   *  ReceivingProfile.qboCategoryBranch — undefined for THC-A so
+   *  existing SKUs remain byte-identical. When set, injects a
+   *  branch-3 segment between the cat-3 and subcat-3 slots. */
+  branch?: string | null
   subcategory: string                     // tier or sub-category (Super, THC-A, Soda, ...)
   type?: string | null                    // Indica/Sativa/Hybrid, or null if N/A
   strain?: string | null                  // strain name, or null if N/A
@@ -82,6 +96,10 @@ export function generateSku(parts: SkuParts): string {
   const segs: string[] = []
   const cat = abbrev3(parts.category)
   if (cat) segs.push(cat)
+  if (parts.branch) {
+    const b = abbrev3(parts.branch)
+    if (b) segs.push(b)
+  }
   const sub = subcatAbbrev(parts.subcategory)
   if (sub) segs.push(sub)
   if (parts.type) {
