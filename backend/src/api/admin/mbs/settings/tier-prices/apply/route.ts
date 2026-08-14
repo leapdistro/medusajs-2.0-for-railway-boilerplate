@@ -23,7 +23,7 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
  * Variants that none of the three can resolve are SKIPPED — we don't
  * have enough info to price them, so leaving them alone is correct.
  *
- * Body: { scope: "flower" | "preroll" | "thcp_flower" }
+ * Body: { scope: "flower" | "preroll" | "thcp_flower" | "flower_cbd" | "flower_cbg" }
  *   - "flower":       reads flower_tier_prices, scoped to category handles
  *                     matching its keys (classic / exotic / super / snow / rapper)
  *   - "preroll":      reads pre_roll_tier_prices, scoped to anything else
@@ -34,6 +34,13 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
  *                     Rides its own scope because THC-P flower's key set
  *                     ("thc-p") would collide with pre-roll variant sizes
  *                     if shared.
+ *   - "flower_cbd":   reads flower_cbd_prices. Bare tier keys (classic /
+ *                     exotic / …) match CBD variant metadata.tier_key
+ *                     directly (Strategy 1). Strategy 2 category-handle
+ *                     match strips the branch prefix ("cbd-classic" →
+ *                     "classic") so variants without metadata still
+ *                     resolve. Same shape for "flower_cbg".
+ *   - "flower_cbg":   reads flower_cbg_prices; mirrors "flower_cbd".
  */
 
 type TierMap = Record<string, Record<string, number>>
@@ -73,17 +80,31 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const pricingService: any = req.scope.resolve(Modules.PRICING)
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  const body = (req.body ?? {}) as { scope?: "flower" | "preroll" | "thcp_flower" }
-  const scope = body.scope ?? "flower"
-  if (scope !== "flower" && scope !== "preroll" && scope !== "thcp_flower") {
-    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be "flower", "preroll", or "thcp_flower"` })
+  type Scope = "flower" | "preroll" | "thcp_flower" | "flower_cbd" | "flower_cbg"
+  const body = (req.body ?? {}) as { scope?: Scope }
+  const scope: Scope = body.scope ?? "flower"
+  const VALID_SCOPES: Scope[] = ["flower", "preroll", "thcp_flower", "flower_cbd", "flower_cbg"]
+  if (!VALID_SCOPES.includes(scope)) {
+    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be one of ${VALID_SCOPES.join(", ")}` })
     return
   }
 
   const settingKey =
     scope === "flower" ? "flower_tier_prices"
     : scope === "preroll" ? "pre_roll_tier_prices"
-    : "thcp_flower_prices"
+    : scope === "thcp_flower" ? "thcp_flower_prices"
+    : scope === "flower_cbd" ? "flower_cbd_prices"
+    : "flower_cbg_prices"
+
+  /* CBD/CBG variants live under prefixed category handles (cbd-classic,
+   * cbg-exotic) but the price map keys off the bare tier suffix
+   * (classic / exotic / …) to match receiving's tier_key metadata.
+   * Strategy 2 handle match needs to strip the prefix before checking
+   * validTierKeys membership. Non-CBD/CBG scopes pass through unchanged. */
+  const handlePrefix =
+    scope === "flower_cbd" ? "cbd-"
+    : scope === "flower_cbg" ? "cbg-"
+    : null
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({
@@ -133,9 +154,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     /* Strategy 2 + 3 — category handle + SKU/title size. */
     if (!tier || !size) {
       const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
-      const matchedCat = cats.find((c) => c?.handle && validTierKeys.has(String(c.handle)))
+      /* When scope prefixes handles (CBD/CBG), strip the prefix before
+       * membership check so "cbd-classic" resolves to bare "classic". */
+      const stripPrefix = (h: string) =>
+        handlePrefix && h.startsWith(handlePrefix) ? h.slice(handlePrefix.length) : h
+      const matchedCat = cats.find((c) => {
+        if (!c?.handle) return false
+        const bare = stripPrefix(String(c.handle))
+        return validTierKeys.has(bare)
+      })
       if (matchedCat?.handle) {
-        tier = String(matchedCat.handle)
+        tier = stripPrefix(String(matchedCat.handle))
         /* Try SKU first (more reliable when present), then variant title /
          * Size option value. */
         const validSizes = new Set(Object.keys(prices[tier] ?? {}))

@@ -39,6 +39,7 @@ const TABS = [
   { id: "owner_markup",            label: "Owner Markup"            },
   { id: "flower_distro_prices",    label: "Flower Distro Prices"    },
   { id: "preroll_distro_prices",   label: "Pre-Roll Distro Prices"  },
+  { id: "flower_cbd_cbg_prices",   label: "CBD / CBG Prices"        },
   /* THC-P Flower tab retired 2026-08 alongside the deactivated category.
    * The thcp_flower_prices setting row lingers in the DB (settings key
    * lookup by /store/mbs/tier-prices still tolerates its absence) but
@@ -160,6 +161,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "preroll_distro_prices" && (
               <DistroPreRollPricesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "flower_cbd_cbg_prices" && (
+              <CbdCbgPricesForm rows={rows} onSaved={onSaved} />
             )}
             {tab === "shipping_rates" && (
               <ShippingRatesForm row={currentRow} onSaved={onSaved} />
@@ -430,7 +434,7 @@ type Level = { key: string; title: string; settingKey: string; group: null | "ti
  * tier_3 → group-prices/apply (writes to customer-group-scoped PriceList).
  * Catches HTTP failures per-call so one bad level doesn't abort the
  * whole Save & Apply All. */
-async function applyLevel(lvl: Level, scope: "flower" | "preroll"): Promise<ApplyLevelResult> {
+async function applyLevel(lvl: Level, scope: "flower" | "preroll" | "flower_cbd" | "flower_cbg"): Promise<ApplyLevelResult> {
   const url = lvl.group
     ? "/admin/mbs/settings/group-prices/apply"
     : "/admin/mbs/settings/tier-prices/apply"
@@ -1054,6 +1058,142 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
  * category — see git history for the last live version. The
  * thcp_flower_prices / thcp_flower_distro_prices setting rows remain
  * in the DB but are no longer edited from the admin UI. */
+
+/* ─────────────────────────── CBD / CBG Prices ───────────────────────────
+ * Both branches carry the full 5-tier ladder and share the same variant
+ * shape as THC-A (QP / Half / LB), so the editor mirrors the Default
+ * table in FLOWER_LEVELS — stacked as two independent tables, one Save
+ * & Apply button. Auto-apply hits /tier-prices/apply with scope
+ * "flower_cbd" / "flower_cbg" — receiving-created variants resolve via
+ * metadata.tier_key (Strategy 1); category-handle Strategy 2 strips
+ * the branch prefix (cbd- / cbg-) before matching the bare tier keys.
+ *
+ * Distro / tier_2 / tier_3 group-scoped CBD/CBG tables intentionally
+ * skipped — the cbd_cbg customer group is segmentation-only today.
+ * Add group-scoped variants later if operator asks. */
+const CBD_CBG_LEVELS = [
+  { key: "cbd", title: "CBD Default Prices", settingKey: "flower_cbd_prices", scope: "flower_cbd" as const },
+  { key: "cbg", title: "CBG Default Prices", settingKey: "flower_cbg_prices", scope: "flower_cbg" as const },
+] as const
+
+const CbdCbgPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const [values, setValues] = useState<Record<string, TierPrices>>({
+    cbd: EMPTY_TIER_PRICES,
+    cbg: EMPTY_TIER_PRICES,
+  })
+  const [busy, setBusy] = useState(false)
+  const [confirmApply, setConfirmApply] = useState(false)
+
+  useEffect(() => {
+    setValues({
+      cbd: readTierPrices(rows["flower_cbd_prices"]),
+      cbg: readTierPrices(rows["flower_cbg_prices"]),
+    })
+  }, [rows])
+
+  const setCell = (levelKey: string, tier: TierKey, size: SizeKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = parseFloat(e.target.value)
+    setValues((prev) => ({
+      ...prev,
+      [levelKey]: {
+        ...prev[levelKey],
+        [tier]: { ...prev[levelKey][tier], [size]: Number.isFinite(n) ? n : 0 },
+      },
+    }))
+  }
+
+  const saveAndApply = async () => {
+    setBusy(true)
+    setConfirmApply(false)
+    try {
+      const saved = await Promise.all(
+        CBD_CBG_LEVELS.map((lvl) => saveSetting(lvl.settingKey, values[lvl.key])),
+      )
+      for (const row of saved) onSaved(row)
+
+      const results = await Promise.all(
+        CBD_CBG_LEVELS.map((lvl) =>
+          applyLevel(
+            { key: lvl.key, title: lvl.title, settingKey: lvl.settingKey, group: null },
+            lvl.scope,
+          ),
+        ),
+      )
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length === 0) {
+        const summary = results.map((r) => `${r.title}: ${r.propagated}↑ ${r.skipped}–`).join(" · ")
+        toast.success(`Saved & applied · ${summary}`)
+      } else {
+        const failedNames = failed.map((f) => f.title).join(", ")
+        toast.error(`Some applies failed: ${failedNames}. ${failed[0].error ?? ""}`)
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6 max-w-2xl">
+      <Text size="small" className="text-ui-fg-subtle">
+        Selling prices for CBD and CBG Flower variants (USD whole dollars). Both branches carry the same 5-tier ladder as THC-A. Every approved buyer sees these prices — the <code>cbd_cbg</code> customer group is segmentation-only today (no override PriceList). <em>Save &amp; Apply All</em> writes both settings and propagates prices to matching variants in one click.
+      </Text>
+
+      {CBD_CBG_LEVELS.map((lvl) => (
+        <div key={lvl.key} className="flex flex-col gap-2">
+          <Heading level="h3">{lvl.title}</Heading>
+          <div className="border">
+            <div className="grid grid-cols-4 border-b">
+              <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
+              {SIZE_ORDER.map((s) => (
+                <div key={s} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{SIZE_LABELS[s]}</div>
+              ))}
+            </div>
+            {TIER_ORDER.map((tier, idx) => (
+              <div key={tier} className={`grid grid-cols-4${idx < TIER_ORDER.length - 1 ? " border-b" : ""}`}>
+                <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
+                {SIZE_ORDER.map((size) => (
+                  <div key={size} className="p-1.5">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={1}
+                      value={values[lvl.key][tier][size] || ""}
+                      onChange={setCell(lvl.key, tier, size)}
+                      placeholder="0"
+                      className="text-right"
+                    />
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      <div className="flex items-center gap-3 pt-2 border-t">
+        <Button variant="primary" onClick={() => setConfirmApply(true)} isLoading={busy}>
+          Save &amp; Apply All
+        </Button>
+      </div>
+
+      {confirmApply && (
+        <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
+          <Text size="small" weight="plus">Save both tables and overwrite every matching CBD / CBG variant?</Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            Saves <strong>CBD Default</strong> and <strong>CBG Default</strong> settings, then propagates each to the variant&apos;s base USD price. Resolution walks variant metadata → category-handle (branch prefix stripped) → SKU / title size; unresolved variants are skipped. Per-variant manual edits in standard Medusa admin will be overwritten.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" onClick={saveAndApply} isLoading={busy}>Yes, Save &amp; Apply</Button>
+            <Button variant="secondary" onClick={() => setConfirmApply(false)} disabled={busy}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 /* ─────────────────────────── Shipping Rates ─────────────────────────── */
 type ShippingRates = {
