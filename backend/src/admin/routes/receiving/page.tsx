@@ -528,18 +528,12 @@ const ReviewView: React.FC<{
   onRestart: () => void
 }> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, cannabinoid, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
   /* Column label + save-payload field name for the primary cannabinoid
-   * percent. THC-A stays on thcaPercent (existing DB column); CBD/CBG
-   * route to their branch-specific columns added in the 2026-08 mbs-
-   * attributes migration. Server-side receiving-save reads whichever
-   * field is set. */
-  const cannabinoidPctLabel =
-      cannabinoid === "cbd" ? "CBD %"
-    : cannabinoid === "cbg" ? "CBG %"
-    :                          "THCa %"
-  const cannabinoidPctFieldName =
-      cannabinoid === "cbd" ? "cbdPercent"
-    : cannabinoid === "cbg" ? "cbgPercent"
-    :                          "thcaPercent"
+   * percent. CBD/CBG route to their branch-specific columns added in
+   * the 2026-08 mbs-attributes migration. Server-side receiving-save
+   * reads whichever field is set. (THC-A → thcaPercent path preserved
+   * in receiving-save.ts as safe dead code for reactivation.) */
+  const cannabinoidPctLabel = cannabinoid === "cbg" ? "CBG %" : "CBD %"
+  const cannabinoidPctFieldName = cannabinoid === "cbg" ? "cbgPercent" : "cbdPercent"
   /* Resizable spreadsheet columns — drag column edges to resize.
    * Widths persist per browser via localStorage. */
   const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(FLOWER_COLS_KEY, FLOWER_COL_DEFAULTS)
@@ -2004,22 +1998,25 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
  * Page shell
  * ========================================================= */
 
-/* Cannabinoid switcher — the three tier-ladder branches share the
- * same form shape (5-tier ladder, QP/Half/LB variants, same fields).
- * Only the target profile, category, and tier-price settings key
- * differ per branch. THC-P was retired from the receiving flow
- * (2026-08); the FLOWER_THCP_PROFILE config lingers so MBS Settings'
- * THC-P history + variant lookup keeps working, but no operator can
- * receive new THC-P inventory. */
-type Cannabinoid = "thc-a" | "cbd" | "cbg"
+/* Cannabinoid switcher — active tier-ladder branches share the same
+ * form shape (5-tier ladder, QP/Half/LB variants, same fields). Only
+ * the target profile, category, and tier-price settings key differ
+ * per branch.
+ *
+ * Retired from the receiving flow but preserved as safe dead code
+ * elsewhere (union member + FLOWER_PROFILE + settings rows):
+ *   - THC-P (2026-08, category deactivated in Medusa)
+ *   - THC-A (2026-08, pending Texas litigation — reactivating means
+ *     un-commenting the switcher entry below + un-deactivating the
+ *     flower-thc-a categories in Medusa). */
+type Cannabinoid = "cbd" | "cbg"
 const CANNABINOID_OPTIONS: Array<{ key: Cannabinoid; label: string; profileKey: string; settingsKey: string; draftKind: string }> = [
-  { key: "thc-a", label: "THC-A", profileKey: "flower",     settingsKey: "flower_tier_prices", draftKind: "flower" },
   { key: "cbd",   label: "CBD",   profileKey: "flower-cbd", settingsKey: "flower_cbd_prices",  draftKind: "flower-cbd" },
   { key: "cbg",   label: "CBG",   profileKey: "flower-cbg", settingsKey: "flower_cbg_prices",  draftKind: "flower-cbg" },
 ]
 
 const ReceivingPage = () => {
-  const [cannabinoid, setCannabinoid] = useState<Cannabinoid>("thc-a")
+  const [cannabinoid, setCannabinoid] = useState<Cannabinoid>("cbd")
   const cbdCfg = useMemo(
     () => CANNABINOID_OPTIONS.find((o) => o.key === cannabinoid) ?? CANNABINOID_OPTIONS[0],
     [cannabinoid],
