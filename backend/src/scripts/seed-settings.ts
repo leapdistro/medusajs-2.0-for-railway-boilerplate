@@ -245,6 +245,11 @@ const DEFAULTS: Array<{
       rapper:  { qp: 380, half: 720, lb: 1360 },
     },
   },
+  {
+    key: "product_line_audit",
+    description: "Audit log for product-line retire / reactivate actions. Append-only JSON array of entries (actor, action, branch, reason, notes, categoryIds, productIds, timestamp). Drives the /app/product-lines admin dashboard state pills + history table + supports precise reversal via captured productIds.",
+    value: [],
+  },
 ]
 
 export default async function seedSettings({ container }: ExecArgs) {
