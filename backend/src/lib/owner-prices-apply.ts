@@ -184,7 +184,22 @@ export async function applyOwnerPrices(
     const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
     if (typeof meta.size_key === "string") size = meta.size_key
     if (scope === "flower") {
-      inScope = cats.some((c) => c?.handle && FLOWER_TIER_KEYS.has(String(c.handle)))
+      /* Accept bare tier handles (THC-A: `classic`, `exotic`, …) AND
+       * branch-prefixed handles (`cbd-classic`, `cbg-exotic`, …). CBD +
+       * CBG share the flower Owner Stores markup + PriceList — the
+       * admin UI exposes a single `flower_owner_markup_per_qp` input,
+       * and each CBD/CBG variant carries `landed_per_qp` from its
+       * receiving profile identical to THC-A, so the math is uniform.
+       * Mirrors the prefix-strip pattern in tier-prices/apply. */
+      inScope = cats.some((c) => {
+        const h = String(c?.handle ?? "")
+        if (!h) return false
+        if (FLOWER_TIER_KEYS.has(h)) return true
+        for (const prefix of ["cbd-", "cbg-"]) {
+          if (h.startsWith(prefix) && FLOWER_TIER_KEYS.has(h.slice(prefix.length))) return true
+        }
+        return false
+      })
     } else {
       const matchedSize = size && validSizesSet.has(size)
       const skuSize = sizeFromSku(v.sku)

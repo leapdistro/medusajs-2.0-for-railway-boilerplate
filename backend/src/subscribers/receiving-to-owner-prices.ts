@@ -30,11 +30,17 @@ export default async function receivingToOwnerPrices({
     return
   }
 
-  /* Map receiving profile → owner-prices scope. flower=flower (1:1);
-   * pre-roll (with hyphen) → preroll (snake). Future profiles fall back
-   * to a soft no-op log. */
+  /* Map receiving profile → owner-prices scope. flower / flower-cbd /
+   * flower-cbg all resolve to the flower scope — they share the same
+   * markup + PriceList (see owner-prices-apply in-scope filter for the
+   * matching prefix-strip). pre-roll (with hyphen) → preroll (snake).
+   * flower-thc-p has no owner-prices mapping today (case-pack branch
+   * uses its own pricing model). Future profiles fall back to a soft
+   * no-op log. */
   const scope: "flower" | "preroll" | null =
     profileKey === "flower" ? "flower"
+    : profileKey === "flower-cbd" ? "flower"
+    : profileKey === "flower-cbg" ? "flower"
     : profileKey === "pre-roll" ? "preroll"
     : null
   if (!scope) {
