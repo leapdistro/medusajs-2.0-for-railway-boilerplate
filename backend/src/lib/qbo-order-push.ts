@@ -380,8 +380,19 @@ export async function pushOrderToQbo(
           ? [`${productName} · ${branchLabel} ${tierLabel}`]
           : []
         const acc = await getAccounts()
-        const invStartDate = String(order.created_at ?? "").slice(0, 10)
-          || new Date().toISOString().slice(0, 10)
+        /* Normalize order.created_at to ISO YYYY-MM-DD. query.graph
+         * returns it as a Date object; `String(dateObj).slice(0, 10)`
+         * yields the locale-format "Mon Aug 24" prefix which QBO
+         * rejects with a 6000 date-range validation error. Route
+         * through Date.toISOString() to guarantee ISO. */
+        const rawCreatedAt = order.created_at as unknown
+        const invStartDate = (() => {
+          try {
+            const d = rawCreatedAt instanceof Date ? rawCreatedAt : new Date(String(rawCreatedAt ?? ""))
+            if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+          } catch { /* fall through */ }
+          return new Date().toISOString().slice(0, 10)
+        })()
         const created = await findOrCreateItem(qbo, conn, productName, acc, {
           sku: baseSku,
           invStartDate,
