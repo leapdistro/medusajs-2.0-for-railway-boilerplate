@@ -520,6 +520,14 @@ export async function findOrCreateItem(
      *  category so an existing same-named item in a different category
      *  doesn't get incorrectly returned. */
     fallbackName?: string
+    /** Additional escalation names tried in order after `fallbackName` if
+     *  BOTH the primary and fallback names 6240 (duplicate). Motivation:
+     *  when new CBD branches share a strain name with legacy pre-split
+     *  items (e.g., "GODFATHER OG" as both `Flower:Super` legacy AND
+     *  `Flower:CBD:Super` new), the plain `· Super` suffix isn't
+     *  disambiguating enough. Callers pass progressively more-specific
+     *  suffixes like ["Godfather OG · Super", "Godfather OG · CBD Super"]. */
+    extraFallbackNames?: string[]
     sku?: string                        // QBO Item SKU (matches Medusa base SKU for cross-ref)
     purchaseCost?: number               // landed cost / QP (Cost field in QBO UI)
     salePrice?: number                  // selling price (Sales Price/Rate in QBO UI)
@@ -541,15 +549,54 @@ export async function findOrCreateItem(
   const query = `select * from Item where Name = '${safe}'`
   const found = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
   const candidates = (found?.QueryResponse?.Item ?? []) as any[]
-  /* When parentCategoryId is set (Items mapped to a QBO Category), only
-   * accept an existing item that lives under THAT category — otherwise
-   * a "Wedding Cake" in a different tier would be returned incorrectly.
-   * Without a parent constraint, accept any same-named item (legacy
-   * behavior). */
-  const existing = defaults?.parentCategoryId
-    ? candidates.find((c) => String(c?.ParentRef?.value ?? "") === defaults.parentCategoryId)
-    : candidates[0]
+  /* Two-step match filter:
+   *   1. When parentCategoryId is set, require the existing item live
+   *      under that exact QBO Category id — otherwise a "Wedding Cake"
+   *      in a different tier would be returned incorrectly. Without a
+   *      parent constraint, any same-named item is a candidate.
+   *   2. When defaults.sku is set, ALSO require the existing item's
+   *      Sku match (or be empty — treat empty as "can be reused"). This
+   *      catches the case where a legacy pre-branch item (e.g., pre-CBD
+   *      "Godfather OG" at Flower:Super with old SKU) sits at the SAME
+   *      parent as a new CBD receiving expects to reuse — same name +
+   *      same parent + DIFFERENT SKU means it's semantically a different
+   *      product. Returning it would silently associate the new
+   *      receiving's inventory with the legacy item, and later invoice
+   *      pushes that look up the NEW SKU would miss. Falling through to
+   *      the create + fallback-name path produces a distinct QBO item
+   *      with the correct SKU, keeping the two products decoupled. */
+  const parentMatches = defaults?.parentCategoryId
+    ? candidates.filter((c) => String(c?.ParentRef?.value ?? "") === defaults.parentCategoryId)
+    : candidates
+  const existing = defaults?.sku
+    ? parentMatches.find((c) => {
+        const existingSku = String(c?.Sku ?? "").trim()
+        return existingSku === "" || existingSku === defaults.sku
+      })
+    : parentMatches[0]
   if (existing) {
+    /* Backfill Sku when the existing item has none but we know the
+     * caller's SKU. Common with items created before we started
+     * stamping Sku, or items created manually in QBO. Skips when the
+     * SKUs already agree; the parent+sku filter above guarantees we
+     * never overwrite a different SKU. Best-effort — a failure here
+     * shouldn't block the Bill/Invoice push. */
+    const existingSku = String(existing?.Sku ?? "").trim()
+    if (defaults?.sku && existingSku === "" && existingSku !== defaults.sku) {
+      try {
+        await qboFetch(fresh, `/item`, {
+          method: "POST",
+          body: JSON.stringify({
+            Id: existing.Id,
+            SyncToken: existing.SyncToken,
+            sparse: true,
+            Sku: defaults.sku.slice(0, 100),
+          }),
+        })
+      } catch (e: any) {
+        console.warn(`[qbo] failed to backfill Sku on ${itemName}: ${e?.message}`)
+      }
+    }
     /* If the caller wants an earlier InvStartDate than the item already
      * has (e.g., a past-dated invoice for an item created today), push
      * a sparse update before returning. QBO will reject the Bill with
@@ -618,25 +665,37 @@ export async function findOrCreateItem(
   if (defaults?.purchaseDesc) body.PurchaseDesc = defaults.purchaseDesc
   if (defaults?.salesDesc) body.Description = defaults.salesDesc
 
-  let created
-  try {
-    created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
-  } catch (e: any) {
-    /* QBO rejects duplicate Item.Name globally (error code 6240 or
-     * generic "Duplicate Name Exists Error"). If the caller supplied a
-     * fallbackName (disambiguated form like "Wedding Cake · Rapper"),
-     * retry once with that name. This lets us TRY the clean strain
-     * name first and only fall back to the suffixed form when an item
-     * with the same strain exists in a different category. */
+  /* QBO rejects duplicate Item.Name globally (error code 6240 or
+   * generic "Duplicate Name Exists Error"). Escalate through the
+   * caller-supplied disambiguation ladder: primary → fallbackName →
+   * extraFallbackNames[…]. Each candidate is tried once; the first
+   * that returns a non-duplicate error path (success or a different
+   * error) wins. Any non-duplicate error is fatal — we only retry on
+   * name collisions. */
+  const isDuplicateErr = (e: any): boolean => {
     const msg = String(e?.message ?? "")
-    const isDuplicate = /duplicate name/i.test(msg) || /6240/.test(msg)
-    if (isDuplicate && defaults?.fallbackName && defaults.fallbackName !== itemName) {
-      body.Name = defaults.fallbackName
+    return /duplicate name/i.test(msg) || /6240/.test(msg)
+  }
+  const nameLadder: string[] = [
+    itemName,
+    ...(defaults?.fallbackName && defaults.fallbackName !== itemName ? [defaults.fallbackName] : []),
+    ...((defaults?.extraFallbackNames ?? []).filter((n) => n && n !== itemName && n !== defaults?.fallbackName)),
+  ]
+  let created: any
+  let lastErr: any
+  for (const candidateName of nameLadder) {
+    body.Name = candidateName
+    try {
       created = await qboFetch(fresh, `/item`, { method: "POST", body: JSON.stringify(body) })
-    } else {
-      throw e
+      lastErr = null
+      break
+    } catch (e: any) {
+      lastErr = e
+      if (isDuplicateErr(e)) continue // try next disambiguator
+      throw e                          // any other error is fatal
     }
   }
+  if (!created && lastErr) throw lastErr
   const item = created?.Item
   if (!item?.Id) throw new Error(`Item create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
   return { id: String(item.Id), name: item.Name, created: true }

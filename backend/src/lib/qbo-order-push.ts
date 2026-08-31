@@ -15,11 +15,13 @@ import {
   createPayment,
   findItemBySku,
   findOrCreateCustomer,
+  findOrCreateItem,
   findOrCreateServiceItem,
   findPaymentMethodIdByName,
   findQboTermIdByName,
   getDefaultAccounts,
   invoicePublicUrl,
+  resolveCategoryChain,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
 
@@ -82,6 +84,12 @@ export async function pushOrderToQbo(
       "items.variant.metadata",
       "items.variant.inventory_items.required_quantity",
       "items.variant.product.id",
+      /* product.categories drives QBO Item Category placement on
+       * lazy-create. Without these fields the walk falls back to
+       * root-level items (see the missing-item branch below). */
+      "items.variant.product.categories.id",
+      "items.variant.product.categories.name",
+      "items.variant.product.categories.parent_category_id",
       /* Fulfillment items drive the invoice quantity — wholesale model
        * is "ship what we have, refund the rest" so QBO invoice should
        * bill for fulfilled qty, not ordered qty. Sum per line below. */
@@ -196,10 +204,79 @@ export async function pushOrderToQbo(
   }
 
   /* 3. Map order lines to QBO Item lines. Variant SKU → base SKU →
-   *    QBO Item lookup. Any missing item halts the push so operator
-   *    can push a receiving (or manually create the QBO item) first. */
+   *    QBO Item lookup. Missing items get lazy-created inline via the
+   *    same findOrCreateItem call used by /admin/qbo/push-bill, so an
+   *    invoice can be pushed even when its products' receivings were
+   *    never posted to QBO (or the products were created outside the
+   *    receiving flow). Only when creation ALSO fails do we surface
+   *    MISSING_ITEM to the operator.
+   *
+   *    Design rationale: previous behavior coupled invoice push to a
+   *    manual per-receiving push step, so any gap in that workflow
+   *    (missed push, product created outside receiving, new SKU
+   *    branch) stalled invoicing with a message the operator couldn't
+   *    always act on quickly. findOrCreateItem is idempotent (find
+   *    first, create only if missing) so lazy-create is safe against
+   *    races between concurrent pushes. */
   const lines = []
   const missing: string[] = []
+
+  /* Memoized helpers used only when a missing item forces us to
+   * lazy-create. Amortize the QBO round-trips (accounts + full
+   * product_category tree) across all missing items in ONE push
+   * without paying the cost when every item already exists. */
+  let cachedAccounts: Awaited<ReturnType<typeof getDefaultAccounts>> | null = null
+  const getAccounts = async () => {
+    if (cachedAccounts) return cachedAccounts
+    cachedAccounts = await getDefaultAccounts(qbo, conn)
+    return cachedAccounts
+  }
+  let cachedCategoryMap: Map<string, { name: string; parent_category_id: string | null }> | null = null
+  const getCategoryMap = async () => {
+    if (cachedCategoryMap) return cachedCategoryMap
+    const { data: cats } = await query.graph({
+      entity: "product_category",
+      fields: ["id", "name", "parent_category_id"],
+    })
+    const m = new Map<string, { name: string; parent_category_id: string | null }>()
+    for (const c of (cats as any[])) {
+      m.set(String(c.id), {
+        name: String(c.name),
+        parent_category_id: c.parent_category_id ? String(c.parent_category_id) : null,
+      })
+    }
+    cachedCategoryMap = m
+    return m
+  }
+  /* Given a product's assigned categories, return the root→leaf name
+   * chain for the deepest branch (products are usually assigned to a
+   * leaf like `cbd-super`; walking parents yields `Flower > CBD > Super`).
+   * Cycle-guarded. */
+  const deepestCategoryChain = async (
+    assigned: Array<{ id: string; parent_category_id?: string | null }>,
+  ): Promise<string[]> => {
+    if (assigned.length === 0) return []
+    const map = await getCategoryMap()
+    const chainFor = (leafId: string): string[] => {
+      const names: string[] = []
+      const seen = new Set<string>()
+      let curId: string | null = leafId
+      while (curId && !seen.has(curId)) {
+        seen.add(curId)
+        const node = map.get(curId)
+        if (!node) break
+        names.unshift(node.name)
+        curId = node.parent_category_id
+      }
+      return names
+    }
+    let best: string[] = []
+    for (const c of assigned) {
+      const chain = chainFor(String(c.id))
+      if (chain.length > best.length) best = chain
+    }
+    return best
+  }
   /* Per-product cache of inputToPoolMultiplier (= max
    * required_quantity across the product's variants). Pre-populated via
    * a shallow `product` graph query: walking required_quantity through
@@ -258,10 +335,71 @@ export async function pushOrderToQbo(
       continue
     }
     const baseSku = baseFromVariantSku(vSku)
-    const found = await findItemBySku(qbo, conn, baseSku).catch(() => null)
+    let found = await findItemBySku(qbo, conn, baseSku).catch(() => null)
     if (!found) {
-      missing.push(`${item.product_title ?? item.title ?? "untitled"} (SKU ${baseSku})`)
-      continue
+      /* Lazy-create: no QBO Item for this SKU yet. Build one now using
+       * the same metadata push-bill would use — strain/product name,
+       * SKU, category chain (Flower > CBD > Super, etc.), and an
+       * InvStartDate <= the order date so the invoice doesn't get
+       * rejected as pre-dating the item. Cost fields intentionally
+       * omitted: the invoice line carries its own rate, and the next
+       * receiving Bill will post the real landed cost / COGS. If
+       * creation fails, fall through to MISSING_ITEM so the operator
+       * still gets a clear error. */
+      try {
+        const productName = (item.product_title ?? item.title ?? baseSku) as string
+        const assignedCats = ((item.variant?.product?.categories ?? []) as Array<{
+          id: string; parent_category_id?: string | null
+        }>)
+        const chain = await deepestCategoryChain(assignedCats)
+        let parentCategoryId: string | undefined
+        if (chain.length > 0) {
+          try {
+            parentCategoryId = await resolveCategoryChain(qbo, conn, chain)
+          } catch (e: any) {
+            /* Non-fatal — item still creates at QBO root; operator can
+             * re-parent manually if they care about organization. */
+            logger.warn(`[qbo-order-push] category resolve failed for ${baseSku}: ${e?.message}`)
+          }
+        }
+        /* Two-level disambiguation ladder for the QBO Name field:
+         *   1. bare productName  ("GODFATHER OG")
+         *   2. `${name} · ${tier}`  ("GODFATHER OG · Super") — matches
+         *      push-bill's fallback pattern; disambiguates from other
+         *      TIERS of the same strain.
+         *   3. `${name} · ${branch} ${tier}`  ("GODFATHER OG · CBD Super")
+         *      — disambiguates from PRE-CBD-SPLIT legacy items that share
+         *      the strain name but live at Flower:Super (e.g., the pre-
+         *      2026-07 flower tree). Without this level, lazy-create for
+         *      new CBD strains that collide with legacy names would fail
+         *      the fallback and bubble a MISSING_ITEM to the operator. */
+        const tierLabel  = chain.length >= 1 ? chain[chain.length - 1] : ""
+        const branchLabel = chain.length >= 3 ? chain[chain.length - 2] : "" // e.g., "CBD" in [Flower, CBD, Super]
+        const fallbackName = tierLabel ? `${productName} · ${tierLabel}` : undefined
+        const extraFallbackNames = (branchLabel && tierLabel)
+          ? [`${productName} · ${branchLabel} ${tierLabel}`]
+          : []
+        const acc = await getAccounts()
+        const invStartDate = String(order.created_at ?? "").slice(0, 10)
+          || new Date().toISOString().slice(0, 10)
+        const created = await findOrCreateItem(qbo, conn, productName, acc, {
+          sku: baseSku,
+          invStartDate,
+          parentCategoryId,
+          fallbackName,
+          extraFallbackNames,
+        })
+        found = { id: created.id, name: created.name }
+        logger.info(
+          `[qbo-order-push] lazy-created QBO Item ${created.id} "${created.name}" for ${productName} (SKU ${baseSku})${
+            created.created ? "" : " — found existing"
+          }`,
+        )
+      } catch (e: any) {
+        logger.warn(`[qbo-order-push] lazy-create failed for SKU ${baseSku}: ${e?.message}`)
+        missing.push(`${item.product_title ?? item.title ?? "untitled"} (SKU ${baseSku})`)
+        continue
+      }
     }
     /* Medusa v2 unit_price is already in source-currency dollars
      * (e.g., USD), not cents, and reflects the discounted/effective

@@ -45,8 +45,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const qbo: any = req.scope.resolve(QBO_CONNECTION_MODULE)
   const history: any = req.scope.resolve(RECEIVING_HISTORY_MODULE)
 
-  const body = (req.body ?? {}) as { historyId?: string }
+  const body = (req.body ?? {}) as { historyId?: string; force?: boolean }
   const historyId = body.historyId
+  const force = body.force === true
   if (!historyId) {
     return res.status(400).json({ ok: false, error: "historyId is required" })
   }
@@ -56,13 +57,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!record) {
     return res.status(404).json({ ok: false, error: `No receiving with id ${historyId}` })
   }
-  if (record.qbo_bill_id) {
+  if (record.qbo_bill_id && !force) {
     return res.status(409).json({
       ok: false,
       error: "Already pushed to QuickBooks",
       billId: record.qbo_bill_id,
       pushedAt: record.qbo_pushed_at,
     })
+  }
+  if (record.qbo_bill_id && force) {
+    /* Force re-push: previous Bill id/date get overwritten on success.
+     * Use when the original QBO Bill was deleted (or partially cleaned
+     * up) and the receiving needs to be re-posted so its Items + COGS
+     * exist in QBO again. findOrCreateItem is idempotent per Name +
+     * parent, so existing items are reused (no duplication); only
+     * missing items get created. */
+    logger.warn(
+      `[qbo/push-bill] FORCE re-push requested for receiving ${record.id} (was Bill ${record.qbo_bill_id}, pushed ${record.qbo_pushed_at}) — will overwrite on success`,
+    )
   }
 
   /* 2. Resolve the active QBO connection. */
@@ -141,6 +153,19 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
        * "Flower:Rapper:Wedding Cake · Rapper". */
       const primaryName = line.strainName
       const fallbackName = `${line.strainName} · ${tierLabel}`
+      /* Third-level disambiguation for NEW cannabinoid branches (CBD,
+       * CBG, THC-P) that share a strain name with legacy pre-split
+       * items at Flower:<Tier>. `${strain} · Super` collides with the
+       * old-tree item, so we escalate to `${strain} · CBD Super` etc.
+       * The branch label comes from categoryPath (second-to-last
+       * element in [Flower, CBD, Super]); empty for legacy 2-level
+       * paths like [Flower, Super]. */
+      const branchLabel = (line.categoryPath && line.categoryPath.length >= 3)
+        ? line.categoryPath[line.categoryPath.length - 2]
+        : ""
+      const extraFallbackNames = (branchLabel && tierLabel)
+        ? [`${line.strainName} · ${branchLabel} ${tierLabel}`]
+        : []
 
       /* QBO Item is tracked in INPUT units (lb for flower, box for
        * pre-rolls). Convert pool-unit qty/rate → input-unit before
@@ -175,6 +200,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
       const item = await findOrCreateItem(qbo, conn, primaryName, accounts, {
         fallbackName,
+        extraFallbackNames,
         sku: line.baseSku,
         purchaseCost: billRate,
         salePrice: sellPriceForDefault,
