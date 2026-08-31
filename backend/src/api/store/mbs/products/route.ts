@@ -40,6 +40,26 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
   if (statusParam !== "all") filters.status = statusParam
 
+  /* Hide products whose only category assignments are deactivated.
+   * query.graph doesn't mirror /store/products' automatic is_active
+   * filter — without this, deactivating (e.g.) `flower-thc-p` in
+   * admin leaves the linked products still `status: "published"` and
+   * they keep appearing in the storefront /products listing + search.
+   *
+   * Semantics: `categories: { is_active: true }` is a semi-join —
+   * returns products that have AT LEAST ONE active category, and
+   * scopes the joined `categories` array in the response to only
+   * active rows. A product in both an active and a deactivated
+   * category stays visible but its deactivated category is stripped
+   * from the payload, so the storefront adapter's derived category /
+   * handles reflect only the live assignments. Batch handle lookups
+   * (used by /account/orders for line-item availability) are
+   * exempted so archived-product PDPs and order history still
+   * resolve — availability logic downstream handles the "gone" case. */
+  if (!handleParam) {
+    filters.categories = { is_active: true }
+  }
+
   /* Resolve the authenticated customer (when present) so we can attach
    * a pricing context that Medusa's PriceList rules can evaluate. The
    * shape MUST be nested (not the flat `customer.groups.id` form) —
