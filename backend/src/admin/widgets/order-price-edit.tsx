@@ -32,7 +32,10 @@ type OrderLite = {
     variant_title?: string | null
     quantity?: number | { value?: string }
     raw_quantity?: number | { value?: string } | null
-    detail?: { quantity?: number | { value?: string } | null } | null
+    detail?: {
+      quantity?: number | { value?: string } | null
+      unit_price?: number | string | { value?: string } | null
+    } | null
     unit_price?: number | string | { value?: string }
   }>
   fulfillments?: Array<{ id: string; canceled_at?: string | null }>
@@ -58,6 +61,21 @@ const resolveQty = (item: NonNullable<OrderLite["items"]>[number]): number => {
   if (dq > 0) return dq
   return toNumber(item.raw_quantity)
 }
+/* Prefer the versioned projection (order_item.detail.unit_price)
+ * over the base line_item.unit_price. Medusa's order-edit workflow
+ * writes the new price to the versioned projection; the base
+ * line_item.unit_price stays at the original checkout value, so
+ * reading it directly would always show the OLD price after an edit.
+ * Falls back to items.unit_price for orders that haven't been
+ * edited yet (detail.unit_price is null on version 1). */
+const resolveUnitPrice = (item: NonNullable<OrderLite["items"]>[number]): number => {
+  const versioned = item.detail?.unit_price
+  if (versioned != null) {
+    const n = toNumber(versioned)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return toNumber(item.unit_price)
+}
 const fmtUsd = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n)
 
@@ -70,7 +88,7 @@ const OrderPriceEditWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
     if (!data?.id) return
     try {
       const res = await fetch(
-        `/admin/orders/${data.id}?fields=id,customer_id,metadata,items.id,items.product_title,items.title,items.variant_title,items.quantity,items.raw_quantity,items.detail.quantity,items.unit_price,fulfillments.id,fulfillments.canceled_at,payment_collections.payments.id,payment_collections.payments.captured_at,payment_collections.payments.canceled_at`,
+        `/admin/orders/${data.id}?fields=id,customer_id,metadata,items.id,items.product_title,items.title,items.variant_title,items.quantity,items.raw_quantity,items.detail.quantity,items.detail.unit_price,items.unit_price,fulfillments.id,fulfillments.canceled_at,payment_collections.payments.id,payment_collections.payments.captured_at,payment_collections.payments.canceled_at`,
         { credentials: "include" },
       )
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -152,7 +170,7 @@ const LineRow = ({
   disabledReason: string
   onSaved: () => void
 }) => {
-  const currentPrice = toNumber(item.unit_price)
+  const currentPrice = resolveUnitPrice(item)
   const quantity = resolveQty(item)
   const [value, setValue] = useState(currentPrice.toString())
   const [busy, setBusy] = useState(false)

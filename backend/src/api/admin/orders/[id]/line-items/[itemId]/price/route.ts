@@ -56,16 +56,20 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   /* Load order with everything we need for guard checks + audit.
-   * items.quantity can be zeroed after fulfillment cancellation;
-   * items.raw_quantity and items.detail.quantity retain the ordered
-   * qty. Read all three and pick the first that resolves — same
-   * pattern qbo-order-push uses (see items-quantity comment there). */
+   *   - items.quantity can be zeroed after fulfillment cancellation;
+   *     items.raw_quantity + items.detail.quantity retain the ordered
+   *     qty (same pattern qbo-order-push uses).
+   *   - items.unit_price returns the base order_line_item value,
+   *     which STAYS at the checkout price after order edits.
+   *     items.detail.unit_price is the versioned projection that
+   *     reflects the latest edit — read it first, fall back to
+   *     items.unit_price for orders that have never been edited. */
   const { data: orders } = await query.graph({
     entity: "order",
     fields: [
       "id", "customer_id", "metadata",
       "items.id", "items.quantity", "items.raw_quantity", "items.detail.quantity",
-      "items.unit_price", "items.product_title",
+      "items.unit_price", "items.detail.unit_price", "items.product_title",
       "fulfillments.id", "fulfillments.canceled_at",
       "payment_collections.payments.id",
       "payment_collections.payments.provider_id",
@@ -121,7 +125,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     })
   }
 
-  const originalPrice = Number(line.unit_price ?? 0)
+  /* Versioned unit_price (order_item.detail.unit_price) wins; base
+   * line_item.unit_price is the checkout snapshot and doesn't update
+   * on edits. Handle both wrapped ({value:string}) and unwrapped
+   * numeric shapes from query.graph. */
+  const readPrice = (v: unknown): number => {
+    if (v == null) return NaN
+    if (typeof v === "number") return v
+    if (typeof v === "string") return Number(v)
+    if (typeof v === "object" && v !== null && "value" in v) return Number((v as any).value)
+    return Number(v)
+  }
+  const versionedPrice = readPrice(line.detail?.unit_price)
+  const originalPrice = Number.isFinite(versionedPrice) && versionedPrice >= 0
+    ? versionedPrice
+    : readPrice(line.unit_price)
   /* Resolve quantity from multiple sources — items.quantity zeroes
    * after a fulfillment cancel, raw_quantity + detail.quantity retain
    * the original ordered qty. */
