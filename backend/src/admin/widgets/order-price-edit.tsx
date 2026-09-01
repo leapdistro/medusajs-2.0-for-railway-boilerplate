@@ -31,6 +31,8 @@ type OrderLite = {
     title?: string | null
     variant_title?: string | null
     quantity?: number | { value?: string }
+    raw_quantity?: number | { value?: string } | null
+    detail?: { quantity?: number | { value?: string } | null } | null
     unit_price?: number | string | { value?: string }
   }>
   fulfillments?: Array<{ id: string; canceled_at?: string | null }>
@@ -46,6 +48,16 @@ const toNumber = (v: any): number => {
   if (typeof v === "object" && "value" in v) return Number(v.value)
   return Number(v)
 }
+/* Same fallback ladder the backend uses — items.quantity zeroes after
+ * a fulfillment cancel, but raw_quantity / detail.quantity retain
+ * the original ordered count. */
+const resolveQty = (item: NonNullable<OrderLite["items"]>[number]): number => {
+  const q = toNumber(item.quantity)
+  if (q > 0) return q
+  const dq = toNumber(item.detail?.quantity)
+  if (dq > 0) return dq
+  return toNumber(item.raw_quantity)
+}
 const fmtUsd = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n)
 
@@ -58,7 +70,7 @@ const OrderPriceEditWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
     if (!data?.id) return
     try {
       const res = await fetch(
-        `/admin/orders/${data.id}?fields=id,customer_id,metadata,items.id,items.product_title,items.title,items.variant_title,items.quantity,items.unit_price,fulfillments.id,fulfillments.canceled_at,payment_collections.payments.id,payment_collections.payments.captured_at,payment_collections.payments.canceled_at`,
+        `/admin/orders/${data.id}?fields=id,customer_id,metadata,items.id,items.product_title,items.title,items.variant_title,items.quantity,items.raw_quantity,items.detail.quantity,items.unit_price,fulfillments.id,fulfillments.canceled_at,payment_collections.payments.id,payment_collections.payments.captured_at,payment_collections.payments.canceled_at`,
         { credentials: "include" },
       )
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -141,7 +153,7 @@ const LineRow = ({
   onSaved: () => void
 }) => {
   const currentPrice = toNumber(item.unit_price)
-  const quantity = toNumber(item.quantity)
+  const quantity = resolveQty(item)
   const [value, setValue] = useState(currentPrice.toString())
   const [busy, setBusy] = useState(false)
   useEffect(() => { setValue(currentPrice.toString()) }, [currentPrice])
@@ -222,7 +234,11 @@ const LineRow = ({
 }
 
 export const config = defineWidgetConfig({
-  zone: "order.details.before",
+  /* Renders in the right-hand sidebar under Summary (Medusa admin
+   * order detail is a two-column layout: items on the left, Summary
+   * + Customer + Notes on the right). Sits below Summary so operators
+   * see the current totals next to the editable prices. */
+  zone: "order.details.side.after",
 })
 
 export default OrderPriceEditWidget

@@ -55,12 +55,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(400).json({ ok: false, message: "unit_price must be a non-negative number" })
   }
 
-  /* Load order with everything we need for guard checks + audit. */
+  /* Load order with everything we need for guard checks + audit.
+   * items.quantity can be zeroed after fulfillment cancellation;
+   * items.raw_quantity and items.detail.quantity retain the ordered
+   * qty. Read all three and pick the first that resolves — same
+   * pattern qbo-order-push uses (see items-quantity comment there). */
   const { data: orders } = await query.graph({
     entity: "order",
     fields: [
       "id", "customer_id", "metadata",
-      "items.id", "items.quantity", "items.unit_price", "items.product_title",
+      "items.id", "items.quantity", "items.raw_quantity", "items.detail.quantity",
+      "items.unit_price", "items.product_title",
       "fulfillments.id", "fulfillments.canceled_at",
       "payment_collections.payments.id",
       "payment_collections.payments.provider_id",
@@ -117,11 +122,22 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   const originalPrice = Number(line.unit_price ?? 0)
-  const quantity = Number(line.quantity ?? 0)
+  /* Resolve quantity from multiple sources — items.quantity zeroes
+   * after a fulfillment cancel, raw_quantity + detail.quantity retain
+   * the original ordered qty. */
+  const rawQtyValue = (line.raw_quantity && typeof line.raw_quantity === "object")
+    ? (line.raw_quantity as any).value
+    : line.raw_quantity
+  const quantity = Number(
+    (Number(line.quantity) > 0 ? line.quantity : null)
+    ?? (line.detail?.quantity ?? null)
+    ?? (rawQtyValue ?? null)
+    ?? 0,
+  )
   if (!Number.isFinite(quantity) || quantity <= 0) {
     return res.status(400).json({
       ok: false,
-      message: `Line item ${itemId} has invalid quantity (${quantity})`,
+      message: `Line item ${itemId} has invalid quantity (${quantity}) — could not resolve from items.quantity, raw_quantity, or detail.quantity`,
     })
   }
 
