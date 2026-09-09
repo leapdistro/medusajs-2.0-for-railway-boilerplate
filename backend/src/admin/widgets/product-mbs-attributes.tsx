@@ -45,7 +45,11 @@ type Form = {
   strain_type: string
   best_for: string
   potency: string
-  thca_percent: string
+  /* Primary-cannabinoid %, held in whichever schema column matches the
+   * product's flower branch (see FLOWER_BRANCHES). One form field, one
+   * column — never both, so editing here can't leave two columns
+   * disagreeing about the same number. */
+  primary_percent: string
   total_cannabinoids_percent: string
   effects: string[]
   coa_url: string
@@ -56,11 +60,48 @@ const EMPTY_FORM: Form = {
   strain_type: "",
   best_for: "",
   potency: "",
-  thca_percent: "",
+  primary_percent: "",
   total_cannabinoids_percent: "",
   effects: [],
   coa_url: "",
   batch_id: "",
+}
+
+/* Flower branch → the attribute column that holds its headline compound.
+ * Detection mirrors the storefront adapter's deriveFlowerType so admin and
+ * storefront never disagree about which number a product displays: CBD
+ * products carry `flower-cbd` or a `cbd-<tier>` sub-category handle, CBG
+ * the same with cbg, THC-P a "thc-p" category. Anything else is THC-A.
+ *
+ * Before this existed the widget always read and wrote `thca_percent`, so
+ * a CBD product's real value (in cbd_percent) was invisible here and an
+ * operator had no way to correct a bad receiving extraction. */
+type FlowerBranch = {
+  match: (handle: string, name: string) => boolean
+  field: "cbd_percent" | "cbg_percent" | "thcp_percent" | "thca_percent"
+  label: string
+  placeholder: string
+}
+
+const FLOWER_BRANCHES: FlowerBranch[] = [
+  {
+    match: (handle, name) => handle === "thc-p" || name === "thc-p",
+    field: "thcp_percent", label: "THCp", placeholder: "3.5",
+  },
+  {
+    match: (handle, name) =>
+      handle === "flower-cbd" || handle.startsWith("flower-cbd-") || handle.startsWith("cbd-") || name === "cbd",
+    field: "cbd_percent", label: "CBD", placeholder: "18.4",
+  },
+  {
+    match: (handle, name) =>
+      handle === "flower-cbg" || handle.startsWith("flower-cbg-") || handle.startsWith("cbg-") || name === "cbg",
+    field: "cbg_percent", label: "CBG", placeholder: "14.1",
+  },
+]
+
+const THCA_BRANCH: FlowerBranch = {
+  match: () => true, field: "thca_percent", label: "THCa", placeholder: "26.4",
 }
 
 const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) => {
@@ -69,21 +110,23 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  /* Primary-cannabinoid label switch. Field is still `thca_percent` in
-   * the schema (not renamed to avoid a migration), but the operator-
-   * facing label + placeholder change based on the product's category
-   * assignment. THC-P Flower carries a "THC-P" category → label "THCp %".
-   * Everything else keeps "THCa %". Case-insensitive matches so operator
-   * casing quirks don't misfire. */
-  const isThcp = useMemo(() => {
+  /* Resolve the product's flower branch once — it picks the operator-
+   * facing label AND the schema column the percent is read from and
+   * written back to. Case-insensitive matches so operator casing quirks
+   * don't misfire. */
+  const branch = useMemo(() => {
     const cats = (data as any)?.categories as Array<{ name?: string; handle?: string }> | undefined
-    return (cats ?? []).some(
-      (c) => (c?.handle ?? "").toLowerCase() === "thc-p"
-          || (c?.name ?? "").toLowerCase() === "thc-p",
-    )
+    const norm = (v: string | undefined) => (v ?? "").trim().toLowerCase()
+    for (const c of cats ?? []) {
+      const handle = norm(c?.handle)
+      const name = norm(c?.name)
+      const hit = FLOWER_BRANCHES.find((b) => b.match(handle, name))
+      if (hit) return hit
+    }
+    return THCA_BRANCH
   }, [data])
-  const cannabinoidLabel = isThcp ? "THCp" : "THCa"
-  const cannabinoidPlaceholder = isThcp ? "3.5" : "26.4"
+  const cannabinoidLabel = branch.label
+  const cannabinoidPlaceholder = branch.placeholder
 
   useEffect(() => {
     let cancelled = false
@@ -92,11 +135,15 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
       .then((r) => r.json())
       .then(({ attributes }) => {
         if (cancelled || !attributes) return
+        /* Read the branch's own column, falling back to thca_percent for
+         * legacy records saved before the per-cannabinoid columns existed
+         * — same fallback order the storefront adapter uses. */
+        const primary = attributes[branch.field] ?? attributes.thca_percent
         setForm({
           strain_type: attributes.strain_type ?? "",
           best_for: attributes.best_for ?? "",
           potency: attributes.potency != null ? String(attributes.potency) : "",
-          thca_percent: attributes.thca_percent != null ? String(attributes.thca_percent) : "",
+          primary_percent: primary != null ? String(primary) : "",
           total_cannabinoids_percent:
             attributes.total_cannabinoids_percent != null
               ? String(attributes.total_cannabinoids_percent)
@@ -110,7 +157,7 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [productId])
+  }, [productId, branch.field])
 
   const toggleEffect = (effect: string) => {
     setForm((f) => {
@@ -132,7 +179,10 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
         strain_type: form.strain_type || null,
         best_for: form.best_for || null,
         potency: form.potency ? Number(form.potency) : null,
-        thca_percent: form.thca_percent || null,
+        /* Write only the branch's own column. A CBD product's percent
+         * goes to cbd_percent, which is what the storefront adapter reads
+         * for the PDP, product tiles and printed labels. */
+        [branch.field]: form.primary_percent || null,
         total_cannabinoids_percent: form.total_cannabinoids_percent || null,
         effects: form.effects.length ? form.effects : null,
         coa_url: form.coa_url || null,
@@ -238,8 +288,8 @@ const ProductMbsAttributesWidget = ({ data }: DetailWidgetProps<AdminProduct>) =
           <Input
             type="number"
             step="0.1"
-            value={form.thca_percent}
-            onChange={(e) => setForm({ ...form, thca_percent: e.target.value })}
+            value={form.primary_percent}
+            onChange={(e) => setForm({ ...form, primary_percent: e.target.value })}
             placeholder={cannabinoidPlaceholder}
           />
         </div>

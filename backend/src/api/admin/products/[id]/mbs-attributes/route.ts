@@ -8,6 +8,14 @@ type MbsAttributesPayload = {
   best_for?: string | null
   potency?: number | null
   thca_percent?: string | null
+  /* Branch-specific primary-cannabinoid columns. The widget posts
+   * whichever one matches the product's flower branch, so a CBD product's
+   * percent lands in cbd_percent — the field the storefront adapter reads
+   * for CBD on the PDP, product tiles and printed labels. */
+  cbd_percent?: string | null
+  cbg_percent?: string | null
+  thcp_percent?: string | null
+  d9_percent?: string | null
   total_cannabinoids_percent?: string | null
   effects?: string[] | null
   coa_url?: string | null

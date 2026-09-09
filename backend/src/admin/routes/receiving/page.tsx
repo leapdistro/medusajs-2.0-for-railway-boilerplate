@@ -534,6 +534,13 @@ const ReviewView: React.FC<{
    * in receiving-save.ts as safe dead code for reactivation.) */
   const cannabinoidPctLabel = cannabinoid === "cbg" ? "CBG %" : "CBD %"
   const cannabinoidPctFieldName = cannabinoid === "cbg" ? "cbgPercent" : "cbdPercent"
+  /* Compound name shown in operator copy, and the `primary` the COA
+   * extractor is told to target. These MUST agree with the column label
+   * above: a hemp COA reports THCa right next to the CBD/CBG line, so an
+   * extractor that isn't told the branch returns the THCa number and it
+   * lands in the CBD % column (the 2026-09 defect — CBD products showed
+   * the COA's THCa % on the PDP, product tiles and printed labels). */
+  const cannabinoidShort = cannabinoid === "cbg" ? "CBG" : "CBD"
   /* Resizable spreadsheet columns — drag column edges to resize.
    * Widths persist per browser via localStorage. */
   const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(FLOWER_COLS_KEY, FLOWER_COL_DEFAULTS)
@@ -804,7 +811,8 @@ const ReviewView: React.FC<{
     setSelected(new Set())
   }, [selected])
 
-  /* AI extraction of THCa/Cann% from one row's already-uploaded COA.
+  /* AI extraction of the branch's primary cannabinoid % + Cann% from one
+   * row's already-uploaded COA.
    * No-op if the row has no COA ready. Updates the spinner Set so the
    * UI shows feedback. Returns a result tuple so the bulk caller can
    * report counts. */
@@ -817,7 +825,7 @@ const ReviewView: React.FC<{
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ coaUrl: (row.coa as any).url }),
+        body: JSON.stringify({ coaUrl: (row.coa as any).url, primary: cannabinoidShort }),
       })
       const json = await res.json()
       if (!res.ok || !json.ok) throw new Error(json?.error ?? `Parse failed (${res.status})`)
@@ -835,7 +843,7 @@ const ReviewView: React.FC<{
     } finally {
       setCoaParsing((cur) => { const next = new Set(cur); next.delete(idx); return next })
     }
-  }, [rows])
+  }, [rows, cannabinoidShort])
 
   /* Bulk: run extraction on every row that has a COA but lacks both
    * percentages. Bounded concurrency keeps Anthropic happy + the
@@ -846,7 +854,7 @@ const ReviewView: React.FC<{
       .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || !r.totalCannabinoidsPercent.trim()))
       .map(({ i }) => i)
     if (targets.length === 0) {
-      toast.info("Nothing to extract", { description: "Every row with a COA already has THCa% and Cann% filled." })
+      toast.info("Nothing to extract", { description: `Every row with a COA already has ${cannabinoidShort}% and Cann% filled.` })
       return
     }
     const CONCURRENCY = 6
@@ -867,7 +875,7 @@ const ReviewView: React.FC<{
     toast.success(`Auto-fill complete`, {
       description: `${parsed} parsed · ${failed} failed · ${elapsed}s`,
     })
-  }, [rows, parseCoaForRow])
+  }, [rows, parseCoaForRow, cannabinoidShort])
 
   /* Brand spec caps card display at 2 effects, so we enforce the cap
    * here too. Clicking a third selection is a no-op; deselect first. */
@@ -1213,9 +1221,9 @@ const ReviewView: React.FC<{
           size="small"
           disabled={coaParsing.size > 0}
           onClick={parseAllCoas}
-          title="Calls Claude Sonnet on each uploaded COA to extract THCa% + Total Cannabinoids%"
+          title={`Calls Claude Sonnet on each uploaded COA to extract ${cannabinoidShort}% + Total Cannabinoids%`}
         >
-          AI: Auto-fill THCa / Cann from COAs
+          {`AI: Auto-fill ${cannabinoidShort} / Cann from COAs`}
         </Button>
       </div>
 
@@ -1442,6 +1450,7 @@ const ReviewView: React.FC<{
                       <CoaAiButton
                         canParse={row.coa.state === "ready"}
                         parsing={coaParsing.has(i)}
+                        cannabinoidShort={cannabinoidShort}
                         onClick={() => parseCoaForRow(i)}
                       />
                     </div>
@@ -1590,14 +1599,16 @@ const SaveStatusPill: React.FC<{ result: SaveRowResult }> = ({ result }) => {
 }
 
 /* ---------- Per-row AI extract trigger ----------
- * Tiny button that lives in the THCa cell. Disabled when there's no
- * COA to parse, shows a spinner glyph while parsing. Title hover tells
- * the operator what it does + the cost. */
+ * Tiny button that lives in the primary-cannabinoid cell. Disabled when
+ * there's no COA to parse, shows a spinner glyph while parsing. Title
+ * hover tells the operator what it does + the cost — and which compound
+ * it targets, so a CBD operator can see it isn't pulling THCa. */
 const CoaAiButton: React.FC<{
   canParse: boolean
   parsing: boolean
+  cannabinoidShort: string
   onClick: () => void
-}> = ({ canParse, parsing, onClick }) => {
+}> = ({ canParse, parsing, cannabinoidShort, onClick }) => {
   const disabled = !canParse || parsing
   return (
     <button
@@ -1607,7 +1618,7 @@ const CoaAiButton: React.FC<{
       title={
         !canParse ? "Upload a COA first"
           : parsing ? "Parsing COA…"
-          : "Auto-fill THCa% + Cann% from this row's COA (~$0.011)"
+          : `Auto-fill ${cannabinoidShort}% + Cann% from this row's COA (~$0.011)`
       }
       style={{
         background: parsing ? "#C98A00" : disabled ? "transparent" : "#0A0A0A",

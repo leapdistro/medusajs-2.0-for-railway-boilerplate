@@ -1,9 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk"
 
 /**
- * Anthropic-backed extractor for cannabis lab COA PDFs. Pulls out
- * THCa% and Total Cannabinoids% — the two compliance values the
- * receiving page collects per row.
+ * Anthropic-backed extractor for cannabis lab COA PDFs. Pulls out the
+ * PRIMARY cannabinoid % and Total Cannabinoids% — the two compliance
+ * values the receiving page collects per row. Which compound counts as
+ * "primary" depends on the receiving branch the caller is running
+ * (THC-A / THC-P / CBD / CBG), so callers MUST pass `primary`.
  *
  * Why Sonnet 4.6: COAs are dense single-page lab reports; layout
  * varies wildly between labs. Sonnet handles the variety. Cost is
@@ -39,18 +41,37 @@ export type ExtractCoaResult = {
 }
 
 /** Primary cannabinoid the extractor should target. Drives rule 1 of the
- *  prompt. THC-P Flower COAs report THCP where THC-A Flower COAs report
- *  THCa; the extractor targets whichever the caller expects. Undefined
- *  keeps the historical behavior (THCa-first with THC-P fallback). */
-export type PrimaryCannabinoid = "THC-A" | "THC-P"
+ *  prompt. Every flower branch reports a different headline compound —
+ *  THC-A Flower COAs report THCa, THC-P reports THCP, and hemp CBD/CBG
+ *  COAs report CBD/CBG *alongside* a THCa line that is NOT the value we
+ *  want. Callers pass the branch they are receiving so the extractor
+ *  targets the right compound.
+ *
+ *  Undefined keeps the historical THCa-first behavior. It is a legacy
+ *  fallback only: leaving it unset on a CBD/CBG COA is what caused the
+ *  2026-09 defect where CBD products displayed the COA's THCa number on
+ *  the PDP, product tiles and printed labels. Pass `primary`. */
+export type PrimaryCannabinoid = "THC-A" | "THC-P" | "CBD" | "CBG"
+
+/* Rule 1 of the prompt, per branch. `thcaPercent` in the JSON schema is
+ * the PRIMARY-cannabinoid slot for every branch — the name is legacy and
+ * is not renamed here to avoid churning the receiving payload shape.
+ *
+ * CBD/CBG hemp COAs are the tricky case: they report a THCa line (the
+ * <0.3% Texas-compliance figure) right next to the CBD/CBG line, and a
+ * generic "primary cannabinoid" instruction reliably picks the THCa one.
+ * Both rules therefore name THCa explicitly as a value to reject. */
+const RULE_1: Record<PrimaryCannabinoid, string> = {
+  "THC-P": `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of THCP (tetrahydrocannabiphorol). Look for labels like "THCP", "THC-P", "Δ9-THCP", "THCPa". Return as a number only — no "%", no quotes. e.g. 3.24. If the COA reports both acid (THCPa) and neutral (THCP) forms, return the RAW acid value.`,
+  "THC-A": `1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).`,
+  "CBD": `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of CBD (cannabidiol) on this hemp COA. Prefer "Total CBD" when the COA reports it (labels: "Total CBD", "CBD Total", "Σ CBD") — that is the decarboxylated sum, CBDa × 0.877 + CBD, and it is the headline figure buyers expect. If Total CBD is absent, use CBDa (cannabidiolic acid). If neither is present, use neutral CBD. Return as a number only — no "%", no quotes. e.g. 18.42. CRITICAL: this COA also lists THCa, Δ9-THC and Total THC (the <0.3% hemp-compliance values) — those are NOT the value we want. Never return a THC figure, and never return Total Cannabinoids, in this field.`,
+  "CBG": `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of CBG (cannabigerol) on this hemp COA. Prefer "Total CBG" when the COA reports it (labels: "Total CBG", "CBG Total", "Σ CBG") — that is the decarboxylated sum, CBGa × 0.877 + CBG, and it is the headline figure buyers expect. If Total CBG is absent, use CBGa (cannabigerolic acid). If neither is present, use neutral CBG. Return as a number only — no "%", no quotes. e.g. 14.07. CRITICAL: this COA also lists THCa, Δ9-THC and Total THC (the <0.3% hemp-compliance values) — those are NOT the value we want. Never return a THC figure, and never return Total Cannabinoids, in this field. CBD is also present on most CBG COAs and is likewise not the value we want.`,
+}
+
+const RULE_1_LEGACY = `1. thcaPercent: the % weight of the PRIMARY compliance cannabinoid on this COA. Prefer THCa when present (labels: "THCa", "THC-A", "THCA", "Δ9-THCa"). If THCa is absent or below LOQ, use THCP instead (labels: "THCP", "THC-P", "Δ9-THCP", "THCPa"). Return as a number only — no "%", no quotes. If raw + decarbed values both appear, use RAW.`
 
 function buildPrompt(primary?: PrimaryCannabinoid): string {
-  const rule1 =
-    primary === "THC-P"
-      ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of THCP (tetrahydrocannabiphorol). Look for labels like "THCP", "THC-P", "Δ9-THCP", "THCPa". Return as a number only — no "%", no quotes. e.g. 3.24. If the COA reports both acid (THCPa) and neutral (THCP) forms, return the RAW acid value.`
-      : primary === "THC-A"
-      ? `1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).`
-      : `1. thcaPercent: the % weight of the PRIMARY compliance cannabinoid on this COA. Prefer THCa when present (labels: "THCa", "THC-A", "THCA", "Δ9-THCa"). If THCa is absent or below LOQ, use THCP instead (labels: "THCP", "THC-P", "Δ9-THCP", "THCPa"). Return as a number only — no "%", no quotes. If raw + decarbed values both appear, use RAW.`
+  const rule1 = primary ? RULE_1[primary] : RULE_1_LEGACY
   return `You are a precise data extractor for cannabis lab Certificate of Analysis (COA) PDFs. Extract the following from the attached PDF and return ONLY valid JSON matching this schema (no markdown code fences, no prose, no explanation):
 
 {
@@ -65,7 +86,7 @@ ${rule1}
 2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the primary cannabinoid value alone. Return as number only.
 3. batchId: the lab's unique identifier for THIS test/sample. Look for labels like "Sample ID", "Sample #", "Sample No.", "Test ID", "Test #", "Batch ID", "Batch #", "Lab ID", "Report ID", "Order #", "Certificate #". Return the identifier exactly as printed, including any prefix/format (e.g. "S-12345", "1A4-N7-K2", "2024-0098-A"). Prefer the most specific test-level ID over a general report ID. Strip surrounding whitespace only. Return as a string.
 4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null. Do NOT guess. Do NOT return 0 or empty string for missing values.
-5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", "Both THCa and THCP present, used THCa per rule", or "Two IDs present (Sample + Order), used Sample". null if clean.
+5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", "Both THCa and THCP present, used THCa per rule", "No Total CBD reported, used CBDa 20.11", or "Two IDs present (Sample + Order), used Sample". null if clean.
 6. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
 }
 

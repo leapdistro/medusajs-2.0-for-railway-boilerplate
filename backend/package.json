@@ -40,6 +40,7 @@
     "seed:shipstation": "medusa exec ./src/scripts/seed-shipstation-options.ts",
     "audit:shipping-weights": "medusa exec ./src/scripts/audit-shipping-weights.ts",
     "backfill:net-grams": "medusa exec ./src/scripts/backfill-net-grams.ts",
+    "fix:cbd-cbg-percent": "medusa exec ./src/scripts/fix-cbd-cbg-percent.ts",
     "fix:add-batch-id-column": "medusa exec ./src/scripts/add-batch-id-column.ts",
     "fix:image-urls": "medusa exec ./src/scripts/fix-image-urls.ts",
     "diagnose:zero-totals": "medusa exec ./src/scripts/diagnose-zero-totals.ts",

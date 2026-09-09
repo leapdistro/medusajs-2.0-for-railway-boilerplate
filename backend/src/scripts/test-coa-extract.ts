@@ -2,7 +2,7 @@ import type { ExecArgs } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { promises as fs } from "fs"
 import path from "path"
-import { extractCoa } from "../lib/ai-coa-extraction"
+import { extractCoa, PrimaryCannabinoid } from "../lib/ai-coa-extraction"
 
 /**
  * Batch-test the COA extractor against a folder of COA PDFs. Prints a
@@ -10,7 +10,12 @@ import { extractCoa } from "../lib/ai-coa-extraction"
  *
  * Usage:
  *   COA_DIR=/path/to/folder pnpm test:coa-extract
- *   COA_DIR=... LIMIT=3 pnpm test:coa-extract   (only first N for cost control)
+ *   COA_DIR=... LIMIT=3 pnpm test:coa-extract    (only first N for cost control)
+ *   COA_DIR=... PRIMARY=CBD pnpm test:coa-extract
+ *
+ * PRIMARY is the receiving branch the COAs belong to (THC-A / THC-P / CBD /
+ * CBG). Set it when testing hemp COAs — unset runs the legacy THCa-first
+ * prompt, which returns the THCa line of a CBD COA rather than its CBD line.
  */
 export default async function testCoaExtract({ container }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
@@ -21,6 +26,9 @@ export default async function testCoaExtract({ container }: ExecArgs) {
     return
   }
   const limit = process.env.LIMIT ? parseInt(process.env.LIMIT, 10) : Infinity
+  const primary = process.env.PRIMARY
+    ? (process.env.PRIMARY.trim().toUpperCase() as PrimaryCannabinoid)
+    : undefined
 
   let files: string[]
   try {
@@ -52,7 +60,7 @@ export default async function testCoaExtract({ container }: ExecArgs) {
     }
 
     const t0 = Date.now()
-    const result = await extractCoa(pdfBytes)
+    const result = await extractCoa(pdfBytes, primary)
     const elapsed = Date.now() - t0
 
     totalIn += result.inputTokens
