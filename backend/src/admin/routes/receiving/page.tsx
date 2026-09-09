@@ -817,7 +817,14 @@ const ReviewView: React.FC<{
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ coaUrl: (row.coa as any).url }),
+        body: JSON.stringify({
+          coaUrl: (row.coa as any).url,
+          /* Tell the extractor which cannabinoid to target. Without this,
+           * the AI defaults to "prefer THCa" — which on a hemp CBD COA
+           * returns the trace THCa row (<0.3%) and stamps it into
+           * cbd_percent. See ai-coa-extraction.ts. */
+          primary: cannabinoid === "cbg" ? "CBG" : "CBD",
+        }),
       })
       const json = await res.json()
       if (!res.ok || !json.ok) throw new Error(json?.error ?? `Parse failed (${res.status})`)

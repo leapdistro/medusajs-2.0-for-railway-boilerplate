@@ -40,9 +40,10 @@ export type ExtractCoaResult = {
 
 /** Primary cannabinoid the extractor should target. Drives rule 1 of the
  *  prompt. THC-P Flower COAs report THCP where THC-A Flower COAs report
- *  THCa; the extractor targets whichever the caller expects. Undefined
- *  keeps the historical behavior (THCa-first with THC-P fallback). */
-export type PrimaryCannabinoid = "THC-A" | "THC-P"
+ *  THCa; the extractor targets whichever the caller expects. CBD/CBG
+ *  hemp COAs report CBD/CBG (or CBDa/CBGa acid forms). Undefined keeps
+ *  the historical behavior (THCa-first with THC-P fallback). */
+export type PrimaryCannabinoid = "THC-A" | "THC-P" | "CBD" | "CBG"
 
 function buildPrompt(primary?: PrimaryCannabinoid): string {
   const rule1 =
@@ -50,6 +51,10 @@ function buildPrompt(primary?: PrimaryCannabinoid): string {
       ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of THCP (tetrahydrocannabiphorol). Look for labels like "THCP", "THC-P", "Δ9-THCP", "THCPa". Return as a number only — no "%", no quotes. e.g. 3.24. If the COA reports both acid (THCPa) and neutral (THCP) forms, return the RAW acid value.`
       : primary === "THC-A"
       ? `1. thcaPercent: the % weight of THCa (tetrahydrocannabinolic acid). Look for labels like "THCa", "THC-A", "THCA", "Δ9-THCa". Return as a number only — no "%", no quotes. e.g. 24.31. If the COA reports both raw and decarboxylated forms, return the RAW THCa value (not the calculated/decarbed Total THC).`
+      : primary === "CBD"
+      ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of CBD from this hemp COA. Prefer "Total CBD" when the COA reports it (already the CBDa→CBD converted value the lab printed). Otherwise use the row labeled "CBD" (neutral form). Do NOT return CBDa (the acid form) — if CBDa is the only value present, still prefer any pre-converted "Total CBD" line; if neither exists return null. Return as a number only — no "%", no quotes. e.g. 18.42.`
+      : primary === "CBG"
+      ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of CBG from this hemp COA. Prefer "Total CBG" when the COA reports it (already the CBGa→CBG converted value the lab printed). Otherwise use the row labeled "CBG" (neutral form). Do NOT return CBGa (the acid form) — if CBGa is the only value present, still prefer any pre-converted "Total CBG" line; if neither exists return null. Return as a number only — no "%", no quotes. e.g. 12.05.`
       : `1. thcaPercent: the % weight of the PRIMARY compliance cannabinoid on this COA. Prefer THCa when present (labels: "THCa", "THC-A", "THCA", "Δ9-THCa"). If THCa is absent or below LOQ, use THCP instead (labels: "THCP", "THC-P", "Δ9-THCP", "THCPa"). Return as a number only — no "%", no quotes. If raw + decarbed values both appear, use RAW.`
   return `You are a precise data extractor for cannabis lab Certificate of Analysis (COA) PDFs. Extract the following from the attached PDF and return ONLY valid JSON matching this schema (no markdown code fences, no prose, no explanation):
 

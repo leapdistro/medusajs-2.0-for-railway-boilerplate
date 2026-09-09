@@ -1,15 +1,20 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { extractCoa } from "../../../../lib/ai-coa-extraction"
+import { extractCoa, PrimaryCannabinoid } from "../../../../lib/ai-coa-extraction"
 
 /**
  * POST /admin/receiving/coa-parse
  *
- * Body: { coaUrl: string }
+ * Body: { coaUrl: string, primary?: "THC-A" | "THC-P" | "CBD" | "CBG" }
  *
  * Fetches the (already-uploaded) COA PDF from its URL, hands the bytes
  * to the COA extractor, and returns the parsed percentages. Runs after
  * the bulk-COA-upload step — so the URL is always one of our own
  * MinIO/local-file URLs and the fetch is cheap.
+ *
+ * `primary` tells the extractor which cannabinoid row to target. Admin
+ * UI passes it based on the receiving branch (flower-cbd → "CBD", etc.)
+ * so we don't grab THCa from hemp CBD COAs. Omitted → legacy behavior
+ * (THCa-first with THC-P fallback).
  *
  * Returns:
  *   { ok: true, thcaPercent, totalCannabinoidsPercent, notes, tokensIn, tokensOut }
@@ -19,13 +24,18 @@ import { extractCoa } from "../../../../lib/ai-coa-extraction"
  *   502 — fetch or AI call failed (error string in body)
  */
 
+const VALID_PRIMARIES: readonly PrimaryCannabinoid[] = ["THC-A", "THC-P", "CBD", "CBG"]
+
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const body = (req.body ?? {}) as { coaUrl?: string }
+  const body = (req.body ?? {}) as { coaUrl?: string; primary?: string }
   const coaUrl = body.coaUrl?.trim()
   if (!coaUrl) {
     res.status(400).json({ ok: false, error: "coaUrl is required" })
     return
   }
+  const primary = body.primary && (VALID_PRIMARIES as readonly string[]).includes(body.primary)
+    ? (body.primary as PrimaryCannabinoid)
+    : undefined
 
   /* Fetch the COA bytes. We trust the URL because it came from our own
    * upload endpoint, but bound the size and timeout to fail fast on
@@ -51,7 +61,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  const result = await extractCoa(pdfBytes)
+  const result = await extractCoa(pdfBytes, primary)
   if (!result.ok) {
     res.status(502).json({
       ok: false,
