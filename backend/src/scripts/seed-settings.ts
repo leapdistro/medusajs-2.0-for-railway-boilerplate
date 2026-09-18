@@ -246,6 +246,38 @@ const DEFAULTS: Array<{
     },
   },
   {
+    key: "label_formats",
+    description: "Printable label sizes offered on flower products, keyed by the weight the buyer repacks into. `width_in` / `height_in` are the physical label stock in inches (width × height). `barcode: false` drops the Code 128 barcode for that format (QP is a wholesale unit — no retail scan). Archived formats stop appearing on the storefront without losing the barcodes already assigned to them.",
+    value: [
+      { id: "1g",   label: "1g",   weight_text: "1G",   width_in: 2, height_in: 1, barcode: true,  order: 1, archived: false },
+      { id: "3.5g", label: "3.5g", weight_text: "3.5G", width_in: 2, height_in: 2, barcode: true,  order: 2, archived: false },
+      { id: "7g",   label: "7g",   weight_text: "7G",   width_in: 2, height_in: 1, barcode: true,  order: 3, archived: false },
+      { id: "14g",  label: "14g",  weight_text: "14G",  width_in: 2, height_in: 1, barcode: true,  order: 4, archived: false },
+      { id: "28g",  label: "28g",  weight_text: "28G",  width_in: 2, height_in: 1, barcode: true,  order: 5, archived: false },
+      { id: "qp",   label: "QP",   weight_text: "QP",   width_in: 3, height_in: 2, barcode: false, order: 6, archived: false },
+    ],
+  },
+  {
+    key: "label_barcodes",
+    description: "Code 128 barcode values printed on flower labels, keyed branch → tier → label format id. One number per tier + weight (NOT per strain), so every strain in a tier shares it. Blank means no barcode prints for that combination. CBG is blank pending numbers.",
+    value: {
+      cbd: {
+        classic: { "1g": "014711",   "3.5g": "",            "7g": "",             "14g": "",         "28g": "" },
+        exotic:  { "1g": "0741109",  "3.5g": "0417135",     "7g": "041711007",    "14g": "0417114",  "28g": "0417128" },
+        super:   { "1g": "0742209",  "3.5g": "041722135",   "7g": "04171122007",  "14g": "041722114","28g": "041722128" },
+        snow:    { "1g": "",         "3.5g": "",            "7g": "",             "14g": "",         "28g": "" },
+        rapper:  { "1g": "07413309", "3.5g": "0417130035",  "7g": "041713007",    "14g": "04171314", "28g": "0417130028" },
+      },
+      cbg: {
+        classic: { "1g": "", "3.5g": "", "7g": "", "14g": "", "28g": "" },
+        exotic:  { "1g": "", "3.5g": "", "7g": "", "14g": "", "28g": "" },
+        super:   { "1g": "", "3.5g": "", "7g": "", "14g": "", "28g": "" },
+        snow:    { "1g": "", "3.5g": "", "7g": "", "14g": "", "28g": "" },
+        rapper:  { "1g": "", "3.5g": "", "7g": "", "14g": "", "28g": "" },
+      },
+    },
+  },
+  {
     key: "product_line_audit",
     description: "Audit log for product-line retire / reactivate actions. Append-only JSON array of entries (actor, action, branch, reason, notes, categoryIds, productIds, timestamp). Drives the /app/product-lines admin dashboard state pills + history table + supports precise reversal via captured productIds.",
     value: [],

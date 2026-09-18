@@ -1,5 +1,5 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
-import { Button, Container, Heading, Input, Label, Text, Textarea, toast } from "@medusajs/ui"
+import { Button, Container, Heading, Input, Label, Switch, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
 
 /* Inline gear SVG so we don't need to depend on @medusajs/icons. Sized
@@ -45,6 +45,9 @@ const TABS = [
    * lookup by /store/mbs/tier-prices still tolerates its absence) but
    * operators no longer see or edit it. */
   { id: "shipping_rates",          label: "Shipping Rates"          },
+  /* Labels tab edits TWO keys (label_formats + label_barcodes) so it
+   * takes `rows` rather than `currentRow`, same as the price tabs. */
+  { id: "label_formats",           label: "Labels"                  },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -167,6 +170,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "shipping_rates" && (
               <ShippingRatesForm row={currentRow} onSaved={onSaved} />
+            )}
+            {tab === "label_formats" && (
+              <LabelsForm rows={rows} onSaved={onSaved} />
             )}
           </>
         )}
@@ -1399,6 +1405,250 @@ const ShippingRatesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: Se
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/* ─────────────────────────── Labels ─────────────────────────── */
+/**
+ * Labels tab — two settings keys edited together:
+ *   label_formats  : Array<{ id, label, weight_text, width_in, height_in,
+ *                            barcode, order, archived }>
+ *   label_barcodes : { <branch>: { <tier>: { <format id>: string } } }
+ *
+ * The barcode grid is driven BY the format list (columns) and the tier
+ * ladder (rows), so adding a weight above immediately adds a column
+ * below — no second place to keep in sync. Formats with barcode=false
+ * (QP) are left out of the grid entirely.
+ *
+ * Branches are CBD + CBG only. THC-A + THC-P flower are retired, and a
+ * retired branch's numbers would be dead data.
+ */
+type LabelFormat = {
+  id: string
+  label: string
+  weight_text: string
+  width_in: number
+  height_in: number
+  barcode: boolean
+  order: number
+  archived: boolean
+}
+type LabelBarcodes = Record<string, Record<string, Record<string, string>>>
+
+const LABEL_BRANCHES = [
+  { key: "cbd", title: "CBD Flower" },
+  { key: "cbg", title: "CBG Flower" },
+] as const
+
+function readLabelFormats(row?: SettingRow): LabelFormat[] {
+  const raw = Array.isArray(row?.value) ? row!.value : []
+  return raw
+    .map((f: any, i: number) => ({
+      id: String(f?.id ?? ""),
+      label: String(f?.label ?? ""),
+      weight_text: String(f?.weight_text ?? ""),
+      width_in: Number(f?.width_in) || 0,
+      height_in: Number(f?.height_in) || 0,
+      barcode: f?.barcode !== false,
+      order: Number.isFinite(Number(f?.order)) ? Number(f.order) : i + 1,
+      archived: f?.archived === true,
+    }))
+    .filter((f: LabelFormat) => f.id)
+    .sort((a: LabelFormat, b: LabelFormat) => a.order - b.order)
+}
+
+function readLabelBarcodes(row?: SettingRow): LabelBarcodes {
+  const raw = (row?.value ?? {}) as any
+  const out: LabelBarcodes = {}
+  for (const b of LABEL_BRANCHES) {
+    out[b.key] = {}
+    for (const tier of TIER_ORDER) {
+      const cell = raw?.[b.key]?.[tier] ?? {}
+      const tierMap: Record<string, string> = {}
+      for (const [k, v] of Object.entries(cell)) tierMap[k] = String(v ?? "")
+      out[b.key][tier] = tierMap
+    }
+  }
+  return out
+}
+
+const LabelsForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const [formats, setFormats] = useState<LabelFormat[]>([])
+  const [barcodes, setBarcodes] = useState<LabelBarcodes>({})
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setFormats(readLabelFormats(rows["label_formats"]))
+    setBarcodes(readLabelBarcodes(rows["label_barcodes"]))
+  }, [rows])
+
+  const setFormatField = (idx: number, field: keyof LabelFormat) => (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const raw = e.target.value
+    setFormats((prev) =>
+      prev.map((f, i) => {
+        if (i !== idx) return f
+        if (field === "width_in" || field === "height_in" || field === "order") {
+          const n = parseFloat(raw)
+          return { ...f, [field]: Number.isFinite(n) ? n : 0 }
+        }
+        return { ...f, [field]: raw }
+      }),
+    )
+  }
+
+  const toggleFormatFlag = (idx: number, field: "barcode" | "archived") => (checked: boolean) => {
+    setFormats((prev) => prev.map((f, i) => (i === idx ? { ...f, [field]: checked } : f)))
+  }
+
+  const addFormat = () => {
+    setFormats((prev) => [
+      ...prev,
+      {
+        id: "",
+        label: "",
+        weight_text: "",
+        width_in: 2,
+        height_in: 1,
+        barcode: true,
+        order: prev.length + 1,
+        archived: false,
+      },
+    ])
+  }
+
+  const setBarcode = (branch: string, tier: string, formatId: string) => (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const v = e.target.value
+    setBarcodes((prev) => ({
+      ...prev,
+      [branch]: {
+        ...(prev[branch] ?? {}),
+        [tier]: { ...(prev[branch]?.[tier] ?? {}), [formatId]: v },
+      },
+    }))
+  }
+
+  /* Only formats that actually carry a barcode get a column. QP is a
+   * wholesale unit — no retail scan, so no number to assign. */
+  const barcodeFormats = formats.filter((f) => f.barcode && !f.archived && f.id)
+
+  const save = async () => {
+    const ids = formats.map((f) => f.id.trim()).filter(Boolean)
+    if (ids.length !== formats.length) {
+      toast.error("Every format needs an id (e.g. 3.5g)")
+      return
+    }
+    if (new Set(ids).size !== ids.length) {
+      toast.error("Format ids must be unique")
+      return
+    }
+    setBusy(true)
+    try {
+      const cleaned = formats
+        .map((f, i) => ({
+          ...f,
+          id: f.id.trim(),
+          label: f.label.trim() || f.id.trim(),
+          weight_text: f.weight_text.trim() || f.id.trim().toUpperCase(),
+          order: Number.isFinite(f.order) ? f.order : i + 1,
+        }))
+        .sort((a, b) => a.order - b.order)
+      const savedFormats = await saveSetting("label_formats", cleaned)
+      const savedBarcodes = await saveSetting("label_barcodes", barcodes)
+      onSaved(savedFormats)
+      onSaved(savedBarcodes)
+      toast.success("Label settings saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-8 max-w-4xl">
+      <div className="flex flex-col gap-3">
+        <Heading level="h3">Label formats</Heading>
+        <Text size="small" className="text-ui-fg-subtle">
+          One row per weight a buyer can print. <strong>Width × Height</strong> is the physical
+          label stock in inches. Turn <strong>Barcode</strong> off for wholesale units that
+          don&apos;t get a retail scan. <strong>Archived</strong> hides a format from the
+          storefront without dropping the barcodes already assigned to it.
+        </Text>
+
+        <div className="border">
+          <div className="grid grid-cols-[1fr_1fr_1fr_80px_80px_90px_90px] border-b bg-ui-bg-subtle">
+            {["Id", "Button label", "Prints as", "Width in", "Height in", "Barcode", "Archived"].map((h) => (
+              <div key={h} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">{h}</div>
+            ))}
+          </div>
+          {formats.map((f, idx) => (
+            <div key={idx} className={`grid grid-cols-[1fr_1fr_1fr_80px_80px_90px_90px] items-center${idx < formats.length - 1 ? " border-b" : ""}`}>
+              <div className="p-1.5"><Input value={f.id} onChange={setFormatField(idx, "id")} placeholder="3.5g" /></div>
+              <div className="p-1.5"><Input value={f.label} onChange={setFormatField(idx, "label")} placeholder="3.5g" /></div>
+              <div className="p-1.5"><Input value={f.weight_text} onChange={setFormatField(idx, "weight_text")} placeholder="3.5G" /></div>
+              <div className="p-1.5"><Input type="number" min={0} step={0.1} value={f.width_in || ""} onChange={setFormatField(idx, "width_in")} className="text-right" /></div>
+              <div className="p-1.5"><Input type="number" min={0} step={0.1} value={f.height_in || ""} onChange={setFormatField(idx, "height_in")} className="text-right" /></div>
+              <div className="p-1.5 flex justify-center"><Switch checked={f.barcode} onCheckedChange={toggleFormatFlag(idx, "barcode")} /></div>
+              <div className="p-1.5 flex justify-center"><Switch checked={f.archived} onCheckedChange={toggleFormatFlag(idx, "archived")} /></div>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <Button variant="secondary" size="small" onClick={addFormat} disabled={busy}>Add format</Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <Heading level="h3">Barcodes</Heading>
+        <Text size="small" className="text-ui-fg-subtle">
+          One Code 128 number per tier and weight — every strain in that tier prints the same
+          number. Leave a cell blank and no barcode prints for it. Columns follow the formats
+          above.
+        </Text>
+
+        {LABEL_BRANCHES.map((b) => (
+          <div key={b.key} className="flex flex-col gap-2">
+            <Text size="small" weight="plus">{b.title}</Text>
+            <div className="border">
+              <div className="grid border-b bg-ui-bg-subtle" style={{ gridTemplateColumns: `120px repeat(${barcodeFormats.length}, minmax(0, 1fr))` }}>
+                <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>
+                {barcodeFormats.map((f) => (
+                  <div key={f.id} className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle text-center">{f.label || f.id}</div>
+                ))}
+              </div>
+              {TIER_ORDER.map((tier, idx) => (
+                <div
+                  key={tier}
+                  className={idx < TIER_ORDER.length - 1 ? "grid border-b" : "grid"}
+                  style={{ gridTemplateColumns: `120px repeat(${barcodeFormats.length}, minmax(0, 1fr))` }}
+                >
+                  <div className="px-3 py-2 font-medium text-sm flex items-center">{TIER_LABELS[tier]}</div>
+                  {barcodeFormats.map((f) => (
+                    <div key={f.id} className="p-1.5">
+                      <Input
+                        value={barcodes[b.key]?.[tier]?.[f.id] ?? ""}
+                        onChange={setBarcode(b.key, tier, f.id)}
+                        placeholder="—"
+                        className="text-center font-mono"
+                      />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save label settings"}</Button>
+      </div>
     </div>
   )
 }
