@@ -24,11 +24,12 @@ import {
   resolveCategoryChain,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
+import { billableItemsTotal, billableLines, orderedItemsTotal } from "./billable-quantities"
 
 export type OrderPushOutcome =
   | { ok: true; invoiceId: string; balance: number; paymentId?: string; url: string }
   | { ok: false; code: "ALREADY_PUSHED"; invoiceId: string }
-  | { ok: false; code: "NOT_CONNECTED" | "NO_CUSTOMER" | "MISSING_ITEM" | "API_ERROR"; error: string }
+  | { ok: false; code: "NOT_CONNECTED" | "NO_CUSTOMER" | "MISSING_ITEM" | "API_ERROR" | "TOTAL_MISMATCH"; error: string }
 
 type Logger = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void }
 
@@ -64,6 +65,8 @@ export async function pushOrderToQbo(
        * raw_quantity / detail.quantity retain the original ordered qty. */
       "items.id", "items.title", "items.quantity", "items.raw_quantity",
       "items.unit_price", "items.detail.quantity",
+      /* Billable qty in LINE units — see lib/billable-quantities.ts. */
+      "items.detail.fulfilled_quantity",
       "items.variant_sku", "items.variant_id", "items.product_title",
       /* variant.title is the authoritative variant label ("LB", "½",
        * "QP", "30 ct Box"). items.title may have been cart-derived
@@ -90,13 +93,6 @@ export async function pushOrderToQbo(
       "items.variant.product.categories.id",
       "items.variant.product.categories.name",
       "items.variant.product.categories.parent_category_id",
-      /* Fulfillment items drive the invoice quantity — wholesale model
-       * is "ship what we have, refund the rest" so QBO invoice should
-       * bill for fulfilled qty, not ordered qty. Sum per line below. */
-      "fulfillments.id",
-      "fulfillments.canceled_at",
-      "fulfillments.items.line_item_id",
-      "fulfillments.items.quantity",
       /* Actual payment state on the order — drives the QBO Payment
        * decision below. We can't trust customer.metadata.payment_terms
        * alone: an admin can grant a buyer Net 15 yet that buyer's
@@ -306,27 +302,12 @@ export async function pushOrderToQbo(
       inputToPoolByProduct.set(String(p.id), reqs.length > 0 ? Math.max(...reqs) : 1)
     }
   }
-  /* Build line_item_id → fulfilled qty map from non-cancelled
-   * fulfillments. Wholesale workflow ships what's in pool + refunds
-   * the rest, so QBO invoice should reflect shipped qty (not ordered).
-   * When the order has zero fulfillments — e.g., operator hits the
-   * manual "Push to QuickBooks" retry before fulfilling — we fall
-   * back to ordered qty so the push doesn't no-op. */
-  const fulfillments = (order.fulfillments ?? []) as Array<{
-    canceled_at?: string | null
-    items?: Array<{ line_item_id?: string | null; quantity?: number | null }>
-  }>
-  const fulfilledByLine = new Map<string, number>()
-  for (const f of fulfillments) {
-    if (f.canceled_at) continue
-    for (const fi of f.items ?? []) {
-      const lid = fi.line_item_id
-      const qty = Number(fi.quantity ?? 0)
-      if (!lid || !Number.isFinite(qty) || qty <= 0) continue
-      fulfilledByLine.set(lid, (fulfilledByLine.get(lid) ?? 0) + qty)
-    }
-  }
-  const orderHasFulfillments = Array.from(fulfilledByLine.values()).some((q) => q > 0)
+  /* Billable qty per line (fulfilled, in line units, clamped to
+   * ordered; ordered qty when nothing has shipped yet). One rule shared
+   * with the capture subscriber and the storefront invoice — see
+   * lib/billable-quantities.ts for why fulfillment items can't be summed. */
+  const billing = billableLines(order.items)
+  const billedByLine = new Map(billing.lines.map((l) => [l.id, l.billed]))
 
   for (const item of order.items ?? []) {
     const vSku = item.variant_sku as string | null
@@ -421,22 +402,9 @@ export async function pushOrderToQbo(
      *     THIS line. Skip the line entirely when fulfilled qty is 0
      *     (the operator didn't ship it — it will be refunded out).
      *   - If the order has no fulfillments at all (manual push before
-     *     fulfillment), fall back to ordered qty via the legacy multi-
-     *     source read. */
-    let variantQty: number
-    if (orderHasFulfillments) {
-      const f = fulfilledByLine.get(String(item.id)) ?? 0
-      if (f <= 0) continue
-      variantQty = f
-    } else {
-      const rawQty = item.raw_quantity?.value ?? item.raw_quantity
-      variantQty = Number(
-        (item.quantity != null && Number(item.quantity) > 0 ? item.quantity : null)
-          ?? (item.detail?.quantity ?? null)
-          ?? rawQty
-          ?? 0,
-      )
-    }
+     *     fulfillment), fall back to ordered qty. Both via billableLines. */
+    const variantQty = billedByLine.get(String(item.id)) ?? 0
+    if (billing.orderHasFulfillments && variantQty <= 0) continue
     const variantUnitPrice = Number(item.unit_price ?? 0)
 
     /* Convert variant units → QBO Item's input unit (lb for flower,
@@ -532,6 +500,29 @@ export async function pushOrderToQbo(
     return { ok: false, code: "API_ERROR", error: "Order has no eligible line items to push" }
   }
 
+  /* Total guard — refuse to create an invoice whose goods total differs
+   * from what the order says the buyer owes. The unit conversion above
+   * reshapes qty/rate per line but must never change a line's value, and
+   * no invoice may exceed the ordered goods total. Tolerance covers the
+   * per-line cent rounding of fractional-lb rates. */
+  const invoiceLinesTotal = round2(lines.reduce((s, l) => s + round2(l.qty * l.unitPrice), 0))
+  const expectedLinesTotal = billableItemsTotal(billing.lines)
+  const orderedCeiling = orderedItemsTotal(billing.lines)
+  const tolerance = 0.01 * lines.length
+  if (
+    Math.abs(invoiceLinesTotal - expectedLinesTotal) > tolerance
+    || invoiceLinesTotal > orderedCeiling + tolerance
+  ) {
+    logger.error(
+      `[qbo-order-push] TOTAL_MISMATCH order ${order.display_id ?? order.id}: invoice lines $${invoiceLinesTotal} vs billable $${expectedLinesTotal} (ordered $${orderedCeiling}) — invoice NOT created`,
+    )
+    return {
+      ok: false,
+      code: "TOTAL_MISMATCH",
+      error: `Invoice lines total $${invoiceLinesTotal.toFixed(2)} doesn't match the order's billable total $${expectedLinesTotal.toFixed(2)} (ordered $${orderedCeiling.toFixed(2)}). Invoice was NOT created — check the order's quantities before retrying.`,
+    }
+  }
+
   /* 4. Shipping line — resolve a Service-type "Shipping" Item the first
    *    time we push an invoice with shipping cost, and reuse it
    *    thereafter. Lives separately from product lines so QBO P&L can
@@ -614,6 +605,17 @@ export async function pushOrderToQbo(
     }
   }
 
+  /* Post-create guard — QBO computes TotalAmt itself. If it disagrees
+   * with ours we skip the auto-payment, still stamp the invoice id (so
+   * the widget links it), and report failure so the operator gets a bell. */
+  const expectedInvoiceTotal = round2(invoiceLinesTotal + (shippingItemId ? shippingTotal : 0))
+  const totalMismatch = Math.abs(Number(invoice.totalAmt) - expectedInvoiceTotal) > 0.01
+  if (totalMismatch) {
+    logger.error(
+      `[qbo-order-push] TOTAL_MISMATCH order ${order.display_id ?? order.id}: QBO Invoice ${invoice.id} TotalAmt $${invoice.totalAmt} vs expected $${expectedInvoiceTotal}`,
+    )
+  }
+
   /* 6. Card-paid path: close the invoice with a Payment so QBO marks
    *    it PAID. The decision is driven by the ACTUAL order payment
    *    (`cardPayment` / `cardTransId` resolved above) — NOT the
@@ -626,7 +628,7 @@ export async function pushOrderToQbo(
    *    check / wire / manual payment in QBO when it arrives (or marks
    *    it manually). */
   let paymentId: string | undefined
-  if (cardPayment || cardTransId) {
+  if ((cardPayment || cardTransId) && !totalMismatch) {
     try {
       const paymentMethodId = await findPaymentMethodIdByName(qbo, conn, "Credit Card").catch(() => null)
       const payment = await createPayment(qbo, conn, {
@@ -675,6 +677,14 @@ export async function pushOrderToQbo(
     last_bill_id: invoice.id,
     last_bill_pushed_at: nowIso,
   }).catch(() => {})
+
+  if (totalMismatch) {
+    return {
+      ok: false,
+      code: "TOTAL_MISMATCH",
+      error: `QBO Invoice ${invoice.docNumber ?? invoice.id} was created with total $${Number(invoice.totalAmt).toFixed(2)} but the order total is $${expectedInvoiceTotal.toFixed(2)}. Fix the invoice in QBO.`,
+    }
+  }
 
   logger.info(`[qbo-order-push] order ${order.id} → Invoice ${invoice.id} (balance ${invoice.balance})`)
   return {

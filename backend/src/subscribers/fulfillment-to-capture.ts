@@ -1,4 +1,5 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { billableItemsTotal, billableLines } from "../lib/billable-quantities"
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 
 /**
@@ -43,12 +44,10 @@ export default async function fulfillmentToCaptureHandler({
       entity: "order",
       fields: [
         "id", "display_id", "shipping_total",
-        "items.id", "items.quantity", "items.unit_price",
-        /* Non-cancelled fulfillment items drive the capture amount —
-         * mirrors qbo-order-push.ts so QBO invoice + captured charge
-         * always agree. */
-        "fulfillments.id", "fulfillments.canceled_at",
-        "fulfillments.items.line_item_id", "fulfillments.items.quantity",
+        "items.id", "items.quantity", "items.raw_quantity", "items.unit_price",
+        /* Billable qty in LINE units — same rule as qbo-order-push.ts
+         * (lib/billable-quantities.ts) so invoice + capture agree. */
+        "items.detail.quantity", "items.detail.fulfilled_quantity",
         /* Find the kaja-authnet payment to capture. */
         "payment_collections.id",
         "payment_collections.payments.id",
@@ -96,23 +95,8 @@ export default async function fulfillmentToCaptureHandler({
   /* Compute capture amount = fulfilled-qty × unit_price + shipping.
    * Lines with 0 fulfilled qty contribute nothing (won't be billed).
    * This mirrors the invoice PDF + QBO push math exactly. */
-  const fulfilledByLine = new Map<string, number>()
-  for (const f of (order.fulfillments ?? []) as any[]) {
-    if (f?.canceled_at) continue
-    for (const fi of (f?.items ?? []) as any[]) {
-      const lid = fi?.line_item_id
-      const qty = Number(fi?.quantity ?? 0)
-      if (!lid || !Number.isFinite(qty) || qty <= 0) continue
-      fulfilledByLine.set(lid, (fulfilledByLine.get(lid) ?? 0) + qty)
-    }
-  }
-  let linesAmount = 0
-  for (const item of order.items ?? []) {
-    const fulfilled = fulfilledByLine.get(String(item.id)) ?? 0
-    if (fulfilled <= 0) continue
-    const unitPrice = Number(item.unit_price ?? 0)
-    linesAmount += unitPrice * fulfilled
-  }
+  const { lines } = billableLines(order.items)
+  const linesAmount = billableItemsTotal(lines)
   const shipping = Number(order.shipping_total ?? 0)
   const captureAmount = Number((linesAmount + shipping).toFixed(2))
   if (captureAmount <= 0) {

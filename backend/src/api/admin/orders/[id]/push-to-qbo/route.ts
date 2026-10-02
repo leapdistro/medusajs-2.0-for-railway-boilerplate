@@ -51,6 +51,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const status = code === "NOT_CONNECTED" ? 400
               : code === "NO_CUSTOMER"   ? 400
               : code === "MISSING_ITEM"  ? 422
+              : code === "TOTAL_MISMATCH" ? 422
               : 500
   return res.status(status).json({ ok: false, code, error: outcome.error })
 }
