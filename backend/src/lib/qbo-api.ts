@@ -545,10 +545,30 @@ export async function findOrCreateItem(
   },
 ): Promise<{ id: string; name: string; created: boolean }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
-  const safe = itemName.replace(/'/g, "''")
-  const query = `select * from Item where Name = '${safe}'`
-  const found = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
-  const candidates = (found?.QueryResponse?.Item ?? []) as any[]
+  const nameLadder: string[] = [
+    itemName,
+    ...(defaults?.fallbackName && defaults.fallbackName !== itemName ? [defaults.fallbackName] : []),
+    ...((defaults?.extraFallbackNames ?? []).filter((n) => n && n !== itemName && n !== defaults?.fallbackName)),
+  ]
+  /* Find phase checks the SKU first, then EVERY name on the ladder —
+   * not just the primary. Searching only the primary name meant an
+   * item that had been created under a fallback name ("Blue Skittles ·
+   * Exotic", QBO 409) was never found again, so the create phase walked
+   * the ladder into Duplicate Name on every rung (receiving
+   * 20260930-114611852, 2026-10-01). */
+  const queryItems = async (where: string): Promise<any[]> => {
+    const json = await qboFetch(fresh, `/query?query=${encodeURIComponent(`select * from Item where ${where}`)}`)
+    return ((json?.QueryResponse?.Item ?? []) as any[]).filter((i) => i?.Type !== "Category")
+  }
+  const candidates: any[] = []
+  if (defaults?.sku) {
+    candidates.push(...await queryItems(`Sku = '${defaults.sku.replace(/'/g, "''")}'`))
+  }
+  for (const n of nameLadder) {
+    candidates.push(...await queryItems(`Name = '${n.replace(/'/g, "''")}'`))
+  }
+  /* Deterministic pick when several match: oldest QBO Item first. */
+  candidates.sort((a, b) => Number(a?.Id ?? 0) - Number(b?.Id ?? 0))
   /* Two-step match filter:
    *   1. When parentCategoryId is set, require the existing item live
    *      under that exact QBO Category id — otherwise a "Wedding Cake"
@@ -676,11 +696,6 @@ export async function findOrCreateItem(
     const msg = String(e?.message ?? "")
     return /duplicate name/i.test(msg) || /6240/.test(msg)
   }
-  const nameLadder: string[] = [
-    itemName,
-    ...(defaults?.fallbackName && defaults.fallbackName !== itemName ? [defaults.fallbackName] : []),
-    ...((defaults?.extraFallbackNames ?? []).filter((n) => n && n !== itemName && n !== defaults?.fallbackName)),
-  ]
   let created: any
   let lastErr: any
   for (const candidateName of nameLadder) {
@@ -839,7 +854,11 @@ export async function findItemBySku(
     fresh,
     `/query?query=${encodeURIComponent(`select * from Item where Sku = '${safe}'`)}`,
   )
-  const item = json?.QueryResponse?.Item?.[0]
+  /* Oldest Item wins when a SKU is shared — same tie-break as
+   * findOrCreateItem, so invoices and bills land on the same Item. */
+  const item = ((json?.QueryResponse?.Item ?? []) as any[])
+    .filter((i) => i?.Type !== "Category")
+    .sort((a, b) => Number(a?.Id ?? 0) - Number(b?.Id ?? 0))[0]
   return item ? { id: String(item.Id), name: item.Name } : null
 }
 
