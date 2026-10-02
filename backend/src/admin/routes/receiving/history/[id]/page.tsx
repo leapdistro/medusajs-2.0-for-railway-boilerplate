@@ -38,6 +38,8 @@ type Record = {
   notes: string | null
   qbo_bill_id: string | null
   qbo_pushed_at: string | null
+  qbo_push_error: string | null
+  qbo_push_error_at: string | null
   created_at: string
   updated_at: string
 }
@@ -129,6 +131,15 @@ const ReceivingHistoryDetailPage = () => {
           )}
         </div>
       </div>
+
+      {!record.qbo_bill_id && record.qbo_push_error && (
+        <div style={{ border: "1.5px solid #B91C1C", padding: 16 }}>
+          <Text size="small" weight="plus" style={{ color: "#B91C1C", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
+            Last QBO push failed{record.qbo_push_error_at ? ` · ${new Date(record.qbo_push_error_at).toLocaleString()}` : ""}
+          </Text>
+          <Text size="small" style={{ fontFamily: "monospace", wordBreak: "break-word" }}>{record.qbo_push_error}</Text>
+        </div>
+      )}
 
       {/* Supplier + invoice */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -461,6 +461,7 @@ export async function saveOneRow(
       "id", "handle",
       "categories.id",
       "variants.id", "variants.inventory_items.inventory.id",
+      "variants.inventory_items.inventory.sku",
       "product_attributes.id",
     ]
     let { data: existing } = await query.graph({
@@ -569,19 +570,31 @@ export async function saveOneRow(
         }])
       } catch { /* metadata write isn't critical for restock */ }
 
+      /* Restock keeps the product's EXISTING base SKU (inventory_item.sku).
+       * Recomputing it from the form would bake in whatever strain type
+       * the operator picked this time — Blue Skittles restocked as Hybrid
+       * on 2026-09-28 got "…-hyb-…" while the product is "…-ind-…", the
+       * QBO Bill created a second item under the wrong SKU, and the next
+       * Indica restock's Bill failed with Duplicate Name. Falls back to
+       * the computed SKU only for pre-pattern legacy slugs ("guava"),
+       * which never keyed a QBO item. */
+      const skuScope = {
+        category: ctx.profile.parentCategoryName,
+        branch: ctx.profile.qboCategoryBranch,
+        subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
+      }
+      const existingBaseSku = String(variants[0]?.inventory_items?.[0]?.inventory?.sku ?? "")
+      const restockBaseSku = existingBaseSku.startsWith(`${baseSku(skuScope)}-`)
+        ? existingBaseSku
+        : baseSku({ ...skuScope, type: row.strainType, strain: row.strainName })
+
       return {
         ...baseResult,
         action: "restocked",
         productId,
         productHandle: handle,
         inventoryItemId: firstInventoryId,
-        baseSku: baseSku({
-          category: ctx.profile.parentCategoryName,
-          branch: ctx.profile.qboCategoryBranch,
-          subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
-          type: row.strainType,
-          strain: row.strainName,
-        }),
+        baseSku: restockBaseSku,
       }
     }
 

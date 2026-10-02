@@ -32,4 +32,6 @@ export const ReceivingRecord = model.define("receiving_record", {
   notes: model.text().nullable(),             // operator or AI notes
   qbo_bill_id: model.text().nullable(),       // QBO Bill id set after a successful push
   qbo_pushed_at: model.text().nullable(),     // ISO 8601 timestamp of last successful push
+  qbo_push_error: model.text().nullable(),    // last failed push's QBO error; cleared on success
+  qbo_push_error_at: model.text().nullable(), // ISO 8601 timestamp of that failure
 })

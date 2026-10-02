@@ -10,6 +10,7 @@ import {
 } from "../../../../lib/qbo-api"
 import { QBO_CONNECTION_MODULE } from "../../../../modules/qbo-connection"
 import { RECEIVING_HISTORY_MODULE } from "../../../../modules/receiving-history"
+import { sendFeedNotification } from "../../../../lib/feed-notification"
 
 /* Legacy label map — only used as a fallback when line_results lacks
  * `tierLabel` (pre-2026-05-14 receivings). New receivings carry their
@@ -77,6 +78,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     )
   }
 
+  /* Failed pushes are stamped on the record (shown on the receiving's
+   * history page) and ring the admin bell — the toast alone is easy to
+   * miss and the Bill then never gets retried. */
+  const recordFailure = async (message: string) => {
+    logger.error(`[qbo/push-bill] failed for ${record.id}: ${message}`)
+    await history.updateReceivingRecords({
+      id: record.id,
+      qbo_push_error: message.slice(0, 2000),
+      qbo_push_error_at: new Date().toISOString(),
+    }).catch((e: any) => logger.warn(`[qbo/push-bill] couldn't stamp push error: ${e?.message}`))
+    await sendFeedNotification(req.scope, {
+      title: `QBO Bill push failed for receiving ${record.invoice_number}`,
+      description:
+        `${message.slice(0, 200)}\n` +
+        `Open: /app/receiving/history/${record.id} — fix the cause, then Push again.`,
+    })
+  }
+
   /* 2. Resolve the active QBO connection. */
   const connRows = await qbo.listQboConnections({}, { take: 1 })
   const conn = connRows[0]
@@ -95,7 +114,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     accounts = await getDefaultAccounts(qbo, conn)
   } catch (e: any) {
-    logger.error(`[qbo/push-bill] chart of accounts lookup failed: ${e?.message}`)
+    await recordFailure(`Chart of accounts lookup failed: ${e?.message ?? "unknown error"}`)
     return res.status(500).json({ ok: false, error: e?.message ?? "QBO accounts lookup failed" })
   }
 
@@ -236,6 +255,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       id: record.id,
       qbo_bill_id: bill.id,
       qbo_pushed_at: nowIso,
+      qbo_push_error: null,
+      qbo_push_error_at: null,
     })
     await qbo.updateQboConnections({
       id: conn.id,
@@ -247,7 +268,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     logger.info(`[qbo/push-bill] pushed receiving ${record.id} → Bill ${bill.id} (${billLines.length} lines)`)
     return res.json({ ok: true, billId: bill.id, billUrl: url, lines: billLines.length })
   } catch (e: any) {
-    logger.error(`[qbo/push-bill] failed for ${record.id}: ${e?.message}`)
+    await recordFailure(e?.message ?? "QBO push failed")
     return res.status(500).json({ ok: false, error: e?.message ?? "QBO push failed" })
   }
 }
