@@ -543,7 +543,7 @@ export async function findOrCreateItem(
      *  hierarchy. Set on creation only — existing items aren't re-parented. */
     parentCategoryId?: string
   },
-): Promise<{ id: string; name: string; created: boolean }> {
+): Promise<{ id: string; name: string; created: boolean; invStartDate?: string }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
   const nameLadder: string[] = [
     itemName,
@@ -620,16 +620,19 @@ export async function findOrCreateItem(
     /* If the caller wants an earlier InvStartDate than the item already
      * has (e.g., a past-dated invoice for an item created today), push
      * a sparse update before returning. QBO will reject the Bill with
-     * error 6270 otherwise. If the item already has transactions, this
-     * update will fail — the Bill POST that follows will surface the
-     * error so the operator knows to delete + recreate the item or
-     * adjust the invoice date. */
+     * error 6270 otherwise. Once the item has transactions QBO accepts
+     * the update but KEEPS the old date (verified 2026-10-02, item 504),
+     * so we return the date QBO actually holds and the Bill push dates
+     * the Bill no earlier than it. */
+    let effectiveStart: string | undefined = existing.InvStartDate
+      ? String(existing.InvStartDate).slice(0, 10)
+      : undefined
     if (defaults?.invStartDate && existing.InvStartDate) {
       const existingStart = String(existing.InvStartDate).slice(0, 10)
       const requested = defaults.invStartDate.slice(0, 10)
       if (existingStart > requested) {
         try {
-          await qboFetch(fresh, `/item`, {
+          const updated = await qboFetch(fresh, `/item`, {
             method: "POST",
             body: JSON.stringify({
               Id: existing.Id,
@@ -638,6 +641,7 @@ export async function findOrCreateItem(
               InvStartDate: requested,
             }),
           })
+          if (updated?.Item?.InvStartDate) effectiveStart = String(updated.Item.InvStartDate).slice(0, 10)
         } catch (e: any) {
           /* Non-fatal here — surface the original Bill error to the
            * operator who can then decide to delete the item in QBO. */
@@ -645,7 +649,7 @@ export async function findOrCreateItem(
         }
       }
     }
-    return { id: String(existing.Id), name: existing.Name, created: false }
+    return { id: String(existing.Id), name: existing.Name, created: false, invStartDate: effectiveStart }
   }
 
   /* Create as Inventory item — tracks stock + COGS. TrackQtyOnHand
@@ -713,7 +717,7 @@ export async function findOrCreateItem(
   if (!created && lastErr) throw lastErr
   const item = created?.Item
   if (!item?.Id) throw new Error(`Item create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
-  return { id: String(item.Id), name: item.Name, created: true }
+  return { id: String(item.Id), name: item.Name, created: true, invStartDate: item.InvStartDate ? String(item.InvStartDate).slice(0, 10) : undefined }
 }
 
 /* ─── Bill creation ─── */

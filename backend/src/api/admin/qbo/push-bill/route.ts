@@ -155,6 +155,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const billLines = []
+    /* Latest Inventory Start Date among the Bill's items. QBO rejects a
+     * Bill dated before any item's start date (6270) and won't move a
+     * start date once the item has transactions — e.g. strains sold and
+     * invoiced before their receiving's Bill was pushed. */
+    const invoiceDate = record.invoice_date.slice(0, 10)
+    let latestItemStart = invoiceDate
     for (const line of usable) {
       /* tierLabel from line_results is the right value for ANY profile
        * (flower / pre-roll / future). Fall back to LEGACY_TIER_LABEL
@@ -226,9 +232,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         preferredVendor: { id: vendor.id, name: vendor.displayName },
         purchaseDesc: `${line.strainName} · ${inputUnit} (landed cost)`,
         salesDesc: `${line.strainName} · per ${inputUnit}`,
-        invStartDate: record.invoice_date.slice(0, 10),
+        invStartDate: invoiceDate,
         parentCategoryId,
       })
+      if (item.invStartDate && item.invStartDate > latestItemStart) latestItemStart = item.invStartDate
       billLines.push({
         itemId: item.id,
         itemName: item.name,
@@ -240,13 +247,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       })
     }
 
-    /* 6. Post the Bill. */
+    /* 6. Post the Bill — dated at the supplier invoice date, or at the
+     * latest item start date when that's later (memo keeps the original). */
+    const billDate = latestItemStart
+    const dateShifted = billDate !== invoiceDate
+    if (dateShifted) {
+      logger.warn(
+        `[qbo/push-bill] receiving ${record.id}: Bill dated ${billDate} (supplier invoice ${invoiceDate}) — an item's QBO inventory start date is later`,
+      )
+    }
     const bill = await createBill(qbo, conn, {
       vendorId: vendor.id,
       invoiceNumber: record.invoice_number,
-      invoiceDate: record.invoice_date.slice(0, 10),
+      invoiceDate: billDate,
       lines: billLines,
-      privateNote: `MBS receiving #${record.id} — ${usable.length} strain(s)`,
+      privateNote: `MBS receiving #${record.id} — ${usable.length} strain(s)`
+        + (dateShifted
+          ? ` · Supplier invoice dated ${invoiceDate}; Bill dated ${billDate} because an item's inventory start date is ${billDate}.`
+          : ""),
     })
 
     /* 7. Persist back. */
