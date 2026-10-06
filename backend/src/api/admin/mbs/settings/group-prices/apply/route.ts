@@ -7,7 +7,7 @@ import {
 
 /**
  * POST /admin/mbs/settings/group-prices/apply
- *   { scope: "flower" | "preroll" | "thcp_flower", group: "distro" | "tier_2" | "tier_3" }
+ *   { scope: "flower" | "preroll", group: "distro" | "tier_2" | "tier_3" }
  *
  * Thin HTTP wrapper around `applyGroupPrices` (lib/group-prices-apply.ts).
  * The shared lib was extracted so the receiving.saved subscriber can
@@ -19,7 +19,7 @@ import {
  * shapes the response.
  */
 
-const VALID_SCOPES: GroupScope[] = ["flower", "preroll", "thcp_flower"]
+const VALID_SCOPES: GroupScope[] = ["flower", "preroll"]
 const VALID_GROUPS: GroupKey[] = ["distro", "tier_2", "tier_3"]
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {

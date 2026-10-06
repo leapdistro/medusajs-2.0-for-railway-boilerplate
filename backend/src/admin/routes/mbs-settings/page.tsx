@@ -34,12 +34,12 @@ const TABS = [
   { id: "cancellation_reasons",    label: "Cancellation Reasons"    },
   { id: "denial_reasons",          label: "Denial Reasons"          },
   { id: "business_types",          label: "Business Types"          },
-  { id: "flower_tier_prices",      label: "Flower Tier Prices"      },
+  { id: "flower_tier_prices",      label: "CBD Flower Prices"       },
   { id: "pre_roll_tier_prices",    label: "Pre-Roll Tier Prices"    },
   { id: "owner_markup",            label: "Owner Markup"            },
-  { id: "flower_distro_prices",    label: "Flower Distro Prices"    },
+  { id: "flower_distro_prices",    label: "CBD Flower Distro Prices" },
   { id: "preroll_distro_prices",   label: "Pre-Roll Distro Prices"  },
-  { id: "flower_cbd_cbg_prices",   label: "CBD / CBG Prices"        },
+  { id: "flower_cbd_cbg_prices",   label: "CBG Prices"              },
   /* THC-P Flower tab retired 2026-08 alongside the deactivated category.
    * The thcp_flower_prices setting row lingers in the DB (settings key
    * lookup by /store/mbs/tier-prices still tolerates its absence) but
@@ -440,7 +440,7 @@ type Level = { key: string; title: string; settingKey: string; group: null | "ti
  * tier_3 → group-prices/apply (writes to customer-group-scoped PriceList).
  * Catches HTTP failures per-call so one bad level doesn't abort the
  * whole Save & Apply All. */
-async function applyLevel(lvl: Level, scope: "flower" | "preroll" | "flower_cbd" | "flower_cbg"): Promise<ApplyLevelResult> {
+async function applyLevel(lvl: Level, scope: "flower" | "preroll" | "flower_cbg"): Promise<ApplyLevelResult> {
   const url = lvl.group
     ? "/admin/mbs/settings/group-prices/apply"
     : "/admin/mbs/settings/tier-prices/apply"
@@ -536,7 +536,7 @@ const TierPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; o
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Flower variants (USD whole dollars). The <strong>Default</strong> table is the price every approved buyer sees unless their Pricing Mode is set to Tier 2, Tier 3, Distro, or Owner Stores. <strong>Tier 2 / Tier 3</strong> are customer-group-scoped — only buyers assigned to those modes see them. One <em>Save &amp; Apply All</em> below writes all three settings and propagates them in one click.
+        Selling prices for CBD Flower variants (USD whole dollars). New CBD strains get all three tables automatically when a receiving is saved. The <strong>Default</strong> table is the price every approved buyer sees unless their Pricing Mode is set to Tier 2, Tier 3, Distro, or Owner Stores. <strong>Tier 2 / Tier 3</strong> are customer-group-scoped — only buyers assigned to those modes see them. One <em>Save &amp; Apply All</em> below writes all three settings and propagates them in one click.
       </Text>
 
       {FLOWER_LEVELS.map((lvl) => (
@@ -916,7 +916,7 @@ const DistroFlowerPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Save propagates these to a customer-group-scoped Medusa PriceList automatically — buyers outside the group are unaffected.
+        Selling prices for CBD Flower variants shown to buyers in the <strong>distro</strong> customer group (USD whole dollars). Save propagates these to a customer-group-scoped Medusa PriceList automatically — buyers outside the group are unaffected.
       </Text>
 
       <div className="border">
@@ -1077,14 +1077,16 @@ const DistroPreRollPricesForm = ({ row, onSaved }: { row?: SettingRow; onSaved: 
  * Distro / tier_2 / tier_3 group-scoped CBD/CBG tables intentionally
  * skipped — the cbd_cbg customer group is segmentation-only today.
  * Add group-scoped variants later if operator asks. */
+/* CBD moved to the "CBD Flower Prices" tab (flower_tier_prices + the
+ * Chain of Stores / Low Volume tables) — that is what CBD products were
+ * actually priced from. Keeping a second CBD table here let a Save &
+ * Apply reset prices to its stale values (Classic LB $700 vs $750). */
 const CBD_CBG_LEVELS = [
-  { key: "cbd", title: "CBD Default Prices", settingKey: "flower_cbd_prices", scope: "flower_cbd" as const },
   { key: "cbg", title: "CBG Default Prices", settingKey: "flower_cbg_prices", scope: "flower_cbg" as const },
 ] as const
 
 const CbdCbgPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
   const [values, setValues] = useState<Record<string, TierPrices>>({
-    cbd: EMPTY_TIER_PRICES,
     cbg: EMPTY_TIER_PRICES,
   })
   const [busy, setBusy] = useState(false)
@@ -1092,7 +1094,6 @@ const CbdCbgPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>;
 
   useEffect(() => {
     setValues({
-      cbd: readTierPrices(rows["flower_cbd_prices"]),
       cbg: readTierPrices(rows["flower_cbg_prices"]),
     })
   }, [rows])
@@ -1143,7 +1144,7 @@ const CbdCbgPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>;
   return (
     <div className="flex flex-col gap-6 max-w-2xl">
       <Text size="small" className="text-ui-fg-subtle">
-        Selling prices for CBD and CBG Flower variants (USD whole dollars). Both branches carry the same 5-tier ladder as THC-A. Every approved buyer sees these prices — the <code>cbd_cbg</code> customer group is segmentation-only today (no override PriceList). <em>Save &amp; Apply All</em> writes both settings and propagates prices to matching variants in one click.
+        Selling prices for CBG Flower variants (USD whole dollars), same 5-tier ladder as CBD. CBD prices live on the <strong>CBD Flower Prices</strong> tab. <em>Save &amp; Apply</em> writes the table and propagates it to matching CBG variants.
       </Text>
 
       {CBD_CBG_LEVELS.map((lvl) => (
@@ -1187,9 +1188,9 @@ const CbdCbgPricesForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>;
 
       {confirmApply && (
         <div className="border border-ui-border-base bg-ui-bg-subtle p-4 flex flex-col gap-3">
-          <Text size="small" weight="plus">Save both tables and overwrite every matching CBD / CBG variant?</Text>
+          <Text size="small" weight="plus">Save the table and overwrite every matching CBG variant?</Text>
           <Text size="small" className="text-ui-fg-subtle">
-            Saves <strong>CBD Default</strong> and <strong>CBG Default</strong> settings, then propagates each to the variant&apos;s base USD price. Resolution walks variant metadata → category-handle (branch prefix stripped) → SKU / title size; unresolved variants are skipped. Per-variant manual edits in standard Medusa admin will be overwritten.
+            Saves the <strong>CBG Default</strong> setting, then propagates it to each CBG variant&apos;s base USD price. Resolution walks variant metadata → category-handle (branch prefix stripped) → SKU / title size; unresolved variants are skipped. Per-variant manual edits in standard Medusa admin will be overwritten.
           </Text>
           <div className="flex items-center gap-2">
             <Button variant="danger" onClick={saveAndApply} isLoading={busy}>Yes, Save &amp; Apply</Button>

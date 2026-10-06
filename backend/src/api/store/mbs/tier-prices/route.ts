@@ -43,25 +43,11 @@ const PREROLL_KEY_BY_MODE: Record<string, string> = {
   distro:       "preroll_distro_prices",
   owner_stores: "pre_roll_tier_prices",
 }
-/* THC-P Flower has fewer pricing modes today (default + distro only).
- * tier_2 / tier_3 fall back to default until an operator adds the
- * corresponding setting keys — no null gap on the home page.
- * owner_stores mirrors flower's simplification: shows default price. */
-const THCP_FLOWER_KEY_BY_MODE: Record<string, string> = {
-  distro:       "thcp_flower_distro_prices",
-  tier_2:       "thcp_flower_prices",
-  tier_3:       "thcp_flower_prices",
-  owner_stores: "thcp_flower_prices",
-}
 const FLOWER_DEFAULT_KEY      = "flower_tier_prices"
 const PREROLL_DEFAULT_KEY     = "pre_roll_tier_prices"
-const THCP_FLOWER_DEFAULT_KEY = "thcp_flower_prices"
-/* CBD + CBG default price tables — visible to every approved buyer.
- * No per-mode variants today (segmentation-first: the cbd_cbg customer
- * group exists but doesn't override pricing until operator adds
- * group-scoped tables). If we ever add cbd_cbg-mode overrides, wire a
- * FLOWER_CBD_KEY_BY_MODE + FLOWER_CBG_KEY_BY_MODE map here. */
-const FLOWER_CBD_DEFAULT_KEY  = "flower_cbd_prices"
+/* CBD flower is priced from the flower tables above ("CBD Flower Prices"
+ * tab), so flower_cbd_prices in the response is the buyer's own mode
+ * table — what they actually pay. CBG keeps its single default table. */
 const FLOWER_CBG_DEFAULT_KEY  = "flower_cbg_prices"
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
@@ -93,14 +79,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const mode = typeof rawMode === "string" ? rawMode : null
   const flowerKey     = FLOWER_KEY_BY_MODE[mode ?? ""]      ?? FLOWER_DEFAULT_KEY
   const prerollKey    = PREROLL_KEY_BY_MODE[mode ?? ""]     ?? PREROLL_DEFAULT_KEY
-  const thcpFlowerKey = THCP_FLOWER_KEY_BY_MODE[mode ?? ""] ?? THCP_FLOWER_DEFAULT_KEY
 
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const [flowerPrices, preRollPrices, thcpFlowerPrices, cbdFlowerPrices, cbgFlowerPrices] = await Promise.all([
+  const [flowerPrices, preRollPrices, cbgFlowerPrices] = await Promise.all([
     settings.getSetting(flowerKey).catch(() => null),
     settings.getSetting(prerollKey).catch(() => null),
-    settings.getSetting(thcpFlowerKey).catch(() => null),
-    settings.getSetting(FLOWER_CBD_DEFAULT_KEY).catch(() => null),
     settings.getSetting(FLOWER_CBG_DEFAULT_KEY).catch(() => null),
   ])
 
@@ -113,16 +96,14 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
      * by (tier × size); THC-P + pre-roll key by (subcategory × size). */
     flower_tier_prices: flowerPrices ?? null,
     pre_roll_tier_prices: preRollPrices ?? null,
-    thcp_flower_prices: thcpFlowerPrices ?? null,
-    flower_cbd_prices: cbdFlowerPrices ?? null,
+    flower_cbd_prices: flowerPrices ?? null,
     flower_cbg_prices: cbgFlowerPrices ?? null,
     /* Echo back the resolved mode + source keys for debugging. */
     pricing_mode: mode ?? "default",
     sources: {
       flower: flowerKey,
       preroll: prerollKey,
-      thcp_flower: thcpFlowerKey,
-      flower_cbd: FLOWER_CBD_DEFAULT_KEY,
+      flower_cbd: flowerKey,
       flower_cbg: FLOWER_CBG_DEFAULT_KEY,
     },
   })

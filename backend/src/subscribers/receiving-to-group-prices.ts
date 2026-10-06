@@ -23,7 +23,9 @@ import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
  *
  * Behavior:
  *   - Fires on `receiving.saved` alongside receiving-to-owner-prices.
- *   - Maps profile_key → GroupScope (flower / preroll / thcp_flower).
+ *   - Maps profile_key → GroupScope: CBD flower uses the "flower" tables
+ *     (the "CBD Flower Prices" / "CBD Flower Distro Prices" tabs);
+ *     pre-rolls use "preroll".
  *   - For each of the three groups, checks if the settings key exists
  *     first — modes with no configured prices (e.g. THC-P Flower has
  *     no tier_2 / tier_3 tables today) are silently skipped so the
@@ -47,9 +49,8 @@ export default async function receivingToGroupPrices({
   }
 
   const scope: GroupScope | null =
-    profileKey === "flower" ? "flower"
+    profileKey === "flower" || profileKey === "flower-cbd" ? "flower"
     : profileKey === "pre-roll" ? "preroll"
-    : profileKey === "flower-thc-p" ? "thcp_flower"
     : null
   if (!scope) {
     logger.info(`[receiving-to-group-prices] profile "${profileKey}" has no group-prices mapping; skipping`)

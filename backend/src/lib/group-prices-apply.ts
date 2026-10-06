@@ -22,7 +22,7 @@ import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
  * — was previously operator-only via the admin Save button.
  */
 
-export type GroupScope = "flower" | "preroll" | "thcp_flower"
+export type GroupScope = "flower" | "preroll"
 export type GroupKey = "distro" | "tier_2" | "tier_3"
 
 export type ApplyGroupPricesResult = {
@@ -50,7 +50,6 @@ const GROUPS: Record<GroupKey, {
   description: string
   flowerSettingKey: string
   prerollSettingKey: string
-  thcpFlowerSettingKey: string
 }> = {
   distro: {
     groupName: "distro",
@@ -58,7 +57,6 @@ const GROUPS: Record<GroupKey, {
     description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
     flowerSettingKey: "flower_distro_prices",
     prerollSettingKey: "preroll_distro_prices",
-    thcpFlowerSettingKey: "thcp_flower_distro_prices",
   },
   tier_2: {
     groupName: "tier_2",
@@ -66,7 +64,6 @@ const GROUPS: Record<GroupKey, {
     description: "Tier 2 wholesale selling prices. Scoped to the `tier_2` customer group.",
     flowerSettingKey: "flower_tier_2_prices",
     prerollSettingKey: "preroll_tier_2_prices",
-    thcpFlowerSettingKey: "thcp_flower_tier_2_prices",
   },
   tier_3: {
     groupName: "tier_3",
@@ -74,7 +71,6 @@ const GROUPS: Record<GroupKey, {
     description: "Tier 3 wholesale selling prices. Scoped to the `tier_3` customer group.",
     flowerSettingKey: "flower_tier_3_prices",
     prerollSettingKey: "preroll_tier_3_prices",
-    thcpFlowerSettingKey: "thcp_flower_tier_3_prices",
   },
 }
 
@@ -108,9 +104,7 @@ function sizeFromSku(sku: string | null | undefined): string | null {
  *  applyGroupPrices — skipping unconfigured modes avoids noisy warnings. */
 export function settingKeyFor(scope: GroupScope, group: GroupKey): string {
   const cfg = GROUPS[group]
-  return scope === "flower" ? cfg.flowerSettingKey
-    : scope === "preroll" ? cfg.prerollSettingKey
-    : cfg.thcpFlowerSettingKey
+  return scope === "flower" ? cfg.flowerSettingKey : cfg.prerollSettingKey
 }
 
 export async function applyGroupPrices(

@@ -293,8 +293,8 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
  * (Classic → Rapper) and identical variant axes (QP / Half / LB). What
  * differs vs THC-A: (a) subcategoryParentHandle points at flower-cbd,
  * (b) subcategory keys carry the cbd- prefix so the storefront's
- * medusa-adapter branch detection resolves correctly, (c) tier pricing
- * lookup uses flower_cbd_prices instead of flower_tier_prices. */
+ * medusa-adapter branch detection resolves correctly. Pricing uses the
+ * same flower_tier_prices table ("CBD Flower Prices" tab). */
 export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   key: "flower-cbd",
   displayName: "Flower — CBD",
@@ -330,7 +330,10 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
     upc: false,
   },
   pricingModel: "tier",
-  tierPricesSettingKey: "flower_cbd_prices",
+  /* "CBD Flower Prices" tab (flower_tier_prices) — the table CBD products
+   * are actually priced from (Classic LB $750). The old flower_cbd_prices
+   * table drifted ($700) and is no longer edited anywhere. */
+  tierPricesSettingKey: "flower_tier_prices",
   unitLabel: { singular: "QP", plural: "QPs" },
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,

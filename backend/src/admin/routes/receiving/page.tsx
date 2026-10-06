@@ -2018,7 +2018,9 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
  *     flower-thc-a categories in Medusa). */
 type Cannabinoid = "cbd" | "cbg"
 const CANNABINOID_OPTIONS: Array<{ key: Cannabinoid; label: string; profileKey: string; settingsKey: string; draftKind: string }> = [
-  { key: "cbd",   label: "CBD",   profileKey: "flower-cbd", settingsKey: "flower_cbd_prices",  draftKind: "flower-cbd" },
+  /* CBD suggested sell prices come from the "CBD Flower Prices" tab
+   * (flower_tier_prices) — the same table receiving-save prices with. */
+  { key: "cbd",   label: "CBD",   profileKey: "flower-cbd", settingsKey: "flower_tier_prices", draftKind: "flower-cbd" },
   { key: "cbg",   label: "CBG",   profileKey: "flower-cbg", settingsKey: "flower_cbg_prices",  draftKind: "flower-cbg" },
 ]
 
@@ -2048,7 +2050,7 @@ const ReceivingPage = () => {
 
   /* Fetch tier prices whenever cannabinoid changes so the review table's
    * suggested-sell column pulls from the right ladder (flower_tier_prices
-   * for THC-A, flower_cbd_prices for CBD, flower_cbg_prices for CBG).
+   * for CBD, flower_cbg_prices for CBG).
    * Falls back to null silently — admin can still review + save. */
   useEffect(() => {
     let cancelled = false

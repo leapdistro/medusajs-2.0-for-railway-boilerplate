@@ -23,24 +23,20 @@ import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
  * Variants that none of the three can resolve are SKIPPED — we don't
  * have enough info to price them, so leaving them alone is correct.
  *
- * Body: { scope: "flower" | "preroll" | "thcp_flower" | "flower_cbd" | "flower_cbg" }
- *   - "flower":       reads flower_tier_prices, scoped to category handles
- *                     matching its keys (classic / exotic / super / snow / rapper)
+ * Body: { scope: "flower" | "preroll" | "flower_cbg" }
+ *   - "flower":       reads flower_tier_prices (the "CBD Flower Prices"
+ *                     tab), matching variants by metadata.tier_key /
+ *                     category handle (classic / exotic / super / snow /
+ *                     rapper). This is what prices CBD flower.
  *   - "preroll":      reads pre_roll_tier_prices, scoped to anything else
  *                     present in its key set (thc-a / hashholes / future
  *                     subcategories added in Medusa admin)
- *   - "thcp_flower":  reads thcp_flower_prices, scoped to the "thc-p"
- *                     category handle (single subcat, single 8pk variant).
- *                     Rides its own scope because THC-P flower's key set
- *                     ("thc-p") would collide with pre-roll variant sizes
- *                     if shared.
- *   - "flower_cbd":   reads flower_cbd_prices. Bare tier keys (classic /
- *                     exotic / …) match CBD variant metadata.tier_key
- *                     directly (Strategy 1). Strategy 2 category-handle
- *                     match strips the branch prefix ("cbd-classic" →
- *                     "classic") so variants without metadata still
- *                     resolve. Same shape for "flower_cbg".
- *   - "flower_cbg":   reads flower_cbg_prices; mirrors "flower_cbd".
+ *   - "flower_cbg":   reads flower_cbg_prices. Bare tier keys match CBG
+ *                     variant metadata.tier_key (Strategy 1); Strategy 2
+ *                     strips the "cbg-" category-handle prefix.
+ *
+ * THC-P pricing and the separate flower_cbd_prices table were removed
+ * 2026-10-06: CBD is priced from the "flower" scope.
  */
 
 type TierMap = Record<string, Record<string, number>>
@@ -80,10 +76,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const pricingService: any = req.scope.resolve(Modules.PRICING)
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  type Scope = "flower" | "preroll" | "thcp_flower" | "flower_cbd" | "flower_cbg"
+  type Scope = "flower" | "preroll" | "flower_cbg"
   const body = (req.body ?? {}) as { scope?: Scope }
   const scope: Scope = body.scope ?? "flower"
-  const VALID_SCOPES: Scope[] = ["flower", "preroll", "thcp_flower", "flower_cbd", "flower_cbg"]
+  const VALID_SCOPES: Scope[] = ["flower", "preroll", "flower_cbg"]
   if (!VALID_SCOPES.includes(scope)) {
     res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be one of ${VALID_SCOPES.join(", ")}` })
     return
@@ -92,8 +88,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const settingKey =
     scope === "flower" ? "flower_tier_prices"
     : scope === "preroll" ? "pre_roll_tier_prices"
-    : scope === "thcp_flower" ? "thcp_flower_prices"
-    : scope === "flower_cbd" ? "flower_cbd_prices"
     : "flower_cbg_prices"
 
   /* CBD/CBG variants live under prefixed category handles (cbd-classic,
@@ -101,10 +95,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
    * (classic / exotic / …) to match receiving's tier_key metadata.
    * Strategy 2 handle match needs to strip the prefix before checking
    * validTierKeys membership. Non-CBD/CBG scopes pass through unchanged. */
-  const handlePrefix =
-    scope === "flower_cbd" ? "cbd-"
-    : scope === "flower_cbg" ? "cbg-"
-    : null
+  const handlePrefix = scope === "flower_cbg" ? "cbg-" : null
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({
