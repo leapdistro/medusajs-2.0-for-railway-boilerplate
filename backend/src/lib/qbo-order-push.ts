@@ -352,7 +352,9 @@ export async function buildInvoiceDraft(
      *   - If the order has no fulfillments at all (manual push before
      *     fulfillment), fall back to ordered qty. Both via billableLines. */
     const variantQty = billedByLine.get(String(item.id)) ?? 0
-    if (billing.orderHasFulfillments && variantQty <= 0) continue
+    /* Nothing to bill on this line: unshipped, fully returned, or
+     * removed by an order edit (quantity 0). */
+    if (variantQty <= 0) continue
     const variantUnitPrice = unitPriceOf(item)
 
     /* Convert variant units → QBO Item's input unit (lb for flower,

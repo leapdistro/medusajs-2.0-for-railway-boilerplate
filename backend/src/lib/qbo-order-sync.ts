@@ -59,28 +59,45 @@ function isVoided(inv: QboInvoice): boolean {
   return inv.TotalAmt <= 0.004 && /\bvoided\b/i.test(inv.PrivateNote ?? "")
 }
 
-/** Order-independent comparison key for the lines QBO holds. */
-function invoiceLineKeys(inv: QboInvoice): string[] {
-  return (inv.Line ?? [])
-    .filter((l: any) => l?.DetailType === "SalesItemLineDetail")
-    .map((l: any) => key(
-      String(l.SalesItemLineDetail?.ItemRef?.value ?? ""),
-      Number(l.SalesItemLineDetail?.Qty ?? 0),
-      Number(l.SalesItemLineDetail?.UnitPrice ?? 0),
-    ))
-    .sort()
-}
-
-function draftLineKeys(draft: InvoiceDraft): string[] {
-  const keys = draft.lines.map((l) => key(l.itemId, l.qty, l.unitPrice))
-  if (draft.shippingItemId && draft.shippingTotal > 0) {
-    keys.push(key(draft.shippingItemId, 1, draft.shippingTotal))
+/* Comparison is by DOLLAR AMOUNT per QBO Item, not qty × rate: the same
+ * $175 can be "0.25 lb @ $700" or "1 QP @ $175" — e.g. when a product
+ * was deleted after the push, the draft can't convert QP → lb. Amount per
+ * Item is what the customer is billed and what posts to each Item. */
+function invoiceAmounts(inv: QboInvoice): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const l of inv.Line ?? []) {
+    if (l?.DetailType !== "SalesItemLineDetail") continue
+    const id = String(l.SalesItemLineDetail?.ItemRef?.value ?? "")
+    m.set(id, (m.get(id) ?? 0) + Number(l.Amount ?? 0))
   }
-  return keys.sort()
+  return m
 }
 
-function key(itemId: string, qty: number, unitPrice: number): string {
-  return `${itemId}|${Math.round(qty * 10000) / 10000}|${round2(unitPrice)}`
+function draftAmounts(draft: InvoiceDraft): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const l of draft.lines) m.set(l.itemId, (m.get(l.itemId) ?? 0) + round2(l.qty * l.unitPrice))
+  if (draft.shippingItemId && draft.shippingTotal > 0) {
+    m.set(draft.shippingItemId, (m.get(draft.shippingItemId) ?? 0) + round2(draft.shippingTotal))
+  }
+  return m
+}
+
+/** Same amounts per Item, allowing 2¢ per Item: an edited $266.12/QP
+ *  becomes a $1,064.48/lb rate that QBO stores as $266.13 on 0.25 lb. */
+function sameAmounts(a: Map<string, number>, b: Map<string, number>): boolean {
+  for (const id of new Set([...a.keys(), ...b.keys()])) {
+    if (Math.abs((a.get(id) ?? 0) - (b.get(id) ?? 0)) > 0.02) return false
+  }
+  return true
+}
+
+function canonical(m: Map<string, number>): string {
+  return [...m.entries()]
+    .map(([id, amt]) => [id, round2(amt)] as const)
+    .filter(([, amt]) => Math.abs(amt) > 0.004)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, amt]) => `${id}=${amt.toFixed(2)}`)
+    .join(" ")
 }
 
 /** Merge a patch into the order's CURRENT metadata (re-read, so a
@@ -202,7 +219,11 @@ async function reconcile(scope: any, orderId: string, logger: Logger, dryRun = f
   const docLabel = inv.DocNumber ?? invoiceId
   const url = invoicePublicUrl(conn.environment, conn.realm_id, invoiceId)
 
-  const same = JSON.stringify(invoiceLineKeys(inv)) === JSON.stringify(draftLineKeys(draft))
+  const same = sameAmounts(invoiceAmounts(inv), draftAmounts(draft))
+  if (dryRun && process.env.QBO_SYNC_DEBUG && !same) {
+    console.log(`  ${label} QBO  : ${canonical(invoiceAmounts(inv))}`)
+    console.log(`  ${label} WANT : ${canonical(draftAmounts(draft))}`)
+  }
   if (same || (isVoided(inv) && desiredTotal <= 0.004)) {
     return { ok: true, action: "unchanged", invoiceId, url, total: inv.TotalAmt, message: `Invoice ${docLabel} already matches` }
   }
