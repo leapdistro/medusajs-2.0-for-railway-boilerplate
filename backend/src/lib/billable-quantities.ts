@@ -1,12 +1,18 @@
 /**
- * Billable quantity per order line — the ONE place that decides how many
- * units of a line we charge for. Consumed by the QBO invoice push and the
+ * Billable quantity + price per order line — the ONE place that decides
+ * what we charge for. Consumed by the QBO invoice push/sync and the
  * capture-on-fulfillment subscriber; the storefront's lib/orders.ts
  * mirrors the same rule for the /account order page + invoice PDF.
  *
- * Source: `items.detail.fulfilled_quantity` — Medusa's OrderItem counter,
- * kept in LINE units (1 × LB = 1) and decremented when a fulfillment is
- * cancelled.
+ * Quantity: `items.detail.fulfilled_quantity` minus
+ * `items.detail.return_received_quantity` — Medusa's OrderItem counters,
+ * kept in LINE units (1 × LB = 1). Fulfilled drops when a fulfillment is
+ * cancelled; returned rises when a return is received.
+ *
+ * Price: `items.detail.unit_price` — the versioned price after an order
+ * edit. `items.unit_price` is the checkout snapshot and never changes
+ * (order 340 was invoiced $150 over on it). Falls back to it for lines
+ * never edited.
  *
  * Do NOT sum `fulfillments.items.quantity`. Fulfillment items are written
  * per inventory item in POOL units (ordered qty × variant
@@ -14,14 +20,16 @@
  * Summing them billed LB lines 4× on QBO invoices 1206 / 1246 (orders
  * 317 / 332) and inflated order 151.
  *
- * Wholesale rule: bill what shipped. Lines are clamped to the ordered qty
- * so a bad counter can never bill more than was bought. Before any
- * fulfillment exists we bill the ordered qty (manual push / pre-ship PDF).
+ * Wholesale rule: bill what shipped and wasn't sent back. Lines are
+ * clamped to [0, ordered] so a bad counter can never bill more than was
+ * bought. Before any fulfillment exists we bill the ordered qty (manual
+ * push / pre-ship PDF) — unless the order is cancelled, which bills 0.
  *
  * Query fields required on the order:
- *   "items.id", "items.quantity", "items.raw_quantity",
- *   "items.detail.quantity", "items.detail.fulfilled_quantity",
- *   "items.unit_price"
+ *   "status", "items.id", "items.quantity", "items.raw_quantity",
+ *   "items.unit_price", "items.detail.quantity",
+ *   "items.detail.unit_price", "items.detail.fulfilled_quantity",
+ *   "items.detail.return_received_quantity"
  */
 
 type BillableItem = {
@@ -29,7 +37,12 @@ type BillableItem = {
   quantity?: unknown
   raw_quantity?: unknown
   unit_price?: unknown
-  detail?: { quantity?: unknown; fulfilled_quantity?: unknown } | null
+  detail?: {
+    quantity?: unknown
+    unit_price?: unknown
+    fulfilled_quantity?: unknown
+    return_received_quantity?: unknown
+  } | null
 }
 
 function num(v: unknown): number {
@@ -51,9 +64,22 @@ export function fulfilledQty(item: BillableItem): number {
   return Math.max(0, num(item.detail?.fulfilled_quantity))
 }
 
+export function returnedQty(item: BillableItem): number {
+  return Math.max(0, num(item.detail?.return_received_quantity))
+}
+
+/** Current price after any order edit. */
+export function unitPriceOf(item: BillableItem): number {
+  const edited = item.detail?.unit_price
+  return edited != null && edited !== "" ? num(edited) : num(item.unit_price)
+}
+
 export type BillableLine = { id: string; ordered: number; billed: number; unitPrice: number }
 
-export function billableLines(items: BillableItem[] | null | undefined): {
+export function billableLines(
+  items: BillableItem[] | null | undefined,
+  opts: { canceled?: boolean } = {},
+): {
   lines: BillableLine[]
   orderHasFulfillments: boolean
 } {
@@ -61,8 +87,12 @@ export function billableLines(items: BillableItem[] | null | undefined): {
   const orderHasFulfillments = list.some((it) => fulfilledQty(it) > 0)
   const lines = list.map((it) => {
     const ordered = orderedQty(it)
-    const billed = orderHasFulfillments ? Math.min(fulfilledQty(it), ordered) : ordered
-    return { id: String(it.id), ordered, billed, unitPrice: num(it.unit_price) }
+    const billed = opts.canceled
+      ? 0
+      : orderHasFulfillments
+        ? Math.min(Math.max(0, fulfilledQty(it) - returnedQty(it)), ordered)
+        : ordered
+    return { id: String(it.id), ordered, billed, unitPrice: unitPriceOf(it) }
   })
   return { lines, orderHasFulfillments }
 }

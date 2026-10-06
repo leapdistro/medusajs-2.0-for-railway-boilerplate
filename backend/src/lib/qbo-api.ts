@@ -967,40 +967,7 @@ export async function createInvoice(
   },
 ): Promise<{ id: string; docNumber: string | null; totalAmt: number; balance: number }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
-  const taxCodeRef = args.taxExempt ? { value: "NON" } : undefined
-
-  const itemLines = args.lines.map((l, i) => ({
-    Id: String(i + 1),
-    DetailType: "SalesItemLineDetail",
-    Amount: round2(l.qty * l.unitPrice),
-    Description: l.description ?? "",
-    SalesItemLineDetail: {
-      ItemRef: { value: l.itemId, name: l.itemName },
-      Qty: l.qty,
-      UnitPrice: l.unitPrice,
-      ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
-    },
-  }))
-
-  /* Shipping is a separate line referencing a Shipping item — keeps it
-   * out of inventory accounts and visible on the Invoice. If no shipping
-   * item id was provided, skip the line and just embed it in privateNote
-   * so the operator knows it was charged. */
-  const Line: any[] = [...itemLines]
-  if (args.shippingTotal && args.shippingItemId) {
-    Line.push({
-      Id: String(itemLines.length + 1),
-      DetailType: "SalesItemLineDetail",
-      Amount: round2(args.shippingTotal),
-      Description: "Shipping",
-      SalesItemLineDetail: {
-        ItemRef: { value: args.shippingItemId, name: "Shipping" },
-        Qty: 1,
-        UnitPrice: round2(args.shippingTotal),
-        ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
-      },
-    })
-  }
+  const Line = invoiceLineArray(args)
 
   const body: any = {
     CustomerRef: { value: args.customerId },
@@ -1023,6 +990,111 @@ export async function createInvoice(
     totalAmt: Number(inv.TotalAmt ?? 0),
     balance: Number(inv.Balance ?? 0),
   }
+}
+
+/** The Line array for an Invoice — shared by create and update so a
+ *  synced invoice is built exactly like a freshly pushed one. */
+export function invoiceLineArray(args: {
+  lines: InvoiceLine[]
+  shippingTotal?: number
+  shippingItemId?: string
+  taxExempt?: boolean
+  /** false on update: lines without an Id replace the invoice's lines
+   *  wholesale, where made-up Ids would be matched against real ones. */
+  withIds?: boolean
+}): any[] {
+  const taxCodeRef = args.taxExempt ? { value: "NON" } : undefined
+  const withIds = args.withIds !== false
+
+  const itemLines = args.lines.map((l, i) => ({
+    ...(withIds ? { Id: String(i + 1) } : {}),
+    DetailType: "SalesItemLineDetail",
+    Amount: round2(l.qty * l.unitPrice),
+    Description: l.description ?? "",
+    SalesItemLineDetail: {
+      ItemRef: { value: l.itemId, name: l.itemName },
+      Qty: l.qty,
+      UnitPrice: l.unitPrice,
+      ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
+    },
+  }))
+
+  /* Shipping is a separate line referencing a Shipping item — keeps it
+   * out of inventory accounts and visible on the Invoice. If no shipping
+   * item id was provided, skip the line and just embed it in privateNote
+   * so the operator knows it was charged. */
+  const Line: any[] = [...itemLines]
+  if (args.shippingTotal && args.shippingItemId) {
+    Line.push({
+      ...(withIds ? { Id: String(itemLines.length + 1) } : {}),
+      DetailType: "SalesItemLineDetail",
+      Amount: round2(args.shippingTotal),
+      Description: "Shipping",
+      SalesItemLineDetail: {
+        ItemRef: { value: args.shippingItemId, name: "Shipping" },
+        Qty: 1,
+        UnitPrice: round2(args.shippingTotal),
+        ...(taxCodeRef ? { TaxCodeRef: taxCodeRef } : {}),
+      },
+    })
+  }
+
+  return Line
+}
+
+export type QboInvoice = {
+  Id: string
+  SyncToken: string
+  DocNumber?: string
+  TotalAmt: number
+  Balance: number
+  PrivateNote?: string
+  Line: any[]
+  LinkedTxn?: Array<{ TxnId: string; TxnType: string }>
+}
+
+export async function readInvoice(qbo: QboService, conn: QboConnectionRow, invoiceId: string): Promise<QboInvoice> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const json = await qboFetch(fresh, `/invoice/${encodeURIComponent(invoiceId)}?minorversion=73`)
+  const inv = json?.Invoice
+  if (!inv?.Id) throw new Error(`Invoice ${invoiceId} not found in QuickBooks`)
+  return { ...inv, TotalAmt: Number(inv.TotalAmt ?? 0), Balance: Number(inv.Balance ?? 0) }
+}
+
+/** Replace an existing invoice's lines (sparse update keeps customer,
+ *  dates, terms, DocNumber, linked payments). */
+export async function updateInvoiceLines(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  invoice: Pick<QboInvoice, "Id" | "SyncToken">,
+  args: { lines: InvoiceLine[]; shippingTotal?: number; shippingItemId?: string; taxExempt?: boolean; privateNote?: string },
+): Promise<{ totalAmt: number; balance: number }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const body: any = {
+    Id: invoice.Id,
+    SyncToken: invoice.SyncToken,
+    sparse: true,
+    Line: invoiceLineArray({ ...args, withIds: false }),
+  }
+  if (args.privateNote) body.PrivateNote = args.privateNote.slice(0, 4000)
+  const json = await qboFetch(fresh, `/invoice?minorversion=73`, { method: "POST", body: JSON.stringify(body) })
+  const inv = json?.Invoice
+  if (!inv?.Id) throw new Error(`Invoice update returned no Id: ${JSON.stringify(json).slice(0, 400)}`)
+  return { totalAmt: Number(inv.TotalAmt ?? 0), balance: Number(inv.Balance ?? 0) }
+}
+
+/** Void zeroes the invoice in place (QBO keeps the record) and reverses
+ *  its inventory effect. Only valid with no payments applied. */
+export async function voidInvoice(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  invoice: Pick<QboInvoice, "Id" | "SyncToken">,
+): Promise<void> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  await qboFetch(fresh, `/invoice?operation=void&minorversion=73`, {
+    method: "POST",
+    body: JSON.stringify({ Id: invoice.Id, SyncToken: invoice.SyncToken }),
+  })
 }
 
 export function invoicePublicUrl(environment: string, realmId: string, invoiceId: string): string {

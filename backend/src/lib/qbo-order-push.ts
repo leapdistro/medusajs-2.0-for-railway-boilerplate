@@ -24,98 +24,42 @@ import {
   resolveCategoryChain,
 } from "./qbo-api"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
-import { billableItemsTotal, billableLines, orderedItemsTotal } from "./billable-quantities"
+import { billableItemsTotal, billableLines, orderedItemsTotal, unitPriceOf } from "./billable-quantities"
 
 export type OrderPushOutcome =
   | { ok: true; invoiceId: string; balance: number; paymentId?: string; url: string }
   | { ok: false; code: "ALREADY_PUSHED"; invoiceId: string }
   | { ok: false; code: "NOT_CONNECTED" | "NO_CUSTOMER" | "MISSING_ITEM" | "API_ERROR" | "TOTAL_MISMATCH"; error: string }
 
-type Logger = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void }
+export type Logger = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void }
 
-export async function pushOrderToQbo(
+export type InvoiceDraft = {
+  qboCustomerId: string
+  salesTermId: string | null
+  lines: Array<{ itemId: string; itemName: string; qty: number; unitPrice: number; description: string }>
+  invoiceLinesTotal: number
+  shippingTotal: number
+  shippingItemId?: string
+  cardPayment?: any
+  cardTransId?: string
+  cardAuthCode?: string
+}
+
+/**
+ * Build the invoice QBO should hold for this order right now: customer,
+ * terms, card-payment facts, item lines (lazy-creating missing Items),
+ * shipping, and the total guards. Shared by the first push and every
+ * later sync so both apply exactly the same rules.
+ */
+export async function buildInvoiceDraft(
   scope: any,
-  orderId: string,
+  qbo: any,
+  conn: any,
+  query: any,
+  order: any,
   logger: Logger,
-  options: { force?: boolean } = {},
-): Promise<OrderPushOutcome> {
-  let qbo: any
-  try {
-    qbo = scope.resolve(QBO_CONNECTION_MODULE)
-  } catch {
-    return { ok: false, code: "NOT_CONNECTED", error: "QBO module not registered" }
-  }
-  const connRows = await qbo.listQboConnections({}, { take: 1 }).catch(() => [])
-  const conn = connRows[0]
-  if (!conn) {
-    return { ok: false, code: "NOT_CONNECTED", error: "QBO is not connected — visit /app/quickbooks" }
-  }
-
-  /* Load the order with everything we need in one query. */
-  const { ContainerRegistrationKeys } = await import("@medusajs/framework/utils")
-  const query = scope.resolve(ContainerRegistrationKeys.QUERY)
-  const { data: orders } = await query.graph({
-    entity: "order",
-    fields: [
-      "id", "display_id", "currency_code", "total", "subtotal", "shipping_total",
-      "metadata", "created_at",
-      "customer.id", "customer.email", "customer.phone", "customer.metadata",
-      /* Pull quantity from multiple sources — Medusa v2 line items can
-       * have quantity zeroed out after fulfillment cancellation while
-       * raw_quantity / detail.quantity retain the original ordered qty. */
-      "items.id", "items.title", "items.quantity", "items.raw_quantity",
-      "items.unit_price", "items.detail.quantity",
-      /* Billable qty in LINE units — see lib/billable-quantities.ts. */
-      "items.detail.fulfilled_quantity",
-      "items.variant_sku", "items.variant_id", "items.product_title",
-      /* variant.title is the authoritative variant label ("LB", "½",
-       * "QP", "30 ct Box"). items.title may have been cart-derived
-       * differently — prefer variant.title for invoice descriptions. */
-      "items.variant.title",
-      /* variant.inventory_items[].required_quantity is the pool-unit
-       * multiplier per variant (QP=1, Half=2, LB=4 for flower). Used
-       * to convert order-line variant count → pool-unit count for the
-       * QBO invoice so QBO inventory math matches Medusa.
-       *
-       * inputToPool (max required_quantity across ALL of a product's
-       * variants) is resolved in a separate shallow product query
-       * below — walking it nested through order→items→variant→product
-       * →variants→inventory_items.required_quantity silently drops the
-       * link-level required_quantity for sibling variants, leaving
-       * inputToPool = 1 so each QP got deducted as 1 lb instead of
-       * 0.25 lb. */
-      "items.variant.metadata",
-      "items.variant.inventory_items.required_quantity",
-      "items.variant.product.id",
-      /* product.categories drives QBO Item Category placement on
-       * lazy-create. Without these fields the walk falls back to
-       * root-level items (see the missing-item branch below). */
-      "items.variant.product.categories.id",
-      "items.variant.product.categories.name",
-      "items.variant.product.categories.parent_category_id",
-      /* Actual payment state on the order — drives the QBO Payment
-       * decision below. We can't trust customer.metadata.payment_terms
-       * alone: an admin can grant a buyer Net 15 yet that buyer's
-       * older order was paid by card. Read the payment record. */
-      "payment_collections.payments.id",
-      "payment_collections.payments.provider_id",
-      "payment_collections.payments.amount",
-      "payment_collections.payments.captured_at",
-      "payment_collections.payments.canceled_at",
-      "payment_collections.payments.data",
-    ],
-    filters: { id: orderId },
-  })
-  const order = (orders as any[])[0]
-  if (!order) {
-    return { ok: false, code: "API_ERROR", error: `No order ${orderId}` }
-  }
-
-  /* Idempotency — skip if already pushed unless explicitly forced. */
-  if (order.metadata?.qbo_invoice_id && !options.force) {
-    return { ok: false, code: "ALREADY_PUSHED", invoiceId: String(order.metadata.qbo_invoice_id) }
-  }
-
+  opts: { allowEmpty?: boolean; dryRun?: boolean } = {},
+): Promise<InvoiceDraft | Extract<OrderPushOutcome, { ok: false }>> {
   const customer = order.customer
   if (!customer?.email) {
     return { ok: false, code: "NO_CUSTOMER", error: "Order has no customer or email — push aborted" }
@@ -306,7 +250,7 @@ export async function pushOrderToQbo(
    * ordered; ordered qty when nothing has shipped yet). One rule shared
    * with the capture subscriber and the storefront invoice — see
    * lib/billable-quantities.ts for why fulfillment items can't be summed. */
-  const billing = billableLines(order.items)
+  const billing = billableLines(order.items, { canceled: order.status === "canceled" })
   const billedByLine = new Map(billing.lines.map((l) => [l.id, l.billed]))
 
   for (const item of order.items ?? []) {
@@ -317,6 +261,10 @@ export async function pushOrderToQbo(
     }
     const baseSku = baseFromVariantSku(vSku)
     let found = await findItemBySku(qbo, conn, baseSku).catch(() => null)
+    if (!found && opts.dryRun) {
+      missing.push(`${item.product_title ?? item.title ?? "untitled"} (SKU ${baseSku}, would be created)`)
+      continue
+    }
     if (!found) {
       /* Lazy-create: no QBO Item for this SKU yet. Build one now using
        * the same metadata push-bill would use — strain/product name,
@@ -405,7 +353,7 @@ export async function pushOrderToQbo(
      *     fulfillment), fall back to ordered qty. Both via billableLines. */
     const variantQty = billedByLine.get(String(item.id)) ?? 0
     if (billing.orderHasFulfillments && variantQty <= 0) continue
-    const variantUnitPrice = Number(item.unit_price ?? 0)
+    const variantUnitPrice = unitPriceOf(item)
 
     /* Convert variant units → QBO Item's input unit (lb for flower,
      * box for pre-rolls).
@@ -496,7 +444,7 @@ export async function pushOrderToQbo(
       error: `QBO Items not found for: ${missing.join("; ")}. Push a receiving for them or create the items manually in QBO.`,
     }
   }
-  if (lines.length === 0) {
+  if (lines.length === 0 && !opts.allowEmpty) {
     return { ok: false, code: "API_ERROR", error: "Order has no eligible line items to push" }
   }
 
@@ -523,11 +471,33 @@ export async function pushOrderToQbo(
     }
   }
 
+  /* Independent ceiling: Medusa's own current order total (reflects
+   * order edits and received returns). Catches any rule above drifting
+   * from what Medusa says the buyer owes — the class of bug behind
+   * orders 317/332 (4x qty) and 340 (pre-edit prices). */
+  const medusaCurrentTotal = Number(
+    order.summary?.current_order_total ?? order.summary?.totals?.current_order_total ?? NaN,
+  )
+  if (Number.isFinite(medusaCurrentTotal)) {
+    const goodsCeiling = round2(medusaCurrentTotal - Number(order.shipping_total ?? 0))
+    if (invoiceLinesTotal > Math.max(0, goodsCeiling) + tolerance + 0.01) {
+      logger.error(
+        `[qbo-order-push] TOTAL_MISMATCH order ${order.display_id ?? order.id}: invoice lines $${invoiceLinesTotal} exceed Medusa's current goods total $${goodsCeiling}`,
+      )
+      return {
+        ok: false,
+        code: "TOTAL_MISMATCH",
+        error: `Invoice lines total $${invoiceLinesTotal.toFixed(2)} is more than Medusa's current order total for goods ($${goodsCeiling.toFixed(2)}). Nothing was sent to QuickBooks.`,
+      }
+    }
+  }
+
   /* 4. Shipping line — resolve a Service-type "Shipping" Item the first
    *    time we push an invoice with shipping cost, and reuse it
    *    thereafter. Lives separately from product lines so QBO P&L can
    *    split product revenue from shipping revenue. */
-  const shippingTotal = Number(order.shipping_total ?? 0)
+  /* Nothing billable (cancelled / fully returned) means no shipping either. */
+  const shippingTotal = lines.length > 0 ? Number(order.shipping_total ?? 0) : 0
   let shippingItemId: string | undefined
   if (shippingTotal > 0) {
     try {
@@ -545,6 +515,127 @@ export async function pushOrderToQbo(
       logger.warn(`[qbo-order-push] shipping item resolve failed for order ${order.id}: ${e?.message}`)
     }
   }
+
+  return {
+    qboCustomerId: qboCustomerId as string,
+    salesTermId,
+    lines,
+    invoiceLinesTotal,
+    shippingTotal,
+    shippingItemId,
+    cardPayment,
+    cardTransId,
+    cardAuthCode,
+  }
+}
+
+/** Resolve the QBO connection and load the order with every field the
+ *  push and the sync need. */
+export async function loadQboOrder(
+  scope: any,
+  orderId: string,
+): Promise<{ qbo: any; conn: any; query: any; order: any } | Extract<OrderPushOutcome, { ok: false }>> {
+  let qbo: any
+  try {
+    qbo = scope.resolve(QBO_CONNECTION_MODULE)
+  } catch {
+    return { ok: false, code: "NOT_CONNECTED", error: "QBO module not registered" }
+  }
+  const connRows = await qbo.listQboConnections({}, { take: 1 }).catch(() => [])
+  const conn = connRows[0]
+  if (!conn) {
+    return { ok: false, code: "NOT_CONNECTED", error: "QBO is not connected — visit /app/quickbooks" }
+  }
+
+  /* Load the order with everything we need in one query. */
+  const { ContainerRegistrationKeys } = await import("@medusajs/framework/utils")
+  const query = scope.resolve(ContainerRegistrationKeys.QUERY)
+  const { data: orders } = await query.graph({
+    entity: "order",
+    fields: [
+      "id", "display_id", "currency_code", "total", "subtotal", "shipping_total",
+      "metadata", "created_at",
+      "customer.id", "customer.email", "customer.phone", "customer.metadata",
+      /* Pull quantity from multiple sources — Medusa v2 line items can
+       * have quantity zeroed out after fulfillment cancellation while
+       * raw_quantity / detail.quantity retain the original ordered qty. */
+      "items.id", "items.title", "items.quantity", "items.raw_quantity",
+      "items.unit_price", "items.detail.quantity",
+      /* Billable qty + current (edited) price — see lib/billable-quantities.ts. */
+      "items.detail.unit_price",
+      "items.detail.fulfilled_quantity",
+      "items.detail.return_received_quantity",
+      /* status: a cancelled order bills nothing. summary: Medusa's own
+       * current order total — the independent ceiling for any invoice. */
+      "status", "summary",
+      "items.variant_sku", "items.variant_id", "items.product_title",
+      /* variant.title is the authoritative variant label ("LB", "½",
+       * "QP", "30 ct Box"). items.title may have been cart-derived
+       * differently — prefer variant.title for invoice descriptions. */
+      "items.variant.title",
+      /* variant.inventory_items[].required_quantity is the pool-unit
+       * multiplier per variant (QP=1, Half=2, LB=4 for flower). Used
+       * to convert order-line variant count → pool-unit count for the
+       * QBO invoice so QBO inventory math matches Medusa.
+       *
+       * inputToPool (max required_quantity across ALL of a product's
+       * variants) is resolved in a separate shallow product query
+       * below — walking it nested through order→items→variant→product
+       * →variants→inventory_items.required_quantity silently drops the
+       * link-level required_quantity for sibling variants, leaving
+       * inputToPool = 1 so each QP got deducted as 1 lb instead of
+       * 0.25 lb. */
+      "items.variant.metadata",
+      "items.variant.inventory_items.required_quantity",
+      "items.variant.product.id",
+      /* product.categories drives QBO Item Category placement on
+       * lazy-create. Without these fields the walk falls back to
+       * root-level items (see the missing-item branch below). */
+      "items.variant.product.categories.id",
+      "items.variant.product.categories.name",
+      "items.variant.product.categories.parent_category_id",
+      /* Actual payment state on the order — drives the QBO Payment
+       * decision below. We can't trust customer.metadata.payment_terms
+       * alone: an admin can grant a buyer Net 15 yet that buyer's
+       * older order was paid by card. Read the payment record. */
+      "payment_collections.payments.id",
+      "payment_collections.payments.provider_id",
+      "payment_collections.payments.amount",
+      "payment_collections.payments.captured_at",
+      "payment_collections.payments.canceled_at",
+      "payment_collections.payments.data",
+    ],
+    filters: { id: orderId },
+  })
+  const order = (orders as any[])[0]
+  if (!order) {
+    return { ok: false, code: "API_ERROR", error: `No order ${orderId}` }
+  }
+
+  return { qbo, conn, query, order }
+}
+
+export async function pushOrderToQbo(
+  scope: any,
+  orderId: string,
+  logger: Logger,
+  options: { force?: boolean } = {},
+): Promise<OrderPushOutcome> {
+  const loaded = await loadQboOrder(scope, orderId)
+  if ("ok" in loaded) return loaded
+  const { qbo, conn, query, order } = loaded
+
+  /* Idempotency — skip if already pushed unless explicitly forced. */
+  if (order.metadata?.qbo_invoice_id && !options.force) {
+    return { ok: false, code: "ALREADY_PUSHED", invoiceId: String(order.metadata.qbo_invoice_id) }
+  }
+
+  const draft = await buildInvoiceDraft(scope, qbo, conn, query, order, logger)
+  if ("ok" in draft) return draft
+  const {
+    qboCustomerId, salesTermId, lines, invoiceLinesTotal,
+    shippingTotal, shippingItemId, cardPayment, cardTransId, cardAuthCode,
+  } = draft
 
   /* 5. Create the Invoice.
    *    DocNumber strategy: deterministic mapping from Medusa display_id

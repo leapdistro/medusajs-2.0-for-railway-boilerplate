@@ -35,6 +35,7 @@
     "inspect:cart": "medusa exec ./src/scripts/inspect-cart.ts",
     "inspect:products": "medusa exec ./src/scripts/inspect-products.ts",
     "inspect:keys": "medusa exec ./src/scripts/inspect-keys.ts",
+    "qbo:sync-plan": "medusa exec ./src/scripts/qbo-sync-plan.ts",
     "test:store-products": "medusa exec ./src/scripts/test-store-products.ts",
     "test:email": "medusa exec ./src/scripts/test-email.ts",
     "seed:settings": "medusa exec ./src/scripts/seed-settings.ts",

@@ -44,6 +44,13 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
   const pushError = meta.qbo_push_error as string | undefined
   const pushErrorAt = meta.qbo_push_error_at as string | undefined
   const fulfillmentsCount = order?.fulfillments?.length ?? 0
+  /* Sync state (lib/qbo-order-sync): every order change re-syncs the
+   * invoice in the background; the outcome lands here. */
+  const syncedAt = meta.qbo_synced_at as string | undefined
+  const syncAction = meta.qbo_sync_action as string | undefined
+  const syncMessage = meta.qbo_sync_message as string | undefined
+  const syncError = meta.qbo_sync_error as string | undefined
+  const syncErrorAt = meta.qbo_sync_error_at as string | undefined
 
   /* ─── Auto-toast on QBO push completion ─────────────────────────────
    *
@@ -62,6 +69,43 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
    */
   const lastToastedInvoiceRef = useRef<string | null | undefined>(undefined)
   const lastToastedErrorAtRef = useRef<string | null | undefined>(undefined)
+  const lastSyncedAtRef = useRef<string | null | undefined>(undefined)
+  const lastSyncErrorAtRef = useRef<string | null | undefined>(undefined)
+
+  /* Toast background syncs (edit / return / cancel → invoice updated or
+   * voided). Same capture-first pattern as below so opening the page
+   * doesn't replay an old toast. */
+  useEffect(() => {
+    if (!order) return
+    if (lastSyncedAtRef.current === undefined) {
+      lastSyncedAtRef.current = syncedAt ?? null
+      lastSyncErrorAtRef.current = syncErrorAt ?? null
+      return
+    }
+    if (syncedAt && syncedAt !== lastSyncedAtRef.current) {
+      lastSyncedAtRef.current = syncedAt
+      if (syncAction === "updated" || syncAction === "voided") {
+        toast.success("QuickBooks updated", { description: syncMessage ?? `Invoice ${invoiceId ?? ""}` })
+      }
+    }
+    if (syncErrorAt && syncErrorAt !== lastSyncErrorAtRef.current) {
+      lastSyncErrorAtRef.current = syncErrorAt
+      if (invoiceId) toast.error("QuickBooks sync failed", { description: syncError ?? "See the QuickBooks widget" })
+    }
+  }, [order, syncedAt, syncAction, syncMessage, syncError, syncErrorAt, invoiceId])
+
+  /* Order changes happen through Medusa's own screens, which give this
+   * widget no signal — poll quietly while the page is open (10 min). */
+  useEffect(() => {
+    if (!invoiceId) return
+    let elapsed = 0
+    const interval = setInterval(() => {
+      elapsed += 5000
+      if (elapsed > 600_000) return clearInterval(interval)
+      if (document.visibilityState === "visible") refresh()
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [invoiceId, refresh])
 
   /* Capture initial state without toasting (so opening an
    * already-pushed order doesn't flash a stale toast on every visit),
@@ -146,6 +190,26 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
     }
   }
 
+  const onSync = async () => {
+    if (!order?.id) return
+    setBusy(true)
+    try {
+      const res = await fetch(`/admin/orders/${order.id}/sync-qbo`, { method: "POST", credentials: "include" })
+      const json = await res.json()
+      if (!res.ok || json?.ok === false) throw new Error(json?.error ?? `Sync failed (${res.status})`)
+      lastSyncedAtRef.current = undefined // re-capture after refresh, no double toast
+      toast.success(json.action === "unchanged" ? "QuickBooks already up to date" : "QuickBooks updated", {
+        description: json.message,
+      })
+      await refresh()
+    } catch (e: any) {
+      toast.error("QuickBooks sync failed", { description: e?.message ?? "Network error" })
+      await refresh()
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between gap-4 px-6 py-4">
@@ -153,7 +217,7 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
           <Heading level="h2">QuickBooks</Heading>
           {invoiceId ? (
             <Text size="small" className="text-ui-fg-subtle">
-              Auto-pushed when this order was fulfilled. Use Retry only if data needs re-syncing.
+              Kept in sync automatically: edits, returns and cancellations update or void the invoice.
             </Text>
           ) : pushError ? (
             <Text size="small" className="text-ui-fg-subtle">
@@ -171,13 +235,15 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
               ✓ Pushed · Invoice {invoiceId}{paymentId ? " · paid" : ""}
             </Badge>
           ) : null}
-          <Button
-            variant={pushError ? "danger" : invoiceId ? "secondary" : "primary"}
-            onClick={() => onPush(false)}
-            isLoading={busy}
-          >
-            {invoiceId ? "Retry Push" : pushError ? "Retry Push" : "Push to QuickBooks"}
-          </Button>
+          {invoiceId ? (
+            <Button variant={syncError ? "danger" : "secondary"} onClick={onSync} isLoading={busy}>
+              Sync now
+            </Button>
+          ) : (
+            <Button variant={pushError ? "danger" : "primary"} onClick={() => onPush(false)} isLoading={busy}>
+              {pushError ? "Retry Push" : "Push to QuickBooks"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -197,10 +263,27 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
         </div>
       ) : null}
 
+      {invoiceId && syncError ? (
+        <div className="px-6 py-4">
+          <Text size="small" weight="plus" style={{ color: "var(--destructive, #B91C1C)" }}>
+            Last sync failed
+          </Text>
+          <Text size="small" className="text-ui-fg-subtle" style={{ marginTop: 4 }}>
+            {syncError}
+          </Text>
+          {syncErrorAt ? (
+            <Text size="xsmall" className="text-ui-fg-muted" style={{ marginTop: 4 }}>
+              {new Date(syncErrorAt).toLocaleString()}
+            </Text>
+          ) : null}
+        </div>
+      ) : null}
+
       {invoiceId && pushedAt ? (
         <div className="px-6 py-4">
           <Text size="xsmall" className="text-ui-fg-muted">
             Pushed {new Date(pushedAt).toLocaleString()}
+            {syncedAt ? ` · last synced ${new Date(syncedAt).toLocaleString()}${syncMessage ? ` — ${syncMessage}` : ""}` : ""}
           </Text>
         </div>
       ) : null}

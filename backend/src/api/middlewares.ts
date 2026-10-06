@@ -1,6 +1,7 @@
 import multer from "multer"
 import sharp from "sharp"
 import { defineMiddlewares, type MedusaNextFunction, type MedusaRequest, type MedusaResponse } from "@medusajs/framework/http"
+import { qboSettledGuard } from "../lib/qbo-settled-guard"
 
 /**
  * Compresses inbound image uploads before they reach the route handler.
@@ -110,8 +111,26 @@ const customerDocUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024, files: 1 },
 })
 
+/* Requests that start a change to an order. Once its QBO invoice is
+ * fully paid these are refused (lib/qbo-settled-guard.ts). */
+const ORDER_CHANGE_ROUTES = [
+  "/admin/order-edits",
+  "/admin/returns",
+  "/admin/claims",
+  "/admin/exchanges",
+  "/admin/orders/:id/cancel",
+  "/admin/orders/:id/cancel-with-reason",
+  "/admin/orders/:id/line-items/:itemId/price",
+  "/admin/orders/:id/fulfillments/:fulfillment_id/cancel",
+]
+
 export default defineMiddlewares({
   routes: [
+    ...ORDER_CHANGE_ROUTES.map((matcher) => ({
+      matcher,
+      method: "POST" as const,
+      middlewares: [qboSettledGuard],
+    })),
     {
       matcher: "/store/mbs/applications",
       method: "POST",

@@ -48,6 +48,7 @@ export default async function fulfillmentToCaptureHandler({
         /* Billable qty in LINE units — same rule as qbo-order-push.ts
          * (lib/billable-quantities.ts) so invoice + capture agree. */
         "items.detail.quantity", "items.detail.fulfilled_quantity",
+        "items.detail.unit_price", "items.detail.return_received_quantity", "status",
         /* Find the kaja-authnet payment to capture. */
         "payment_collections.id",
         "payment_collections.payments.id",
@@ -95,7 +96,7 @@ export default async function fulfillmentToCaptureHandler({
   /* Compute capture amount = fulfilled-qty × unit_price + shipping.
    * Lines with 0 fulfilled qty contribute nothing (won't be billed).
    * This mirrors the invoice PDF + QBO push math exactly. */
-  const { lines } = billableLines(order.items)
+  const { lines } = billableLines(order.items, { canceled: order.status === "canceled" })
   const linesAmount = billableItemsTotal(lines)
   const shipping = Number(order.shipping_total ?? 0)
   const captureAmount = Number((linesAmount + shipping).toFixed(2))
