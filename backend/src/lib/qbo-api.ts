@@ -41,7 +41,13 @@ async function ensureFreshAccessToken(
   const tokens = await refreshTokens(connection.refresh_token)
   const fields = tokensToConnectionFields(tokens)
   await qbo.updateQboConnections({ id: connection.id, ...fields })
-  return { ...connection, ...fields }
+  /* Mutate the caller's object, not a copy: callers pass the same
+   * connection to every call in a push. Returning a copy left them with
+   * the old tokens, so each later call refreshed again with the OLD
+   * refresh token — which Intuit rejects (invalid_grant) once it has
+   * rotated it, failing the rest of the push. */
+  Object.assign(connection, fields)
+  return connection
 }
 
 async function qboFetch(

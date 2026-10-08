@@ -27,8 +27,10 @@ const MAX_ATTEMPTS = RETRY_DELAYS_MIN.length + 1
 const STUCK_AFTER_MS = 10 * 60 * 1000
 
 /** Failures a retry can't fix — surface immediately instead of retrying. */
+/* MISSING_ITEM is retried: a QBO API hiccup during item lookup surfaces
+ * as "item not found". */
 const PERMANENT_CODES = new Set([
-  "SETTLED", "BELOW_PAID", "VOIDED", "TOTAL_MISMATCH", "MISSING_ITEM", "NO_CUSTOMER",
+  "SETTLED", "BELOW_PAID", "VOIDED", "TOTAL_MISMATCH", "NO_CUSTOMER",
 ])
 
 type Job = {
