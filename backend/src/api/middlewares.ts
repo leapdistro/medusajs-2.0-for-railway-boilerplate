@@ -179,6 +179,13 @@ export default defineMiddlewares({
       bodyParser: { preserveRawBody: true, sizeLimit: "1mb" },
     },
     {
+      /* QBO webhooks are signed over the exact bytes sent — same raw-body
+       * requirement as KAJA (lib/qbo-inbound.ts verifyIntuitSignature). */
+      matcher: "/hooks/qbo",
+      method: "POST",
+      bodyParser: { preserveRawBody: true, sizeLimit: "1mb" },
+    },
+    {
       /* Medusa's default bodyParser sizeLimit is ~1 MB, which truncates
        * any phone-photo product image upload. The ceiling is raised to
        * 15 MB — enough headroom for full-resolution modern phone photos

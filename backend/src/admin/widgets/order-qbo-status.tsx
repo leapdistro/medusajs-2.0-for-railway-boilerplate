@@ -51,6 +51,10 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
   const syncMessage = meta.qbo_sync_message as string | undefined
   const syncError = meta.qbo_sync_error as string | undefined
   const syncErrorAt = meta.qbo_sync_error_at as string | undefined
+  /* Payment state as QuickBooks reports it (lib/qbo-inbound, webhooks). */
+  const payStatus = meta.qbo_payment_status as string | undefined
+  const amountPaid = Number(meta.qbo_amount_paid ?? 0)
+  const balance = Number(meta.qbo_balance ?? 0)
 
   /* ─── Auto-toast on QBO push completion ─────────────────────────────
    *
@@ -235,6 +239,10 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
               ✓ Pushed · Invoice {invoiceId}{paymentId ? " · paid" : ""}
             </Badge>
           ) : null}
+          {payStatus === "paid" ? <Badge color="green">Paid in QuickBooks</Badge>
+            : payStatus === "partially_paid" ? <Badge color="orange">Partly paid · ${amountPaid.toFixed(2)} · due ${balance.toFixed(2)}</Badge>
+            : payStatus === "voided" ? <Badge color="grey">Voided in QuickBooks</Badge>
+            : null}
           {invoiceId ? (
             <Button variant={syncError ? "danger" : "secondary"} onClick={onSync} isLoading={busy}>
               Sync now

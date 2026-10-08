@@ -1059,6 +1059,13 @@ export type QboInvoice = {
   LinkedTxn?: Array<{ TxnId: string; TxnType: string }>
 }
 
+/** Read any QBO entity by type + id (Payment, CreditMemo, …). */
+export async function readEntity(qbo: QboService, conn: QboConnectionRow, entity: string, id: string): Promise<any> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const json = await qboFetch(fresh, `/${entity.toLowerCase()}/${encodeURIComponent(id)}?minorversion=73`)
+  return json?.[entity] ?? null
+}
+
 export async function readInvoice(qbo: QboService, conn: QboConnectionRow, invoiceId: string): Promise<QboInvoice> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
   const json = await qboFetch(fresh, `/invoice/${encodeURIComponent(invoiceId)}?minorversion=73`)
