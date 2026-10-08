@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
 import { readInvoice } from "./qbo-api"
 import { SETTLED_MESSAGE, isSettled } from "./qbo-order-sync"
+import { logOrderHistory } from "./order-history-log"
 
 /**
  * Refuse order changes once the order's QBO invoice is fully paid.
@@ -36,6 +37,13 @@ export async function qboSettledGuard(
     if (!conn) return next()
     const inv = await readInvoice(qbo, conn, String(invoiceId))
     if (isSettled(inv)) {
+      const adminId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id ?? null
+      await logOrderHistory(req.scope, String(orderId), {
+        action: "change_blocked",
+        summary: `Change blocked — invoice ${inv.DocNumber ?? invoiceId} is fully paid (${describeAttempt(req)})`,
+        actor: { type: "admin", id: adminId },
+        details: { path: req.path ?? null, invoice_id: String(invoiceId) },
+      })
       res.status(400).json({
         type: "not_allowed",
         message: `${SETTLED_MESSAGE} (Invoice ${inv.DocNumber ?? invoiceId})`,
@@ -46,4 +54,16 @@ export async function qboSettledGuard(
     logger.warn(`[qbo-settled-guard] check failed for ${orderId}, allowing: ${e?.message}`)
   }
   next()
+}
+
+function describeAttempt(req: MedusaRequest): string {
+  const p = String(req.path ?? req.url ?? "")
+  if (p.includes("order-edits")) return "order edit"
+  if (p.includes("returns")) return "return"
+  if (p.includes("claims")) return "claim"
+  if (p.includes("exchanges")) return "exchange"
+  if (p.includes("/price")) return "price edit"
+  if (p.includes("fulfillments")) return "fulfillment cancel"
+  if (p.includes("cancel")) return "cancellation"
+  return "order change"
 }

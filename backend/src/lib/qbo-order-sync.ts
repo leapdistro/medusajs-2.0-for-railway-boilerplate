@@ -36,6 +36,7 @@ import {
   type Logger,
 } from "./qbo-order-push"
 import { acquireInflightLock, releaseInflightLock } from "./idempotency"
+import { logOrderHistory } from "./order-history-log"
 
 export const SETTLED_MESSAGE =
   "Invoice is settled and cannot be changed. It is fully paid in QuickBooks — record any adjustment there (credit memo or refund)."
@@ -43,7 +44,7 @@ export const SETTLED_MESSAGE =
 export type SyncAction = "created" | "updated" | "voided" | "unchanged" | "skipped"
 
 export type SyncOutcome =
-  | { ok: true; action: SyncAction; message: string; invoiceId?: string; total?: number; url?: string }
+  | { ok: true; action: SyncAction; message: string; invoiceId?: string; total?: number; before?: number; url?: string }
   | { ok: false; code: string; error: string; invoiceId?: string }
 
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -160,6 +161,21 @@ export async function syncOrderToQbo(scope: any, orderId: string, logger: Logger
   } catch (e: any) {
     logger.warn(`[qbo-order-sync] couldn't stamp order ${orderId}: ${e?.message}`)
   }
+
+  /* History: every change that reached (or failed to reach) QBO. */
+  if (outcome.ok === true && (outcome.action === "created" || outcome.action === "updated" || outcome.action === "voided")) {
+    await logOrderHistory(scope, orderId, {
+      action: `qbo.invoice_${outcome.action}`,
+      summary: `QuickBooks: ${outcome.message}`,
+      details: { invoice_id: outcome.invoiceId ?? null, before: outcome.before ?? null, after: outcome.total ?? null },
+    })
+  } else if (outcome.ok === false && outcome.code !== "LOCKED") {
+    await logOrderHistory(scope, orderId, {
+      action: "qbo.sync_failed",
+      summary: `QuickBooks sync failed (${outcome.code}): ${outcome.error}`,
+      details: { code: outcome.code, invoice_id: outcome.invoiceId ?? null },
+    })
+  }
   return outcome
 }
 
@@ -250,7 +266,7 @@ async function reconcile(scope: any, orderId: string, logger: Logger, dryRun = f
     if (dryRun) return { ok: true, action: "voided", invoiceId, total: 0, message: `Would void ${docLabel} ($${inv.TotalAmt.toFixed(2)} → $0)` }
     await voidInvoice(qbo, conn, inv)
     logger.info(`[qbo-order-sync] order ${label}: voided Invoice ${invoiceId}`)
-    return { ok: true, action: "voided", invoiceId, url, total: 0, message: `Invoice ${docLabel} voided (nothing left to bill)` }
+    return { ok: true, action: "voided", invoiceId, url, total: 0, before: inv.TotalAmt, message: `Invoice ${docLabel} voided (nothing left to bill)` }
   }
 
   /* 4. Update the lines in place. */
@@ -274,7 +290,7 @@ async function reconcile(scope: any, orderId: string, logger: Logger, dryRun = f
   }
   logger.info(`[qbo-order-sync] order ${label}: Invoice ${invoiceId} $${inv.TotalAmt} → $${updated.totalAmt}`)
   return {
-    ok: true, action: "updated", invoiceId, url, total: updated.totalAmt,
+    ok: true, action: "updated", invoiceId, url, total: updated.totalAmt, before: inv.TotalAmt,
     message: `Invoice ${docLabel} updated: $${inv.TotalAmt.toFixed(2)} → $${updated.totalAmt.toFixed(2)}`,
   }
 }
