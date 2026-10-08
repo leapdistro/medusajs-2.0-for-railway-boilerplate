@@ -98,6 +98,9 @@ const medusaConfig = {
       resolve: './src/modules/order-history',
     },
     {
+      resolve: './src/modules/qbo-sync',
+    },
+    {
       key: Modules.FILE,
       resolve: '@medusajs/file',
       options: {

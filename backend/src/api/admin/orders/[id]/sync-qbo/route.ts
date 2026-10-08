@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { syncOrderToQbo } from "../../../../../lib/qbo-order-sync"
+import { resolveOrderJobs } from "../../../../../lib/qbo-sync-queue"
 
 /**
  * POST /admin/orders/:id/sync-qbo
@@ -18,7 +19,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     warn: (m) => logger.warn(m),
     error: (m) => logger.error(m),
   })
-  if (outcome.ok === true) return res.json(outcome)
+  if (outcome.ok === true) {
+    await resolveOrderJobs(req.scope, orderId).catch(() => {})
+    return res.json(outcome)
+  }
   const failed = outcome as { code: string }
   const status = failed.code === "SETTLED" || failed.code === "BELOW_PAID" || failed.code === "VOIDED" ? 409
     : failed.code === "LOCKED" ? 423

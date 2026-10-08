@@ -130,7 +130,12 @@ export async function planOrderSync(scope: any, orderId: string, logger: Logger)
   return reconcile(scope, orderId, logger, true)
 }
 
-export async function syncOrderToQbo(scope: any, orderId: string, logger: Logger): Promise<SyncOutcome> {
+export async function syncOrderToQbo(
+  scope: any,
+  orderId: string,
+  logger: Logger,
+  opts: { logFailures?: boolean } = {},
+): Promise<SyncOutcome> {
   const result = await withOrderLock(orderId, () => reconcile(scope, orderId, logger))
   const outcome: SyncOutcome = result ?? {
     ok: false,
@@ -169,7 +174,7 @@ export async function syncOrderToQbo(scope: any, orderId: string, logger: Logger
       summary: `QuickBooks: ${outcome.message}`,
       details: { invoice_id: outcome.invoiceId ?? null, before: outcome.before ?? null, after: outcome.total ?? null },
     })
-  } else if (outcome.ok === false && outcome.code !== "LOCKED") {
+  } else if (outcome.ok === false && outcome.code !== "LOCKED" && opts.logFailures !== false) {
     await logOrderHistory(scope, orderId, {
       action: "qbo.sync_failed",
       summary: `QuickBooks sync failed (${outcome.code}): ${outcome.error}`,
