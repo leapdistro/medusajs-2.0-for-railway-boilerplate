@@ -175,22 +175,33 @@ async function recordStatus(
 }
 
 /** Fully paid in QBO → capture the order's open Net-terms (system)
- *  payment so Medusa shows it Paid. Card payments are already captured. */
+ *  payment so Medusa shows it Paid. Card payments are already captured.
+ *
+ *  An order edit that changes the total (price edit, added shipping)
+ *  cancels the original collection and opens a new `not_paid` one with
+ *  no payment on it. There's nothing to capture there, so mark that
+ *  collection paid instead — same outcome, Medusa shows the order Paid. */
 async function capturePaidOrder(scope: any, orderId: string, logger: Logger): Promise<void> {
   try {
     const query = scope.resolve(ContainerRegistrationKeys.QUERY)
     const { data } = await query.graph({
       entity: "order",
-      fields: ["payment_collections.payments.id", "payment_collections.payments.provider_id",
+      fields: ["payment_collections.id", "payment_collections.status",
+        "payment_collections.payments.id", "payment_collections.payments.provider_id",
         "payment_collections.payments.captured_at", "payment_collections.payments.canceled_at"],
       filters: { id: orderId },
     })
-    const payments = ((data as any[])[0]?.payment_collections ?? []).flatMap((pc: any) => pc?.payments ?? [])
+    const collections = ((data as any[])[0]?.payment_collections ?? []) as any[]
+    const payments = collections.flatMap((pc: any) => pc?.payments ?? [])
     const open = payments.filter((p: any) => p?.provider_id === "pp_system_default" && !p?.captured_at && !p?.canceled_at)
-    if (open.length === 0) return
-    const { capturePaymentWorkflow } = await import("@medusajs/medusa/core-flows")
+    const unpaid = collections.filter((pc: any) => pc?.status === "not_paid" && (pc?.payments ?? []).length === 0)
+    if (open.length === 0 && unpaid.length === 0) return
+    const { capturePaymentWorkflow, markPaymentCollectionAsPaid } = await import("@medusajs/medusa/core-flows")
     for (const p of open) {
       await capturePaymentWorkflow(scope).run({ input: { payment_id: p.id } })
+    }
+    for (const pc of unpaid) {
+      await markPaymentCollectionAsPaid(scope).run({ input: { order_id: orderId, payment_collection_id: pc.id } })
     }
   } catch (e: any) {
     logger.warn(`[qbo-inbound] couldn't mark order ${orderId} paid in Medusa: ${e?.message}`)
