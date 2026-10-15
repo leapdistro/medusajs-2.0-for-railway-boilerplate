@@ -121,6 +121,7 @@ const ORDER_CHANGE_ROUTES = [
   "/admin/orders/:id/cancel",
   "/admin/orders/:id/cancel-with-reason",
   "/admin/orders/:id/line-items/:itemId/price",
+  "/admin/orders/:id/shipping-charge",
   "/admin/orders/:id/fulfillments/:fulfillment_id/cancel",
 ]
 
