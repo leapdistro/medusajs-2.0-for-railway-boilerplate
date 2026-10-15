@@ -117,6 +117,12 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "variants.inventory_items.inventory.location_levels.stocked_quantity",
       "variants.inventory_items.inventory.location_levels.reserved_quantity",
       "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
+      /* Parent + grandparent names let the storefront resolve the
+       * top-level category from the real tree. Subcategory names are
+       * not unique across branches — "CBD" exists under Flower AND
+       * under Pre-Rolls — so a name-only guess misfiles products. */
+      "categories.parent_category.name", "categories.parent_category.handle",
+      "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
       "product_attributes.*",
     ],
     filters,
