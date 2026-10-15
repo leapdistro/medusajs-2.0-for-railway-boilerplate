@@ -214,6 +214,28 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
     }
   }
 
+  /* Pull payment status straight from the invoice — for when the QBO
+   * payment webhook didn't arrive. */
+  const onCheckPayment = async () => {
+    if (!order?.id) return
+    setBusy(true)
+    try {
+      const res = await fetch(`/admin/orders/${order.id}/qbo-payment`, { method: "POST", credentials: "include" })
+      const json = await res.json()
+      if (!res.ok || json?.ok === false) throw new Error(json?.message ?? `Check failed (${res.status})`)
+      const label = json.status === "paid" ? "Paid in full — order marked paid"
+        : json.status === "partially_paid" ? `Partly paid · $${Number(json.paid).toFixed(2)} paid, $${Number(json.balance).toFixed(2)} due`
+        : json.status === "voided" ? "Invoice is voided"
+        : `Not paid yet · $${Number(json.balance).toFixed(2)} due`
+      toast.success("QuickBooks payment checked", { description: label })
+      await refresh()
+    } catch (e: any) {
+      toast.error("Couldn't check payment", { description: e?.message ?? "Network error" })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between gap-4 px-6 py-4">
@@ -243,6 +265,11 @@ const OrderQboStatusWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
             : payStatus === "partially_paid" ? <Badge color="orange">Partly paid · ${amountPaid.toFixed(2)} · due ${balance.toFixed(2)}</Badge>
             : payStatus === "voided" ? <Badge color="grey">Voided in QuickBooks</Badge>
             : null}
+          {invoiceId && payStatus !== "paid" && payStatus !== "voided" ? (
+            <Button variant="secondary" onClick={onCheckPayment} isLoading={busy}>
+              Check payment
+            </Button>
+          ) : null}
           {invoiceId ? (
             <Button variant={syncError ? "danger" : "secondary"} onClick={onSync} isLoading={busy}>
               Sync now

@@ -215,3 +215,38 @@ async function capturePaidOrder(scope: any, orderId: string, logger: Logger): Pr
 function money(n: number): string {
   return `$${n.toFixed(2)}`
 }
+
+/**
+ * Pull an order's payment status from QBO on demand — the same path a
+ * webhook takes, started from Medusa instead. For when a notification
+ * never arrived (webhook subscription lapsed, delivery dropped).
+ *
+ * Also settles the Medusa side when QBO already reads paid: a status
+ * recorded earlier doesn't re-trigger capturePaidOrder, which only acts
+ * on payments still open, so calling it again is safe.
+ */
+export async function refreshOrderPayment(
+  scope: any,
+  orderId: string,
+  logger: Logger,
+): Promise<{ status: string | null; paid: number; balance: number; invoiceId: string | null }> {
+  const { Modules } = await import("@medusajs/framework/utils")
+  const orderService: any = scope.resolve(Modules.ORDER)
+  const read = async () => {
+    const [order] = await orderService.listOrders({ id: [orderId] }, { take: 1 })
+    return (order?.metadata ?? {}) as Record<string, any>
+  }
+  const before = await read()
+  const invoiceId = before.qbo_invoice_id ? String(before.qbo_invoice_id) : null
+  if (!invoiceId) return { status: null, paid: 0, balance: 0, invoiceId: null }
+
+  await processQboEntity(scope, { realmId: "", name: "Invoice", id: invoiceId, operation: "Update", key: `refresh:${invoiceId}` }, logger)
+  const after = await read()
+  if (after.qbo_payment_status === "paid") await capturePaidOrder(scope, orderId, logger)
+  return {
+    status: after.qbo_payment_status ?? null,
+    paid: Number(after.qbo_amount_paid ?? 0),
+    balance: Number(after.qbo_balance ?? 0),
+    invoiceId,
+  }
+}
