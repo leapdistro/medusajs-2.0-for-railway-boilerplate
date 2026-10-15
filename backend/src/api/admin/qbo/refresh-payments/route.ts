@@ -13,7 +13,25 @@ import { refreshOrderPayment } from "../../../../lib/qbo-inbound"
  * Returns the orders whose status changed, so the operator sees what
  * moved.
  */
+/* A run takes minutes and the in-flight lock TTL is 60s, so a second
+ * click (or a browser retry) is turned away with this process-level
+ * flag. Per-order marking has its own lock in qbo-inbound, which is
+ * what keeps payments from being recorded twice. */
+let running = false
+
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
+  if (running) {
+    return res.status(409).json({ ok: false, message: "A payment check is already running — wait for it to finish" })
+  }
+  running = true
+  try {
+    return await run(req, res)
+  } finally {
+    running = false
+  }
+}
+
+async function run(req: MedusaRequest, res: MedusaResponse) {
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const pg: any = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 

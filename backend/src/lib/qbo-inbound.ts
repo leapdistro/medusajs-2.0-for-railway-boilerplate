@@ -14,6 +14,9 @@ import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
 import { readInvoice, readEntity, type QboInvoice } from "./qbo-api"
 import { logOrderHistory } from "./order-history-log"
 import type { Logger } from "./qbo-order-push"
+import { acquireInflightLock, releaseInflightLock } from "./idempotency"
+
+const MARK_PAID_LOCK_NS = "qbo-mark-paid"
 
 export type QboEntityRef = { realmId: string; name: string; id: string; operation: string; key: string }
 
@@ -182,6 +185,23 @@ async function recordStatus(
  *  no payment on it. There's nothing to capture there, so mark that
  *  collection paid instead — same outcome, Medusa shows the order Paid. */
 async function capturePaidOrder(scope: any, orderId: string, logger: Logger): Promise<void> {
+  /* One marker per order at a time. Without this, two callers (a
+   * webhook and a manual check, or two bulk runs) both read the payment
+   * as open and both record it — the order then shows paid twice.
+   * The state is re-read inside the lock, so whoever goes second sees
+   * the first one's capture and does nothing. */
+  if (!(await acquireInflightLock(MARK_PAID_LOCK_NS, orderId))) {
+    logger.info(`[qbo-inbound] order ${orderId}: mark-paid already in progress — skipped`)
+    return
+  }
+  try {
+    await capturePaidOrderLocked(scope, orderId, logger)
+  } finally {
+    await releaseInflightLock(MARK_PAID_LOCK_NS, orderId)
+  }
+}
+
+async function capturePaidOrderLocked(scope: any, orderId: string, logger: Logger): Promise<void> {
   try {
     const query = scope.resolve(ContainerRegistrationKeys.QUERY)
     const { data } = await query.graph({
