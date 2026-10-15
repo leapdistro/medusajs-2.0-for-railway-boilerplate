@@ -48,6 +48,7 @@ const TABS = [
   /* Labels tab edits TWO keys (label_formats + label_barcodes) so it
    * takes `rows` rather than `currentRow`, same as the price tabs. */
   { id: "label_formats",           label: "Labels"                  },
+  { id: "standalone_coas",         label: "COA Library"             },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -173,6 +174,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "label_formats" && (
               <LabelsForm rows={rows} onSaved={onSaved} />
+            )}
+            {tab === "standalone_coas" && (
+              <StandaloneCoasForm row={currentRow} onSaved={onSaved} />
             )}
           </>
         )}
@@ -1649,6 +1653,234 @@ const LabelsForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSav
 
       <div>
         <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save label settings"}</Button>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────── COA Library (standalone) ─────────────────────── */
+/* Lab reports for strains we don't carry as products. The storefront
+ * lists them on /coas beside the product COAs (public route
+ * /store/mbs/standalone-coas) and streams each file at /coa/lab/<id>.
+ *
+ * `id` is minted from the strain name when the row is created and never
+ * changes afterwards — it's the public URL, and someone may have it
+ * bookmarked or printed. Renaming the strain only changes the label.
+ *
+ * Files go through the same upload endpoint receiving uses, so they land
+ * in the same bucket under coas/. */
+type StandaloneCoa = {
+  id: string
+  strain: string
+  category: string
+  cannabinoid: "" | "cbd" | "cbg"
+  primary_percent: string
+  total_cannabinoids: string
+  lab: string
+  reported: string
+  file_url: string
+  archived: boolean
+}
+
+const coaSlug = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "coa"
+
+function readStandaloneCoas(row?: SettingRow): StandaloneCoa[] {
+  if (!Array.isArray(row?.value)) return []
+  return (row!.value as any[]).map((c) => ({
+    id: String(c?.id ?? ""),
+    strain: String(c?.strain ?? ""),
+    category: String(c?.category ?? "flower"),
+    cannabinoid: c?.cannabinoid === "cbd" || c?.cannabinoid === "cbg" ? c.cannabinoid : "",
+    primary_percent: String(c?.primary_percent ?? ""),
+    total_cannabinoids: String(c?.total_cannabinoids ?? ""),
+    lab: String(c?.lab ?? ""),
+    reported: String(c?.reported ?? ""),
+    file_url: String(c?.file_url ?? ""),
+    archived: c?.archived === true,
+  }))
+}
+
+async function uploadCoaFiles(files: File[]): Promise<Array<{ url: string; originalName: string }>> {
+  const fd = new FormData()
+  for (const f of files) fd.append("coas", f)
+  const res = await fetch("/admin/receiving/coa-upload", { method: "POST", credentials: "include", body: fd })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok || !json.ok) throw new Error(json?.error ?? `Upload failed (${res.status})`)
+  if ((json.errors ?? []).length > 0) {
+    toast.error(`Some files failed: ${json.errors.map((e: any) => `${e.originalName} (${e.error})`).join(", ")}`)
+  }
+  return json.files ?? []
+}
+
+const NATIVE_SELECT = "h-8 border border-ui-border-base bg-ui-bg-field px-2 text-sm rounded-md"
+
+const StandaloneCoasForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: SettingRow | null) => void }) => {
+  const [items, setItems] = useState<StandaloneCoa[]>([])
+  const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  useEffect(() => { setItems(readStandaloneCoas(row)) }, [row])
+
+  const patch = (id: string, p: Partial<StandaloneCoa>) =>
+    setItems((prev) => prev.map((c) => c.id === id ? { ...c, ...p } : c))
+
+  const uniqueId = (strain: string, taken: StandaloneCoa[]) => {
+    const base = coaSlug(strain)
+    let id = base
+    let n = 1
+    while (taken.some((c) => c.id === id)) id = `${base}-${++n}`
+    return id
+  }
+
+  /* One new row per file; the file name (minus extension) seeds the
+   * strain so naming files "Berry Pie.pdf" before upload saves typing. */
+  const addFiles = async (list: FileList | null) => {
+    const files = Array.from(list ?? [])
+    if (files.length === 0) return
+    setUploading(true)
+    try {
+      const uploaded = await uploadCoaFiles(files)
+      setItems((prev) => {
+        const next = [...prev]
+        for (const u of uploaded) {
+          const strain = u.originalName.replace(/\.[^.]+$/, "").trim()
+          next.push({
+            id: uniqueId(strain, next),
+            strain,
+            category: "flower",
+            cannabinoid: "cbd",
+            primary_percent: "",
+            total_cannabinoids: "",
+            lab: "",
+            reported: "",
+            file_url: u.url,
+            archived: false,
+          })
+        }
+        return next
+      })
+      if (uploaded.length > 0) toast.success(`${uploaded.length} uploaded — fill in the details, then Save`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Upload failed")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const replaceFile = async (id: string, list: FileList | null) => {
+    const file = list?.[0]
+    if (!file) return
+    setUploading(true)
+    try {
+      const [u] = await uploadCoaFiles([file])
+      if (u) {
+        patch(id, { file_url: u.url })
+        toast.success("File replaced — Save to publish")
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? "Upload failed")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const remove = (id: string) => {
+    if (!confirm("Remove this COA from the library? Its /coa/lab link will stop working. Archive instead if you may need it back.")) return
+    setItems((prev) => prev.filter((c) => c.id !== id))
+  }
+
+  const save = async () => {
+    const unnamed = items.find((c) => !c.strain.trim())
+    if (unnamed) { toast.error("Every COA needs a strain name"); return }
+    setSaving(true)
+    try {
+      const value = items.map((c) => ({ ...c, strain: c.strain.trim() }))
+      const next = await saveSetting(
+        "standalone_coas",
+        value,
+        "Lab reports for strains we don't sell as products. Listed on the public /coas page next to product COAs.",
+      )
+      onSaved(next)
+      toast.success("COA library saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {items.length === 0 ? (
+        <Text size="small" className="text-ui-fg-subtle">No standalone COAs yet — upload one below.</Text>
+      ) : items.map((c) => (
+        <div key={c.id} className={"border p-4 flex flex-col gap-3" + (c.archived ? " opacity-60" : "")}>
+          <div className="grid grid-cols-4 gap-3">
+            <Field label="Strain">
+              <Input value={c.strain} onChange={(e) => patch(c.id, { strain: e.target.value })} />
+            </Field>
+            <Field label="Cannabinoid">
+              <select
+                className={NATIVE_SELECT}
+                value={c.cannabinoid}
+                onChange={(e) => patch(c.id, { cannabinoid: e.target.value as StandaloneCoa["cannabinoid"] })}
+              >
+                <option value="cbd">CBD</option>
+                <option value="cbg">CBG</option>
+                <option value="">Other</option>
+              </select>
+            </Field>
+            <Field label={`Total ${c.cannabinoid ? c.cannabinoid.toUpperCase() : "primary"} %`}>
+              <Input value={c.primary_percent} placeholder="4.08%" onChange={(e) => patch(c.id, { primary_percent: e.target.value })} />
+            </Field>
+            <Field label="Total cannabinoids %">
+              <Input value={c.total_cannabinoids} placeholder="4.93%" onChange={(e) => patch(c.id, { total_cannabinoids: e.target.value })} />
+            </Field>
+            <Field label="Lab">
+              <Input value={c.lab} placeholder="Pinnacle Analytics" onChange={(e) => patch(c.id, { lab: e.target.value })} />
+            </Field>
+            <Field label="Date reported">
+              <Input type="date" value={c.reported} onChange={(e) => patch(c.id, { reported: e.target.value })} />
+            </Field>
+          </div>
+          <div className="flex items-center gap-2">
+            <Text size="xsmall" className="text-ui-fg-muted font-mono flex-1">/coa/lab/{c.id}</Text>
+            {c.file_url && (
+              <a href={c.file_url} target="_blank" rel="noopener noreferrer" className="text-ui-fg-interactive text-sm underline">View file</a>
+            )}
+            <label className="text-sm cursor-pointer border px-3 py-1">
+              Replace file
+              <input
+                type="file"
+                accept="application/pdf,image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => { replaceFile(c.id, e.target.files); e.target.value = "" }}
+              />
+            </label>
+            <Button variant={c.archived ? "secondary" : "transparent"} size="small" onClick={() => patch(c.id, { archived: !c.archived })}>
+              {c.archived ? "Archived" : "Active"}
+            </Button>
+            <Button variant="danger" size="small" onClick={() => remove(c.id)}>Remove</Button>
+          </div>
+        </div>
+      ))}
+
+      <div className="flex items-center gap-3 border-t pt-4">
+        <label className="text-sm cursor-pointer border px-3 py-2 font-medium">
+          {uploading ? "Uploading…" : "Upload COAs"}
+          <input
+            type="file"
+            multiple
+            accept="application/pdf,image/png,image/jpeg,image/webp"
+            className="hidden"
+            disabled={uploading}
+            onChange={(e) => { addFiles(e.target.files); e.target.value = "" }}
+          />
+        </label>
+        <Text size="xsmall" className="text-ui-fg-subtle">PDF or image. Name files after the strain to pre-fill the name.</Text>
+      </div>
+
+      <div>
+        <Button variant="primary" onClick={save} isLoading={saving} disabled={uploading}>Save COA Library</Button>
       </div>
     </div>
   )
