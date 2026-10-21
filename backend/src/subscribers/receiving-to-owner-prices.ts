@@ -1,6 +1,7 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { applyOwnerPrices } from "../lib/owner-prices-apply"
+import { sharedScopeForProfile } from "../lib/price-scope"
 
 /**
  * Auto-refresh Owner Stores PriceList after a successful receiving.
@@ -30,19 +31,14 @@ export default async function receivingToOwnerPrices({
     return
   }
 
-  /* Map receiving profile → owner-prices scope. flower / flower-cbd /
+  /* Map receiving profile → owner-prices scope (lib/price-scope.ts). flower / flower-cbd /
    * flower-cbg all resolve to the flower scope — they share the same
    * markup + PriceList (see owner-prices-apply in-scope filter for the
    * matching prefix-strip). pre-roll (with hyphen) → preroll (snake).
    * flower-thc-p has no owner-prices mapping today (case-pack branch
    * uses its own pricing model). Future profiles fall back to a soft
    * no-op log. */
-  const scope: "flower" | "preroll" | null =
-    profileKey === "flower" ? "flower"
-    : profileKey === "flower-cbd" ? "flower"
-    : profileKey === "flower-cbg" ? "flower"
-    : profileKey === "pre-roll" ? "preroll"
-    : null
+  const scope = sharedScopeForProfile(profileKey)
   if (!scope) {
     logger.info(`[receiving-to-owner-prices] profile "${profileKey}" has no owner-prices mapping; skipping`)
     return

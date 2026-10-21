@@ -1,5 +1,6 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
+import { categoryIdsForProfiles, productInCategories, SHARED_SCOPE_PROFILES } from "./price-scope"
 
 /**
  * Owner Stores pricing — shared apply logic.
@@ -160,6 +161,10 @@ export async function applyOwnerPrices(
 
   const sizeMultipliers = SIZE_POOL_UNITS[scope]
   const validSizesSet = new Set(Object.keys(sizeMultipliers))
+  /* Pre-roll scope used to match on size alone, so any product with a
+   * 30pk/15pk variant counted. Both scopes now also require the product
+   * to sit under one of the scope's receiving profiles. */
+  const scopeCategoryIds = await categoryIdsForProfiles(query, SHARED_SCOPE_PROFILES[scope])
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
   /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.
@@ -213,7 +218,7 @@ export async function applyOwnerPrices(
         (normalized && validSizesSet.has(normalized))
       )
     }
-    if (!inScope) { bumpSkip("out_of_scope"); continue }
+    if (!inScope || !productInCategories(v.product, scopeCategoryIds)) { bumpSkip("out_of_scope"); continue }
 
     if (!size || !validSizesSet.has(size)) {
       const skuSize = sizeFromSku(v.sku)

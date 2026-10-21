@@ -1,5 +1,11 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
+import {
+  categoryIdsForProfiles,
+  productInCategories,
+  SHARED_SCOPE_PROFILES,
+  type SharedPriceScope,
+} from "./price-scope"
 
 /**
  * Shared implementation of "apply customer-group prices" used by both
@@ -22,7 +28,7 @@ import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
  * — was previously operator-only via the admin Save button.
  */
 
-export type GroupScope = "flower" | "preroll"
+export type GroupScope = SharedPriceScope
 export type GroupKey = "distro" | "tier_2" | "tier_3"
 
 export type ApplyGroupPricesResult = {
@@ -164,6 +170,9 @@ export async function applyGroupPrices(
   }
 
   const validTierKeys = new Set(Object.keys(prices))
+  /* Only products under this scope's receiving profiles — see
+   * lib/price-scope.ts for why tier keys alone aren't enough. */
+  const scopeCategoryIds = await categoryIdsForProfiles(query, SHARED_SCOPE_PROFILES[scope])
 
   const { data: variants } = await query.graph({
     entity: "product_variant",
@@ -199,6 +208,7 @@ export async function applyGroupPrices(
 
   for (const v of (variants as any[]) ?? []) {
     scanned += 1
+    if (!productInCategories(v.product, scopeCategoryIds)) { bumpSkip("out_of_scope_category"); continue }
     const meta = (v.metadata ?? {}) as Record<string, any>
 
     let tier: string | null = null

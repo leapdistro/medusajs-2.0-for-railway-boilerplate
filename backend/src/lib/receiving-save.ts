@@ -178,9 +178,15 @@ export type SaveContext = {
   /** Stock location id to write inventory levels against (resolved once). */
   stockLocationId: string
   /** Map of subcategory-key → Medusa product_category id (resolved once).
-   *  Keys are profile.subcategories[].key. Throws at build time if any
-   *  configured subcategory is missing in the catalog. */
+   *  Keys are profile.subcategories[].key. A subcategory missing from the
+   *  catalog has no entry; rows that use it fail with a clear error. */
   subcategoryIds: Record<string, string>
+  /** Same keys → the category's handle. Used to build a collision-free
+   *  product handle when another category already owns the plain one. */
+  subcategoryHandles: Record<string, string>
+  /** Handle of the category the subcategories hang under (e.g. flower-cbd,
+   *  pre-rolls). */
+  enumRootHandle: string
   /** Default shipping profile id — required link or cart checkout fails. */
   shippingProfileId: string
 }
@@ -257,17 +263,18 @@ export async function buildSaveContext(
       `"${profile.parentCategoryName}" enumeration root (handle "${profile.subcategoryParentHandle}") missing. Run the matching seed script (e.g. \`pnpm seed:flower-cannabinoid-cats\`) to create the intermediate category.`,
     )
   }
+  /* A configured subcategory that no longer exists in Medusa (renamed
+   * or deleted by the operator) is skipped here rather than failing the
+   * whole batch; only rows that use it fail, in saveOneRow. */
   const subcategoryIds: Record<string, string> = {}
+  const subcategoryHandles: Record<string, string> = {}
   for (const sub of profile.subcategories) {
     const cat = (allCats as any[]).find(
       (c) => c.name === sub.medusaName && c.parent_category_id === enumRoot.id,
     )
-    if (!cat) {
-      throw new Error(
-        `"${profile.parentCategoryName}" sub-category "${sub.medusaName}" missing. Run the matching seed script to create the category tree.`,
-      )
-    }
+    if (!cat) continue
     subcategoryIds[sub.key] = cat.id
+    subcategoryHandles[sub.key] = cat.handle
   }
 
   /* Default shipping profile — every product must link to one or
@@ -288,6 +295,8 @@ export async function buildSaveContext(
     salesChannelId: defaultChannel.id,
     stockLocationId: locations[0].id,
     subcategoryIds,
+    subcategoryHandles,
+    enumRootHandle: enumRoot.handle,
     shippingProfileId: shippingProfile.id,
   }
 }
@@ -457,6 +466,12 @@ export async function saveOneRow(
      *    be a same-strain-different-tier product, which is a NEW
      *    identity). */
     const tierCategoryId = ctx.subcategoryIds[row.tier]
+    if (!tierCategoryId) {
+      return {
+        ...baseResult,
+        error: `Sub-category "${row.tier}" doesn't exist under ${ctx.profile.parentCategoryName} in Medusa (renamed or deleted?). Fix the category, or the receiving profile, and save again.`,
+      }
+    }
     const productFields = [
       "id", "handle",
       "categories.id",
@@ -464,21 +479,30 @@ export async function saveOneRow(
       "variants.inventory_items.inventory.sku",
       "product_attributes.id",
     ]
-    let { data: existing } = await query.graph({
+    /* A product only counts as this strain if it sits in this row's own
+     * sub-category. Handles alone can't tell branches apart: CBD Classic
+     * and CBG Classic both produce `classic-<strain>`, so without the
+     * category check a CBG receiving would restock the CBD product.
+     *
+     * When another category already owns the plain handle, a new product
+     * takes the category-scoped one instead (`cbg-classic-<strain>`), and
+     * later restocks find it under that name. */
+    const subHandle = ctx.subcategoryHandles[row.tier]
+    const scopedHandle = subHandle && subHandle !== row.tier
+      ? `${subHandle}-${strainSlug}`
+      : `${ctx.enumRootHandle}-${row.tier}-${strainSlug}`
+    const candidates = Array.from(new Set([handle, scopedHandle, legacyHandle]))
+    const { data: found } = await query.graph({
       entity: "product",
       fields: productFields,
-      filters: { handle },
+      filters: { handle: candidates },
     })
-    if (!existing.length) {
-      const { data: legacy } = await query.graph({
-        entity: "product",
-        fields: productFields,
-        filters: { handle: legacyHandle },
-      })
-      existing = (legacy as any[]).filter((p) =>
-        (p.categories ?? []).some((c: { id?: string }) => c?.id === tierCategoryId),
-      )
-    }
+    const inThisSubcategory = (p: any) =>
+      (p.categories ?? []).some((c: { id?: string }) => c?.id === tierCategoryId)
+    const existing = candidates
+      .map((h) => (found as any[]).find((p) => p.handle === h && inThisSubcategory(p)))
+      .filter(Boolean) as any[]
+    const createHandle = (found as any[]).some((p) => p.handle === handle) ? scopedHandle : handle
 
     if (existing.length > 0) {
       /* ---------- RESTOCK PATH ---------- */
@@ -592,7 +616,7 @@ export async function saveOneRow(
         ...baseResult,
         action: "restocked",
         productId,
-        productHandle: handle,
+        productHandle: existing[0].handle ?? handle,
         inventoryItemId: firstInventoryId,
         baseSku: restockBaseSku,
       }
@@ -625,7 +649,7 @@ export async function saveOneRow(
       { sku: proposedSkus },
       { take: 10, relations: ["product"] },
     )
-    const realCollisions = (conflicts ?? []).filter((v: any) => v?.product?.handle !== handle)
+    const realCollisions = (conflicts ?? []).filter((v: any) => v?.product?.handle !== createHandle)
     if (realCollisions.length > 0) {
       const desc = realCollisions
         .map((v: any) => `${v.sku} → ${v.product?.title ?? v.product?.handle ?? "unknown product"}`)
@@ -727,7 +751,7 @@ export async function saveOneRow(
         input: {
           products: [{
             title: row.strainName,
-            handle,
+            handle: createHandle,
             status: ProductStatus.PUBLISHED,
             category_ids: [ctx.subcategoryIds[row.tier]],
             options: [{ title: "Size", values: variantDefs.map((v) => v.label) }],
@@ -746,7 +770,7 @@ export async function saveOneRow(
        *     with this slug. */
       return {
         ...baseResult,
-        error: `"${row.strainName}" — createProductsWorkflow failed: ${e?.message ?? e}. inventory_item_id=${inventoryItemId}, location_id=${ctx.stockLocationId}, handle=${handle}.`,
+        error: `"${row.strainName}" — createProductsWorkflow failed: ${e?.message ?? e}. inventory_item_id=${inventoryItemId}, location_id=${ctx.stockLocationId}, handle=${createHandle}.`,
       }
     }
 
@@ -802,7 +826,7 @@ export async function saveOneRow(
       ...baseResult,
       action: "created",
       productId,
-      productHandle: handle,
+      productHandle: createHandle,
       inventoryItemId,
       baseSku: baseSku(skuParts),
     }

@@ -7,6 +7,7 @@ import {
   type GroupScope,
 } from "../lib/group-prices-apply"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
+import { sharedScopeForProfile } from "../lib/price-scope"
 
 /**
  * Auto-propagate customer-group prices (Distro / Chain of Stores /
@@ -23,9 +24,9 @@ import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
  *
  * Behavior:
  *   - Fires on `receiving.saved` alongside receiving-to-owner-prices.
- *   - Maps profile_key → GroupScope: CBD flower uses the "flower" tables
- *     (the "CBD Flower Prices" / "CBD Flower Distro Prices" tabs);
- *     pre-rolls use "preroll".
+ *   - Maps profile_key → GroupScope via lib/price-scope.ts: CBD and CBG
+ *     flower use the "flower" tables (the "CBD Flower Prices" / "CBD
+ *     Flower Distro Prices" tabs); pre-rolls use "preroll".
  *   - For each of the three groups, checks if the settings key exists
  *     first — modes with no configured prices (e.g. THC-P Flower has
  *     no tier_2 / tier_3 tables today) are silently skipped so the
@@ -48,10 +49,11 @@ export default async function receivingToGroupPrices({
     return
   }
 
-  const scope: GroupScope | null =
-    profileKey === "flower" || profileKey === "flower-cbd" ? "flower"
-    : profileKey === "pre-roll" ? "preroll"
-    : null
+  /* CBG had no mapping here, so a CBG receiving never set Distro /
+   * Chain of Stores / Low Volume prices. The profile → scope map in
+   * lib/price-scope.ts now covers every profile the owner-prices
+   * subscriber already handled. */
+  const scope: GroupScope | null = sharedScopeForProfile(profileKey)
   if (!scope) {
     logger.info(`[receiving-to-group-prices] profile "${profileKey}" has no group-prices mapping; skipping`)
     return

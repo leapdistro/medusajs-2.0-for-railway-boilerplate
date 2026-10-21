@@ -191,13 +191,17 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   displayName: "Pre-Rolls",
   parentCategoryName: "Pre-Rolls",
   subcategories: [
-    /* Per-subcategory variants: THC-A boxes hold 30 individual pre-rolls;
+    /* Per-subcategory variants: CBD boxes hold 30 individual pre-rolls;
      * Hashholes boxes hold 15 tubes (2 hashholes per tube). Pool counts
-     * in BOXES for both — operator orders + sells boxes, multiplier=1. */
+     * in BOXES for both — operator orders + sells boxes, multiplier=1.
+     *
+     * CBD replaced THC-A on 2026-10-15 when the operator renamed the
+     * Medusa category. The old entry pointed at a category that no
+     * longer exists, which made every pre-roll receiving save throw. */
     {
-      key: "thc-a",
-      medusaName: "THC-A",
-      label: "THC-A",
+      key: "cbd",
+      medusaName: "CBD",
+      label: "CBD",
       variants: [{
         sizeKey: "30pk",
         label: "30 ct Box",
