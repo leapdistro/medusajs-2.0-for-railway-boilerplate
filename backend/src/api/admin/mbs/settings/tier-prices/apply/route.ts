@@ -1,11 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
-import {
-  categoryIdsForProfiles,
-  productInCategories,
-  profileKeysForTierSetting,
-} from "../../../../../../lib/price-scope"
+import { categoryIdsForTierSetting, productInCategories } from "../../../../../../lib/price-scope"
 
 /**
  * POST /admin/mbs/settings/tier-prices/apply
@@ -114,7 +110,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   /* Only products received under this table's profiles: tier keys repeat
    * across branches (CBD and CBG both use `classic`), so the keys alone
    * would let one branch's table reprice the other. */
-  const scopeCategoryIds = await categoryIdsForProfiles(query, profileKeysForTierSetting(settingKey))
+  const scopeCategoryIds = await categoryIdsForTierSetting(req.scope, query, settingKey)
 
   /* Pull every variant + product categories + USD price row. We can't
    * easily filter jsonb metadata in the graph layer in this Medusa minor,

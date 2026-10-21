@@ -7,6 +7,7 @@ import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { MBS_ATTRIBUTES_MODULE } from "../modules/mbs-attributes"
 import { baseSku, generateSku } from "./sku"
 import { FLOWER_PROFILE, getSubcategory, getVariantDef, getVariantsForRow, type ReceivingProfile } from "./receiving-profiles"
+import { resolveProfileCategories } from "./profile-store"
 
 /**
  * Slice 2C — receiving save orchestrator.
@@ -237,44 +238,28 @@ export async function buildSaveContext(
     throw new Error("No stock location found. Run `pnpm seed` first.")
   }
 
-  /* Look up each configured sub-category by name under the profile's
-   * subcategory-enumeration root. Mirror of the profile endpoint at
-   * api/admin/receiving/profile/[key]/route.ts — when profile declares
-   * subcategoryParentHandle (Flower → "flower-thc-a" intermediate),
-   * subcategories live under that node; otherwise they're direct
-   * children of parentCategoryName. */
-  const { data: allCats } = await query.graph({
-    entity: "product_category",
-    fields: ["id", "name", "handle", "parent_category_id"],
-  })
-  const parentCat = (allCats as any[]).find(
-    (c) => c.name === profile.parentCategoryName && !c.parent_category_id,
-  )
-  if (!parentCat) {
+  /* Sub-categories come from the live Medusa tree merged with the
+   * profile (resolveProfileCategories, the same list the receiving page
+   * shows), so a sub-category added in Medusa admin can be received.
+   * Profile entries with no Medusa category are dropped there; rows that
+   * name one fail in saveOneRow with a clear error. */
+  const resolved = await resolveProfileCategories(query, profile)
+  if (!resolved.parent) {
     throw new Error(
-      `"${profile.parentCategoryName}" parent category missing. Run the matching seed script (e.g. \`pnpm seed:flower-categories\` or \`pnpm seed:preroll-categories\`) to create the category tree.`,
+      `"${profile.parentCategoryName}" parent category missing in Medusa. Create it (or fix the parent name in MBS Settings → Categories).`,
     )
   }
-  const enumRoot = profile.subcategoryParentHandle
-    ? (allCats as any[]).find((c) => c.handle === profile.subcategoryParentHandle)
-    : parentCat
+  const enumRoot = resolved.enumRoot
   if (!enumRoot) {
     throw new Error(
-      `"${profile.parentCategoryName}" enumeration root (handle "${profile.subcategoryParentHandle}") missing. Run the matching seed script (e.g. \`pnpm seed:flower-cannabinoid-cats\`) to create the intermediate category.`,
+      `"${profile.parentCategoryName}" sub-category root (handle "${profile.subcategoryParentHandle}") missing in Medusa.`,
     )
   }
-  /* A configured subcategory that no longer exists in Medusa (renamed
-   * or deleted by the operator) is skipped here rather than failing the
-   * whole batch; only rows that use it fail, in saveOneRow. */
   const subcategoryIds: Record<string, string> = {}
   const subcategoryHandles: Record<string, string> = {}
-  for (const sub of profile.subcategories) {
-    const cat = (allCats as any[]).find(
-      (c) => c.name === sub.medusaName && c.parent_category_id === enumRoot.id,
-    )
-    if (!cat) continue
-    subcategoryIds[sub.key] = cat.id
-    subcategoryHandles[sub.key] = cat.handle
+  for (const sub of resolved.profile.subcategories) {
+    subcategoryIds[sub.key] = sub.id
+    subcategoryHandles[sub.key] = sub.handle
   }
 
   /* Default shipping profile — every product must link to one or
@@ -288,7 +273,7 @@ export async function buildSaveContext(
   }
 
   return {
-    profile,
+    profile: resolved.profile,
     shipPerLb,
     tierPrices,
     shippingRates,
@@ -723,6 +708,13 @@ export async function saveOneRow(
         tier_linked: true,
         tier_key: row.tier,
         size_key: v.sizeKey,
+        /* Which category profile received it, and how many stock units
+         * one receiving unit is (4 QPs per lb). The QBO order push reads
+         * input_to_pool instead of inferring it from the largest
+         * variant, which is wrong when a category is received in a unit
+         * bigger than anything it sells. */
+        profile_key: ctx.profile.key,
+        input_to_pool: ctx.profile.inputToPoolMultiplier,
         /* Per-unit / margin-calc canonical override. Storefront's
          * src/lib/per-unit.ts hits these first (path #1) before
          * falling through to weight or label regex. For pre-rolls

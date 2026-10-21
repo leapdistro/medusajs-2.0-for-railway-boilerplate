@@ -1,6 +1,7 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { Button, Container, Heading, Input, Label, Switch, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
+import { CategoryProfilesForm } from "../../components/category-profiles-form"
 
 /* Inline gear SVG so we don't need to depend on @medusajs/icons. Sized
  * 20x20 to match the admin sidebar's other icons. */
@@ -34,6 +35,7 @@ const TABS = [
   { id: "cancellation_reasons",    label: "Cancellation Reasons"    },
   { id: "denial_reasons",          label: "Denial Reasons"          },
   { id: "business_types",          label: "Business Types"          },
+  { id: "category_profiles",       label: "Categories"              },
   { id: "flower_tier_prices",      label: "CBD Flower Prices"       },
   { id: "pre_roll_tier_prices",    label: "Pre-Roll Tier Prices"    },
   { id: "owner_markup",            label: "Owner Markup"            },
@@ -151,6 +153,7 @@ const MbsSettingsPage = () => {
             {tab === "business_types" && (
               <ReasonListForm row={currentRow} onSaved={onSaved} keyName="business_types" />
             )}
+            {tab === "category_profiles" && <CategoryProfilesForm />}
             {tab === "flower_tier_prices" && (
               <TierPricesForm rows={rows} onSaved={onSaved} />
             )}

@@ -236,10 +236,21 @@ export async function buildInvoiceDraft(
   if (productIds.length > 0) {
     const { data: prods } = await query.graph({
       entity: "product",
-      fields: ["id", "variants.inventory_items.required_quantity"],
+      fields: ["id", "variants.metadata", "variants.inventory_items.required_quantity"],
       filters: { id: productIds },
     })
     for (const p of prods as any[]) {
+      /* Receiving stamps the profile's receiving-unit multiplier on each
+       * variant (metadata.input_to_pool). Products received before that
+       * fall back to the largest required_quantity, which matches for
+       * every built-in profile. */
+      const stamped = ((p.variants ?? []) as any[])
+        .map((v: any) => Number(v?.metadata?.input_to_pool))
+        .find((n: number) => Number.isFinite(n) && n > 0)
+      if (stamped) {
+        inputToPoolByProduct.set(String(p.id), stamped)
+        continue
+      }
       const reqs = ((p.variants ?? []) as any[])
         .flatMap((v: any) => (v.inventory_items ?? []).map((ii: any) => Number(ii?.required_quantity ?? 1)))
         .filter((n: number) => Number.isFinite(n) && n > 0)

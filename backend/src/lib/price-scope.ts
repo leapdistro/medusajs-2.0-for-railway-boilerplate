@@ -1,4 +1,5 @@
-import { PROFILES, type ProfileKey } from "./receiving-profiles"
+import type { ProfileKey, ReceivingProfile } from "./receiving-profiles"
+import { loadProfiles, resolveProfileCategories } from "./profile-store"
 
 /**
  * Which products a price table is allowed to touch.
@@ -11,8 +12,9 @@ import { PROFILES, type ProfileKey } from "./receiving-profiles"
  * sit under one of its receiving profiles' categories.
  *
  * The categories come from the receiving profiles (parent category, or
- * the profile's subcategory root when it has one), so a table covers
- * exactly the products its profiles receive.
+ * the profile's subcategory root when it has one), loaded from MBS
+ * Settings → Categories, so a table covers exactly the products its
+ * profiles receive.
  */
 
 /** Customer-group and owner price tables are shared across profiles:
@@ -33,25 +35,33 @@ export function sharedScopeForProfile(profileKey: string): SharedPriceScope | nu
   return null
 }
 
-/** Profiles whose default selling prices come from `settingKey`. */
-export function profileKeysForTierSetting(settingKey: string): ProfileKey[] {
-  return Object.values(PROFILES)
-    .filter((p) => p.tierPricesSettingKey === settingKey)
-    .map((p) => p.key)
+/** Category ids for the profiles whose default selling prices come from
+ *  `settingKey`. */
+export async function categoryIdsForTierSetting(container: any, query: any, settingKey: string): Promise<Set<string>> {
+  const { profiles } = await loadProfiles(container)
+  return categoryIdsForProfiles(query, profiles.filter((p) => p.tierPricesSettingKey === settingKey))
 }
 
-/** Ids of every category under the given profiles' subcategory roots. */
+/** Category ids for the profiles sharing a group/owner price scope. */
+export async function categoryIdsForSharedScope(container: any, query: any, scope: SharedPriceScope): Promise<Set<string>> {
+  const { profiles } = await loadProfiles(container)
+  const keys = SHARED_SCOPE_PROFILES[scope] as string[]
+  return categoryIdsForProfiles(query, profiles.filter((p) => keys.includes(p.key)))
+}
+
+/** Ids of every category the given profiles receive into: each live
+ *  sub-category (resolveProfileCategories, the same list receiving uses)
+ *  and anything under it. */
 export async function categoryIdsForProfiles(
   query: any,
-  profileKeys: ProfileKey[],
+  profiles: ReceivingProfile[],
 ): Promise<Set<string>> {
   const { data } = await query.graph({
     entity: "product_category",
-    fields: ["id", "name", "handle", "parent_category_id"],
+    fields: ["id", "parent_category_id"],
   })
-  const cats = (data ?? []) as Array<{ id: string; name: string; handle: string; parent_category_id: string | null }>
   const children = new Map<string, string[]>()
-  for (const c of cats) {
+  for (const c of (data ?? []) as Array<{ id: string; parent_category_id: string | null }>) {
     if (!c.parent_category_id) continue
     const list = children.get(c.parent_category_id) ?? []
     list.push(c.id)
@@ -59,23 +69,14 @@ export async function categoryIdsForProfiles(
   }
 
   const ids = new Set<string>()
-  for (const key of profileKeys) {
-    const profile = PROFILES[key]
-    if (!profile) continue
-    /* Same root resolution as buildSaveContext in receiving-save.ts. */
-    const parent = cats.find((c) => c.name === profile.parentCategoryName && !c.parent_category_id)
-    if (!parent) continue
-    const root = profile.subcategoryParentHandle
-      ? cats.find((c) => c.handle === profile.subcategoryParentHandle)
-      : parent
-    if (!root) continue
-    const stack = [root.id]
+  for (const profile of profiles) {
+    const { profile: resolved } = await resolveProfileCategories(query, profile)
+    const stack = resolved.subcategories.map((s) => s.id)
     while (stack.length > 0) {
-      for (const child of children.get(stack.pop()!) ?? []) {
-        if (ids.has(child)) continue
-        ids.add(child)
-        stack.push(child)
-      }
+      const id = stack.pop()!
+      if (ids.has(id)) continue
+      ids.add(id)
+      stack.push(...(children.get(id) ?? []))
     }
   }
   return ids

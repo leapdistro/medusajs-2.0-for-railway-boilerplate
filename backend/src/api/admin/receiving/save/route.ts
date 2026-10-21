@@ -15,7 +15,7 @@ import {
   type TierKey,
   type TierPriceMap,
 } from "../../../../lib/receiving-save"
-import { getProfile, type ProfileKey } from "../../../../lib/receiving-profiles"
+import { findProfile } from "../../../../lib/profile-store"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 import { RECEIVING_HISTORY_MODULE } from "../../../../modules/receiving-history"
 import { RECEIVING_DRAFTS_MODULE } from "../../../../modules/receiving-drafts"
@@ -135,12 +135,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   /* 1. Resolve the receiving profile (default "flower" for backward compat). */
-  const profileKey = (body.profileKey ?? "flower") as ProfileKey
-  let profile
-  try {
-    profile = getProfile(profileKey)
-  } catch (e: any) {
-    res.status(400).json({ ok: false, error: e?.message ?? "Unknown profile" })
+  const profileKey = String(body.profileKey ?? "flower")
+  const profile = await findProfile(req.scope, profileKey)
+  if (!profile) {
+    res.status(400).json({ ok: false, error: `Unknown receiving profile: ${profileKey}` })
+    return
+  }
+  if (profile.archived) {
+    res.status(400).json({ ok: false, error: `${profile.displayName} is archived in MBS Settings → Categories; un-archive it to receive.` })
     return
   }
 
@@ -164,7 +166,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     if (!tierPrices) {
       res.status(500).json({
         ok: false,
-        error: `${settingKey} not configured. Run \`pnpm seed:settings\` or set them in MBS Settings → ${settingKey === "flower_tier_prices" ? "Flower" : "Pre-Roll"} Tier Prices.`,
+        error: `${settingKey} not configured. Run \`pnpm seed:settings\` or set ${profile.displayName} prices in MBS Settings.`,
       })
       return
     }

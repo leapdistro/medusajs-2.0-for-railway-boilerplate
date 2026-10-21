@@ -1,6 +1,6 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
-import { categoryIdsForProfiles, productInCategories, SHARED_SCOPE_PROFILES } from "./price-scope"
+import { categoryIdsForSharedScope, productInCategories } from "./price-scope"
 
 /**
  * Owner Stores pricing — shared apply logic.
@@ -164,7 +164,7 @@ export async function applyOwnerPrices(
   /* Pre-roll scope used to match on size alone, so any product with a
    * 30pk/15pk variant counted. Both scopes now also require the product
    * to sit under one of the scope's receiving profiles. */
-  const scopeCategoryIds = await categoryIdsForProfiles(query, SHARED_SCOPE_PROFILES[scope])
+  const scopeCategoryIds = await categoryIdsForSharedScope(scopeContainer, query, scope)
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
   /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.

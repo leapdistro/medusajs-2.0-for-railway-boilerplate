@@ -19,12 +19,11 @@
  * config keeps the diff focused when adding the next category.
  */
 
-export type ProfileKey =
-  | "flower"          // Flower — THC-A (tier ladder)
-  | "flower-cbd"      // Flower — CBD (tier ladder, mirrors THC-A)
-  | "flower-cbg"      // Flower — CBG (tier ladder, mirrors THC-A)
-  | "flower-thc-p"    // Flower — THC-P (case-pack, no tier ladder)
-  | "pre-roll"
+/** Built-in keys: "flower" (THC-A), "flower-cbd", "flower-cbg",
+ *  "flower-thc-p", "pre-roll". Operator-added categories bring their own
+ *  key from MBS Settings → Categories (lib/profile-store.ts), so this is
+ *  an open string. */
+export type ProfileKey = string
 
 /** A variant axis value (one row in the review grid maps to N variants per profile). */
 export type VariantDef = {
@@ -140,6 +139,9 @@ export type ReceivingProfile = {
    *  `Flower > Classic`. Undefined = no intermediate (THC-A stays
    *  `Flower > Classic` for back-compat with existing QBO Categories). */
   qboCategoryBranch?: string
+  /** Retired from receiving. Kept so price applies still cover the
+   *  products it already created. */
+  archived?: boolean
 }
 
 /* ─── Flower ─── */
@@ -381,6 +383,9 @@ export const FLOWER_CBG_PROFILE: ReceivingProfile = {
 
 /* ─── Registry ─── */
 
+/** Built-in profiles. Used as-is until MBS Settings → Categories is first
+ *  saved; from then on the `category_profiles` setting is authoritative
+ *  (lib/profile-store.ts). */
 export const PROFILES: Record<ProfileKey, ReceivingProfile> = {
   flower: FLOWER_PROFILE,
   "flower-cbd": FLOWER_CBD_PROFILE,
