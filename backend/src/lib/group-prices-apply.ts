@@ -1,6 +1,7 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
-import { categoryIdsForSharedScope, productInCategories, type SharedPriceScope } from "./price-scope"
+import { scopedCategoryOf, scopeForTable } from "./price-scope"
+import { GROUP_LEVEL_CONFIG, type GroupLevel } from "./price-levels"
 
 /**
  * Shared implementation of "apply customer-group prices" used by both
@@ -8,72 +9,54 @@ import { categoryIdsForSharedScope, productInCategories, type SharedPriceScope }
  * the receiving.saved subscriber (auto-propagates new/restocked
  * strains onto every configured mode PriceList).
  *
- * Reads the mbs-settings table for the given (scope, group), finds-or-
+ * Reads the given mbs-settings table at a group level, finds-or-
  * creates a Medusa PriceList scoped to that customer group, then
  * writes / updates PriceListPrice rows for every variant we can
  * confidently resolve to a (tier, size) pair.
  *
  * Variant resolution ladder (mirrors tier-prices/apply):
  *   1. metadata.tier_key + metadata.size_key — receiving-stamped
- *   2. category handle matches a setting tier key + SKU last segment
+ *   2. the product's sub-category key (from its category profile) + SKU
+ *      last segment
  *   3. same as #2 but with a variant-title → size_key mapping
+ *
+ * The table's products are those of every profile naming it at this
+ * level (lib/price-levels.ts): CBD and CBG flower share the flower
+ * tables, so one apply covers all three.
  *
  * Extracted from api/admin/mbs/settings/group-prices/apply/route.ts
  * (2026-07) so the receiving subscriber can call the same code path
  * — was previously operator-only via the admin Save button.
  */
 
-export type GroupScope = SharedPriceScope
-export type GroupKey = "distro" | "tier_2" | "tier_3"
+export type GroupKey = GroupLevel
+
+export type PlannedPrice = {
+  variant_id: string
+  price_set_id: string
+  amount: number
+  /** Amount already in the PriceList, or null when none. */
+  current: number | null
+}
 
 export type ApplyGroupPricesResult = {
   ok: boolean
   error?: string
   summary?: {
-    scope: GroupScope
+    table: string
     group: GroupKey
-    price_list_id: string
+    price_list_id: string | null
     scanned: number
     added: number
     updated: number
     skipped: number
     skip_reasons: Record<string, number>
   }
+  /** Dry run only: every price the apply would write. */
+  planned?: PlannedPrice[]
 }
 
 type TierMap = Record<string, Record<string, number>>
-
-/* Group config — settings key + PriceList metadata per (group). Kept in
- * sync with the HTTP route's GROUPS map. */
-const GROUPS: Record<GroupKey, {
-  groupName: string
-  priceListTitle: string
-  description: string
-  flowerSettingKey: string
-  prerollSettingKey: string
-}> = {
-  distro: {
-    groupName: "distro",
-    priceListTitle: "Distro Pricing",
-    description: "Distributor (B2B distro) selling prices. Scoped to the `distro` customer group.",
-    flowerSettingKey: "flower_distro_prices",
-    prerollSettingKey: "preroll_distro_prices",
-  },
-  tier_2: {
-    groupName: "tier_2",
-    priceListTitle: "Tier 2 Pricing",
-    description: "Tier 2 wholesale selling prices. Scoped to the `tier_2` customer group.",
-    flowerSettingKey: "flower_tier_2_prices",
-    prerollSettingKey: "preroll_tier_2_prices",
-  },
-  tier_3: {
-    groupName: "tier_3",
-    priceListTitle: "Tier 3 Pricing",
-    description: "Tier 3 wholesale selling prices. Scoped to the `tier_3` customer group.",
-    flowerSettingKey: "flower_tier_3_prices",
-    prerollSettingKey: "preroll_tier_3_prices",
-  },
-}
 
 const TITLE_TO_SIZE_KEY: Record<string, string> = {
   "½":           "half",
@@ -100,32 +83,25 @@ function sizeFromSku(sku: string | null | undefined): string | null {
   return parts[parts.length - 1]
 }
 
-/** Look up the mbs-settings key for a given (scope, group). Exported so
- *  callers can pre-check whether a mode is configured before calling
- *  applyGroupPrices — skipping unconfigured modes avoids noisy warnings. */
-export function settingKeyFor(scope: GroupScope, group: GroupKey): string {
-  const cfg = GROUPS[group]
-  return scope === "flower" ? cfg.flowerSettingKey : cfg.prerollSettingKey
-}
-
 export async function applyGroupPrices(
   container: any,
-  scope: GroupScope,
+  table: string,
   group: GroupKey,
+  opts: { dryRun?: boolean } = {},
 ): Promise<ApplyGroupPricesResult> {
+  const dryRun = !!opts.dryRun
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
   const settings: any = container.resolve(MBS_SETTINGS_MODULE)
   const pricingService: any = container.resolve(Modules.PRICING)
   const customerService: any = container.resolve(Modules.CUSTOMER)
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
 
-  const cfg = GROUPS[group]
+  const cfg = GROUP_LEVEL_CONFIG[group]
   if (!cfg) return { ok: false, error: `Invalid group "${group}"` }
 
-  const settingKey = settingKeyFor(scope, group)
-  const prices = (await settings.getSetting(settingKey)) as TierMap | null
+  const prices = (await settings.getSetting(table)) as TierMap | null
   if (!prices) {
-    return { ok: false, error: `${settingKey} not configured — save prices in MBS Settings first.` }
+    return { ok: false, error: `${table} not configured — save prices in MBS Settings first.` }
   }
 
   const groups = await customerService.listCustomerGroups({ name: [cfg.groupName] }, { take: 1 })
@@ -143,7 +119,9 @@ export async function applyGroupPrices(
     { take: 1 },
   ).catch(() => [])
   let priceList = existingLists?.[0]
-  if (!priceList?.id) {
+  if (dryRun) {
+    /* No PriceList yet means every price would be an add. */
+  } else if (!priceList?.id) {
     const [created] = await pricingService.createPriceLists([{
       title: cfg.priceListTitle,
       description: cfg.description,
@@ -160,14 +138,14 @@ export async function applyGroupPrices(
       logger.warn(`[group-prices/apply:${group}] could not refresh rules: ${e?.message}`)
     }
   }
-  if (!priceList?.id) {
+  if (!priceList?.id && !dryRun) {
     return { ok: false, error: `Could not create or load ${cfg.priceListTitle} PriceList` }
   }
 
   const validTierKeys = new Set(Object.keys(prices))
-  /* Only products under this scope's receiving profiles — see
+  /* Only products under this table's receiving profiles — see
    * lib/price-scope.ts for why tier keys alone aren't enough. */
-  const scopeCategoryIds = await categoryIdsForSharedScope(container, query, scope)
+  const scope = await scopeForTable(container, query, group, table)
 
   const { data: variants } = await query.graph({
     entity: "product_variant",
@@ -180,11 +158,13 @@ export async function applyGroupPrices(
     filters: { deleted_at: null },
   })
 
-  const { data: priceListExpanded } = await query.graph({
-    entity: "price_list",
-    fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
-    filters: { id: priceList.id },
-  })
+  const { data: priceListExpanded } = priceList?.id
+    ? await query.graph({
+        entity: "price_list",
+        fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
+        filters: { id: priceList.id },
+      })
+    : { data: [] }
   const byPriceSet: Record<string, { id: string; amount: number | string }> = {}
   for (const pl of (priceListExpanded as any[]) ?? []) {
     for (const p of (pl.prices ?? []) as any[]) {
@@ -194,6 +174,7 @@ export async function applyGroupPrices(
     }
   }
 
+  const planned: PlannedPrice[] = []
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
   const toUpdate: Array<{ id: string; price_set_id: string; currency_code: string; amount: number }> = []
   let scanned = 0
@@ -203,7 +184,8 @@ export async function applyGroupPrices(
 
   for (const v of (variants as any[]) ?? []) {
     scanned += 1
-    if (!productInCategories(v.product, scopeCategoryIds)) { bumpSkip("out_of_scope_category"); continue }
+    const scoped = scopedCategoryOf(v.product, scope.categories)
+    if (!scoped) { bumpSkip("out_of_scope_category"); continue }
     const meta = (v.metadata ?? {}) as Record<string, any>
 
     let tier: string | null = null
@@ -215,10 +197,10 @@ export async function applyGroupPrices(
     }
 
     if (!tier || !size) {
-      const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
-      const matchedCat = cats.find((c) => c?.handle && validTierKeys.has(String(c.handle)))
-      if (matchedCat?.handle) {
-        tier = String(matchedCat.handle)
+      /* The sub-category key, not the handle: CBD tier handles are
+       * cbd-classic etc. while the table is keyed by bare tier. */
+      if (validTierKeys.has(scoped.subcategory.key)) {
+        tier = scoped.subcategory.key
         const validSizes = new Set(Object.keys(prices[tier] ?? {}))
         const skuSize = sizeFromSku(v.sku)
         if (skuSize && validSizes.has(skuSize)) {
@@ -245,6 +227,12 @@ export async function applyGroupPrices(
     if (!priceSetId) { bumpSkip("no_price_set"); continue }
 
     const existing = byPriceSet[String(priceSetId)]
+    planned.push({
+      variant_id: String(v.id),
+      price_set_id: String(priceSetId),
+      amount: newPrice,
+      current: existing ? amountOf(existing.amount) : null,
+    })
     if (existing?.id) {
       toUpdate.push({
         id: String(existing.id),
@@ -254,6 +242,17 @@ export async function applyGroupPrices(
       })
     } else {
       toAdd.push({ price_set_id: String(priceSetId), currency_code: "usd", amount: newPrice })
+    }
+  }
+
+  if (dryRun) {
+    return {
+      ok: true,
+      summary: {
+        table, group, price_list_id: priceList?.id ?? null, scanned,
+        added: toAdd.length, updated: toUpdate.length, skipped, skip_reasons: skipReasons,
+      },
+      planned,
     }
   }
 
@@ -324,7 +323,7 @@ export async function applyGroupPrices(
     const fresh: Record<string, number> = {}
     for (const pl of (re as any[]) ?? []) {
       for (const p of (pl.prices ?? []) as any[]) {
-        const amt = Number((p?.amount as any)?.value ?? (p?.amount as any)?.numeric ?? p?.amount)
+        const amt = amountOf(p?.amount)
         if (p?.price_set_id && Number.isFinite(amt)) fresh[String(p.price_set_id)] = amt
       }
     }
@@ -343,7 +342,7 @@ export async function applyGroupPrices(
         ok: false,
         error: msg,
         summary: {
-          scope,
+          table,
           group,
           price_list_id: priceList.id,
           scanned,
@@ -359,7 +358,7 @@ export async function applyGroupPrices(
   return {
     ok: true,
     summary: {
-      scope,
+      table,
       group,
       price_list_id: priceList.id,
       scanned,
@@ -369,4 +368,9 @@ export async function applyGroupPrices(
       skip_reasons: skipReasons,
     },
   }
+}
+
+/** BigNumber-safe amount (Number(BigNumber) is NaN). */
+function amountOf(a: any): number {
+  return Number(a?.value ?? a?.numeric ?? a)
 }

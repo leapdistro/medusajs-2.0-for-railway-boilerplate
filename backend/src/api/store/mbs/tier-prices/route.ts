@@ -1,6 +1,8 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
+import { loadProfiles } from "../../../../lib/profile-store"
+import { displayTableFor, tableFor } from "../../../../lib/price-levels"
 
 /**
  * GET /store/mbs/tier-prices
@@ -10,7 +12,9 @@ import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
  * — flower_tier_prices: { classic: { qp, half, lb }, ... }; pre_roll_tier_prices:
  * { thc-a: { 30pk }, ... }. Only the SOURCE of the numbers varies.
  *
- * Pricing-mode → settings-key map:
+ * Each category profile names its table per level (MBS Settings →
+ * Categories, lib/price-levels.ts displayTableFor). For the built-in
+ * profiles that is:
  *   null / default → flower_tier_prices       + pre_roll_tier_prices
  *   tier_2         → flower_tier_2_prices     + preroll_tier_2_prices
  *   tier_3         → flower_tier_3_prices     + preroll_tier_3_prices
@@ -26,30 +30,15 @@ import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
  *                     page. PDP price resolution via calculated_price
  *                     is unchanged and remains authoritative.)
  *
+ * `categories` lists every active category with its display table for
+ * the buyer's mode; the named fields below are kept for the current
+ * storefront.
+ *
  * Gated to approved wholesale customers ONLY. Non-approved or anonymous
  * callers get 401/403 — the prices never leave the backend for them.
  * Storefront home-page CategoryShowcase fetches this server-side via
  * a NextAuth-gated proxy.
  */
-const FLOWER_KEY_BY_MODE: Record<string, string> = {
-  tier_2:       "flower_tier_2_prices",
-  tier_3:       "flower_tier_3_prices",
-  distro:       "flower_distro_prices",
-  owner_stores: "flower_tier_prices",
-}
-const PREROLL_KEY_BY_MODE: Record<string, string> = {
-  tier_2:       "preroll_tier_2_prices",
-  tier_3:       "preroll_tier_3_prices",
-  distro:       "preroll_distro_prices",
-  owner_stores: "pre_roll_tier_prices",
-}
-const FLOWER_DEFAULT_KEY      = "flower_tier_prices"
-const PREROLL_DEFAULT_KEY     = "pre_roll_tier_prices"
-/* CBD flower is priced from the flower tables above ("CBD Flower Prices"
- * tab), so flower_cbd_prices in the response is the buyer's own mode
- * table — what they actually pay. CBG keeps its single default table. */
-const FLOWER_CBG_DEFAULT_KEY  = "flower_cbg_prices"
-
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
   if (!customerId) {
@@ -77,14 +66,34 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
    * value so a typo doesn't blank out the home page. */
   const rawMode = (customer.metadata as Record<string, any> | undefined)?.pricing_mode
   const mode = typeof rawMode === "string" ? rawMode : null
-  const flowerKey     = FLOWER_KEY_BY_MODE[mode ?? ""]      ?? FLOWER_DEFAULT_KEY
-  const prerollKey    = PREROLL_KEY_BY_MODE[mode ?? ""]     ?? PREROLL_DEFAULT_KEY
+  const { profiles } = await loadProfiles(req.scope)
+  const byKey = (key: string) => profiles.find((p) => p.key === key)
+  const display = (key: string) => {
+    const p = byKey(key)
+    return p ? displayTableFor(p, mode) : null
+  }
+  const flowerKey = display("flower")
+  const prerollKey = display("pre-roll")
+  const cbdKey = display("flower-cbd")
+  /* CBG keeps its single default table on the home page. */
+  const cbgFlower = byKey("flower-cbg")
+  const cbgKey = cbgFlower ? tableFor(cbgFlower, "default") : null
 
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
-  const [flowerPrices, preRollPrices, cbgFlowerPrices] = await Promise.all([
-    settings.getSetting(flowerKey).catch(() => null),
-    settings.getSetting(prerollKey).catch(() => null),
-    settings.getSetting(FLOWER_CBG_DEFAULT_KEY).catch(() => null),
+  const cache = new Map<string, Promise<any>>()
+  const read = (key: string | null) => {
+    if (!key) return Promise.resolve(null)
+    if (!cache.has(key)) cache.set(key, settings.getSetting(key).catch(() => null))
+    return cache.get(key)!
+  }
+
+  const active = profiles.filter((p) => !p.archived)
+  const [flowerPrices, preRollPrices, cbdFlowerPrices, cbgFlowerPrices, categoryPrices] = await Promise.all([
+    read(flowerKey),
+    read(prerollKey),
+    read(cbdKey),
+    read(cbgKey),
+    Promise.all(active.map((p) => read(displayTableFor(p, mode)))),
   ])
 
   return res.json({
@@ -96,15 +105,22 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
      * by (tier × size); THC-P + pre-roll key by (subcategory × size). */
     flower_tier_prices: flowerPrices ?? null,
     pre_roll_tier_prices: preRollPrices ?? null,
-    flower_cbd_prices: flowerPrices ?? null,
+    flower_cbd_prices: cbdFlowerPrices ?? null,
     flower_cbg_prices: cbgFlowerPrices ?? null,
+    categories: active.map((p, i) => ({
+      key: p.key,
+      name: p.displayName,
+      parent_category: p.parentCategoryName,
+      table: displayTableFor(p, mode),
+      prices: categoryPrices[i] ?? null,
+    })),
     /* Echo back the resolved mode + source keys for debugging. */
     pricing_mode: mode ?? "default",
     sources: {
       flower: flowerKey,
       preroll: prerollKey,
-      flower_cbd: flowerKey,
-      flower_cbg: FLOWER_CBG_DEFAULT_KEY,
+      flower_cbd: cbdKey,
+      flower_cbg: cbgKey,
     },
   })
 }

@@ -1,6 +1,8 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
-import { categoryIdsForSharedScope, productInCategories } from "./price-scope"
+import { scopedCategoryOf, scopeForTable } from "./price-scope"
+import { OWNER_LEVEL_CONFIG } from "./price-levels"
+import type { PlannedPrice } from "./group-prices-apply"
 
 /**
  * Owner Stores pricing — shared apply logic.
@@ -9,6 +11,11 @@ import { categoryIdsForSharedScope, productInCategories } from "./price-scope"
  * metadata, computes `(landed_cost + markup) × pool_units`, and
  * upserts each price into the customer-group-scoped "Owner Stores
  * Pricing" PriceList.
+ *
+ * Scope is a markup setting: the products of every profile naming it
+ * as `priceTables.owner` (CBD and CBG share flower's per-QP markup).
+ * pool_units is the size's stock multiplier from the product's own
+ * profile (QP 1, ½ 2, LB 4; pre-roll boxes 1).
  *
  * Called by:
  *   - POST /admin/mbs/settings/owner-prices/apply (operator click — no
@@ -44,20 +51,9 @@ function sizeFromSku(sku: string | null | undefined): string | null {
   return parts[parts.length - 1]
 }
 
-/* Pool-unit multiplier per size — how many pool units (QPs for flower,
- * boxes for pre-roll) a single variant represents. Mirrors the
- * receiving system's SIZE_QP_MULTIPLIER / inputToPoolMultiplier. */
-const SIZE_POOL_UNITS: Record<"flower" | "preroll", Record<string, number>> = {
-  flower:  { qp: 1, half: 2, lb: 4 },
-  preroll: { "30pk": 1, "15pk": 1 },
-}
-
-const PRICE_LIST_TITLE = "Owner Stores Pricing"
-const FLOWER_TIER_KEYS = new Set(["classic", "exotic", "super", "snow", "rapper"])
-
 export type OwnerApplyResult = {
   ok: boolean
-  scope: "flower" | "preroll"
+  table: string
   price_list_id?: string
   markup?: number
   scanned: number
@@ -66,12 +62,17 @@ export type OwnerApplyResult = {
   skipped: number
   skip_reasons: Record<string, number>
   error?: string
+  /** Dry run only: every price the apply would write. */
+  planned?: PlannedPrice[]
 }
 
 export async function applyOwnerPrices(
   containerOrScope: any,
-  scope: "flower" | "preroll",
+  markupKey: string,
+  opts: { dryRun?: boolean } = {},
 ): Promise<OwnerApplyResult> {
+  const dryRun = !!opts.dryRun
+  const table = markupKey
   const scopeContainer = containerOrScope
   const logger = scopeContainer.resolve(ContainerRegistrationKeys.LOGGER)
   const settings: any = scopeContainer.resolve(MBS_SETTINGS_MODULE)
@@ -79,22 +80,21 @@ export async function applyOwnerPrices(
   const customerService: any = scopeContainer.resolve(Modules.CUSTOMER)
   const query = scopeContainer.resolve(ContainerRegistrationKeys.QUERY)
 
-  const markupKey = scope === "flower" ? "flower_owner_markup_per_qp" : "preroll_owner_markup_per_box"
   const markupRaw = await settings.getSetting(markupKey)
   const markup = typeof markupRaw === "number" ? markupRaw : Number(markupRaw)
   if (!Number.isFinite(markup) || markup < 0) {
     return {
-      ok: false, scope, scanned: 0, added: 0, updated: 0, skipped: 0,
+      ok: false, table, scanned: 0, added: 0, updated: 0, skipped: 0,
       skip_reasons: {},
       error: `${markupKey} not configured (must be a non-negative number)`,
     }
   }
 
-  const groups = await customerService.listCustomerGroups({ name: ["owner_stores"] }, { take: 1 })
+  const groups = await customerService.listCustomerGroups({ name: [OWNER_LEVEL_CONFIG.groupName] }, { take: 1 })
   const ownerGroup = groups?.[0]
   if (!ownerGroup?.id) {
     return {
-      ok: false, scope, scanned: 0, added: 0, updated: 0, skipped: 0,
+      ok: false, table, scanned: 0, added: 0, updated: 0, skipped: 0,
       skip_reasons: {},
       error: "`owner_stores` customer group missing (run seed:customer-groups)",
     }
@@ -104,14 +104,16 @@ export async function applyOwnerPrices(
    * dotted) per Medusa 2.13. */
   const RULES = { "customer.groups.id": [ownerGroup.id] }
   const existingLists = await pricingService.listPriceLists(
-    { title: [PRICE_LIST_TITLE] },
+    { title: [OWNER_LEVEL_CONFIG.priceListTitle] },
     { take: 1 },
   ).catch(() => [])
   let priceList = existingLists?.[0]
-  if (!priceList?.id) {
+  if (dryRun) {
+    /* No PriceList yet means every price would be an add. */
+  } else if (!priceList?.id) {
     const [created] = await pricingService.createPriceLists([{
-      title: PRICE_LIST_TITLE,
-      description: "Operator's own retail stores — landed cost + admin-set markup. Scoped to the `owner_stores` customer group.",
+      title: OWNER_LEVEL_CONFIG.priceListTitle,
+      description: OWNER_LEVEL_CONFIG.description,
       type: "override",
       status: "active",
       rules: RULES,
@@ -125,9 +127,9 @@ export async function applyOwnerPrices(
       logger.warn(`[owner-prices] could not refresh rules: ${e?.message}`)
     }
   }
-  if (!priceList?.id) {
+  if (!priceList?.id && !dryRun) {
     return {
-      ok: false, scope, scanned: 0, added: 0, updated: 0, skipped: 0,
+      ok: false, table, scanned: 0, added: 0, updated: 0, skipped: 0,
       skip_reasons: {},
       error: "Could not create or load Owner Stores PriceList",
     }
@@ -145,26 +147,25 @@ export async function applyOwnerPrices(
     filters: { deleted_at: null },
   })
 
-  const { data: priceListExpanded } = await query.graph({
-    entity: "price_list",
-    fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
-    filters: { id: priceList.id },
-  })
-  const byPriceSet: Record<string, { id: string }> = {}
+  const { data: priceListExpanded } = priceList?.id
+    ? await query.graph({
+        entity: "price_list",
+        fields: ["id", "prices.id", "prices.amount", "prices.price_set_id"],
+        filters: { id: priceList.id },
+      })
+    : { data: [] }
+  const byPriceSet: Record<string, { id: string; amount: unknown }> = {}
   for (const pl of (priceListExpanded as any[]) ?? []) {
     for (const p of (pl.prices ?? []) as any[]) {
       if (p?.price_set_id && p?.id) {
-        byPriceSet[String(p.price_set_id)] = { id: String(p.id) }
+        byPriceSet[String(p.price_set_id)] = { id: String(p.id), amount: p.amount }
       }
     }
   }
 
-  const sizeMultipliers = SIZE_POOL_UNITS[scope]
-  const validSizesSet = new Set(Object.keys(sizeMultipliers))
-  /* Pre-roll scope used to match on size alone, so any product with a
-   * 30pk/15pk variant counted. Both scopes now also require the product
-   * to sit under one of the scope's receiving profiles. */
-  const scopeCategoryIds = await categoryIdsForSharedScope(scopeContainer, query, scope)
+  /* Only products of the profiles using this markup. */
+  const scope = await scopeForTable(scopeContainer, query, "owner", markupKey)
+  const planned: PlannedPrice[] = []
 
   const toAdd: Array<{ price_set_id: string; currency_code: string; amount: number }> = []
   /* Updates MUST carry currency_code + price_set_id, not just { id, amount }.
@@ -183,43 +184,15 @@ export async function applyOwnerPrices(
     scanned += 1
     const meta = (v.metadata ?? {}) as Record<string, any>
 
-    let size: string | null = null
-    let inScope = false
+    const scoped = scopedCategoryOf(v.product, scope.categories)
+    if (!scoped) { bumpSkip("out_of_scope"); continue }
+    /* Sizes this product's sub-category sells, with their stock
+     * multipliers. */
+    const sizeMultipliers: Record<string, number> = {}
+    for (const vd of scoped.subcategory.variants) sizeMultipliers[vd.sizeKey] = vd.multiplier
+    const validSizesSet = new Set(Object.keys(sizeMultipliers))
 
-    const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
-    if (typeof meta.size_key === "string") size = meta.size_key
-    if (scope === "flower") {
-      /* Accept bare tier handles (THC-A: `classic`, `exotic`, …) AND
-       * branch-prefixed handles (`cbd-classic`, `cbg-exotic`, …). CBD +
-       * CBG share the flower Owner Stores markup + PriceList — the
-       * admin UI exposes a single `flower_owner_markup_per_qp` input,
-       * and each CBD/CBG variant carries `landed_per_qp` from its
-       * receiving profile identical to THC-A, so the math is uniform.
-       * Mirrors the prefix-strip pattern in tier-prices/apply. */
-      inScope = cats.some((c) => {
-        const h = String(c?.handle ?? "")
-        if (!h) return false
-        if (FLOWER_TIER_KEYS.has(h)) return true
-        for (const prefix of ["cbd-", "cbg-"]) {
-          if (h.startsWith(prefix) && FLOWER_TIER_KEYS.has(h.slice(prefix.length))) return true
-        }
-        return false
-      })
-    } else {
-      const matchedSize = size && validSizesSet.has(size)
-      const skuSize = sizeFromSku(v.sku)
-      const sizeOpt = ((v.options ?? []) as any[])
-        .find((o) => String(o?.option?.title ?? "").toLowerCase() === "size")
-      const candidate = sizeOpt?.value ?? v.title
-      const normalized = normalizeSizeFromTitle(candidate)
-      inScope = Boolean(
-        matchedSize ||
-        (skuSize && validSizesSet.has(skuSize)) ||
-        (normalized && validSizesSet.has(normalized))
-      )
-    }
-    if (!inScope || !productInCategories(v.product, scopeCategoryIds)) { bumpSkip("out_of_scope"); continue }
-
+    let size: string | null = typeof meta.size_key === "string" ? meta.size_key : null
     if (!size || !validSizesSet.has(size)) {
       const skuSize = sizeFromSku(v.sku)
       if (skuSize && validSizesSet.has(skuSize)) {
@@ -255,6 +228,12 @@ export async function applyOwnerPrices(
     if (!priceSetId) { bumpSkip("no_price_set"); continue }
 
     const existing = byPriceSet[String(priceSetId)]
+    planned.push({
+      variant_id: String(v.id),
+      price_set_id: String(priceSetId),
+      amount: newPrice,
+      current: existing ? amountOf(existing.amount) : null,
+    })
     if (existing?.id) {
       toUpdate.push({
         id: String(existing.id),
@@ -264,6 +243,14 @@ export async function applyOwnerPrices(
       })
     } else {
       toAdd.push({ price_set_id: String(priceSetId), currency_code: "usd", amount: newPrice })
+    }
+  }
+
+  if (dryRun) {
+    return {
+      ok: true, table, price_list_id: priceList?.id, markup, scanned,
+      added: toAdd.length, updated: toUpdate.length, skipped, skip_reasons: skipReasons,
+      planned,
     }
   }
 
@@ -338,7 +325,7 @@ export async function applyOwnerPrices(
     const fresh: Record<string, number> = {}
     for (const pl of (re as any[]) ?? []) {
       for (const p of (pl.prices ?? []) as any[]) {
-        const amt = Number((p?.amount as any)?.value ?? (p?.amount as any)?.numeric ?? p?.amount)
+        const amt = amountOf(p?.amount)
         if (p?.price_set_id && Number.isFinite(amt)) fresh[String(p.price_set_id)] = amt
       }
     }
@@ -355,7 +342,7 @@ export async function applyOwnerPrices(
       logger.error(`[owner-prices] ${msg}`)
       return {
         ok: false,
-        scope,
+        table,
         price_list_id: priceList.id,
         markup,
         scanned,
@@ -370,7 +357,7 @@ export async function applyOwnerPrices(
 
   return {
     ok: true,
-    scope,
+    table,
     price_list_id: priceList.id,
     markup,
     scanned,
@@ -379,4 +366,9 @@ export async function applyOwnerPrices(
     skipped,
     skip_reasons: skipReasons,
   }
+}
+
+/** BigNumber-safe amount (Number(BigNumber) is NaN). */
+function amountOf(a: any): number {
+  return Number(a?.value ?? a?.numeric ?? a)
 }

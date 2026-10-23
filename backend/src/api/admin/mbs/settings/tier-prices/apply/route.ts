@@ -1,7 +1,9 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../../../modules/mbs-settings"
-import { categoryIdsForTierSetting, productInCategories } from "../../../../../../lib/price-scope"
+import { scopedCategoryOf, scopeForTable } from "../../../../../../lib/price-scope"
+import { resolveRequestTable } from "../../../../../../lib/price-levels"
+import { loadProfiles } from "../../../../../../lib/profile-store"
 
 /**
  * POST /admin/mbs/settings/tier-prices/apply
@@ -24,20 +26,13 @@ import { categoryIdsForTierSetting, productInCategories } from "../../../../../.
  * Variants that none of the three can resolve are SKIPPED — we don't
  * have enough info to price them, so leaving them alone is correct.
  *
- * Body: { scope: "flower" | "preroll" | "flower_cbg" }
- *   - "flower":       reads flower_tier_prices (the "CBD Flower Prices"
- *                     tab), matching variants by metadata.tier_key /
- *                     category handle (classic / exotic / super / snow /
- *                     rapper). This is what prices CBD flower.
- *   - "preroll":      reads pre_roll_tier_prices, scoped to anything else
- *                     present in its key set (thc-a / hashholes / future
- *                     subcategories added in Medusa admin)
- *   - "flower_cbg":   reads flower_cbg_prices. Bare tier keys match CBG
- *                     variant metadata.tier_key (Strategy 1); Strategy 2
- *                     strips the "cbg-" category-handle prefix.
- *
- * THC-P pricing and the separate flower_cbd_prices table were removed
- * 2026-10-06: CBD is priced from the "flower" scope.
+ * Body: { table, dryRun? } — `table` is the mbs-settings key holding
+ *   default prices (a category profile's tierPricesSettingKey). Products
+ *   of every profile naming that table are in scope, so flower_tier_prices
+ *   covers THC-A and CBD flower. Legacy { scope: "flower" | "preroll" |
+ *   "flower_cbg" } still works (lib/price-levels resolveRequestTable).
+ *   dryRun returns `planned` (every price it would write) and writes
+ *   nothing.
  */
 
 type TierMap = Record<string, Record<string, number>>
@@ -77,26 +72,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const pricingService: any = req.scope.resolve(Modules.PRICING)
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  type Scope = "flower" | "preroll" | "flower_cbg"
-  const body = (req.body ?? {}) as { scope?: Scope }
-  const scope: Scope = body.scope ?? "flower"
-  const VALID_SCOPES: Scope[] = ["flower", "preroll", "flower_cbg"]
-  if (!VALID_SCOPES.includes(scope)) {
-    res.status(400).json({ ok: false, message: `Invalid scope "${scope}" — must be one of ${VALID_SCOPES.join(", ")}` })
+  const body = (req.body ?? {}) as { table?: unknown; scope?: unknown; dryRun?: unknown }
+  const dryRun = body.dryRun === true
+  const { profiles } = await loadProfiles(req.scope)
+  const resolved = resolveRequestTable(profiles, "default", body)
+  if ("error" in resolved) {
+    res.status(400).json({ ok: false, message: resolved.error })
     return
   }
+  const settingKey = resolved.table
 
-  const settingKey =
-    scope === "flower" ? "flower_tier_prices"
-    : scope === "preroll" ? "pre_roll_tier_prices"
-    : "flower_cbg_prices"
-
-  /* CBD/CBG variants live under prefixed category handles (cbd-classic,
-   * cbg-exotic) but the price map keys off the bare tier suffix
-   * (classic / exotic / …) to match receiving's tier_key metadata.
-   * Strategy 2 handle match needs to strip the prefix before checking
-   * validTierKeys membership. Non-CBD/CBG scopes pass through unchanged. */
-  const handlePrefix = scope === "flower_cbg" ? "cbg-" : null
   const prices = (await settings.getSetting(settingKey)) as TierMap | null
   if (!prices) {
     res.status(400).json({
@@ -110,7 +95,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   /* Only products received under this table's profiles: tier keys repeat
    * across branches (CBD and CBG both use `classic`), so the keys alone
    * would let one branch's table reprice the other. */
-  const scopeCategoryIds = await categoryIdsForTierSetting(req.scope, query, settingKey)
+  const scope = await scopeForTable(req.scope, query, "default", settingKey)
 
   /* Pull every variant + product categories + USD price row. We can't
    * easily filter jsonb metadata in the graph layer in this Medusa minor,
@@ -122,12 +107,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       "id", "title", "sku", "metadata",
       "options.option.title", "options.value",
       "product.categories.id", "product.categories.handle", "product.categories.name",
-      "price_set.prices.id", "price_set.prices.amount", "price_set.prices.currency_code",
+      "price_set.id", "price_set.prices.id", "price_set.prices.amount", "price_set.prices.currency_code",
     ],
     filters: { deleted_at: null },
   })
 
   const updates: Array<{ id: string; amount: number }> = []
+  const planned: Array<{ variant_id: string; price_set_id: string; amount: number; current: number | null }> = []
   let scanned = 0
   let skipped = 0
   const skipReasons: Record<string, number> = {}
@@ -135,7 +121,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   for (const v of (variants as any[]) ?? []) {
     scanned += 1
-    if (!productInCategories(v.product, scopeCategoryIds)) { bumpSkip("out_of_scope_category"); continue }
+    const scoped = scopedCategoryOf(v.product, scope.categories)
+    if (!scoped) { bumpSkip("out_of_scope_category"); continue }
     const meta = (v.metadata ?? {}) as Record<string, any>
 
     /* Resolve tier + size via the strategy ladder. */
@@ -148,20 +135,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       size = meta.size_key
     }
 
-    /* Strategy 2 + 3 — category handle + SKU/title size. */
+    /* Strategy 2 + 3 — the product's sub-category key + SKU/title size.
+     * The key, not the handle: CBD/CBG tier handles are cbd-classic /
+     * cbg-exotic while the table is keyed by bare tier. */
     if (!tier || !size) {
-      const cats = (v.product?.categories ?? []) as Array<{ handle?: string | null }>
-      /* When scope prefixes handles (CBD/CBG), strip the prefix before
-       * membership check so "cbd-classic" resolves to bare "classic". */
-      const stripPrefix = (h: string) =>
-        handlePrefix && h.startsWith(handlePrefix) ? h.slice(handlePrefix.length) : h
-      const matchedCat = cats.find((c) => {
-        if (!c?.handle) return false
-        const bare = stripPrefix(String(c.handle))
-        return validTierKeys.has(bare)
-      })
-      if (matchedCat?.handle) {
-        tier = stripPrefix(String(matchedCat.handle))
+      if (validTierKeys.has(scoped.subcategory.key)) {
+        tier = scoped.subcategory.key
         /* Try SKU first (more reliable when present), then variant title /
          * Size option value. */
         const validSizes = new Set(Object.keys(prices[tier] ?? {}))
@@ -190,9 +169,24 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const usd = (v.price_set?.prices ?? []).find((p: any) => p?.currency_code === "usd")
     if (!usd?.id) { bumpSkip("no_usd_price_row"); continue }
+    planned.push({
+      variant_id: String(v.id),
+      price_set_id: String(v.price_set?.id ?? ""),
+      amount: newPrice,
+      current: Number(usd.amount?.value ?? usd.amount?.numeric ?? usd.amount),
+    })
     if (Number(usd.amount) === newPrice) { bumpSkip("already_current"); continue }
 
     updates.push({ id: String(usd.id), amount: newPrice })
+  }
+
+  if (dryRun) {
+    res.json({
+      ok: true,
+      summary: { table: settingKey, scanned, updated: updates.length, skipped, skip_reasons: skipReasons },
+      planned,
+    })
+    return
   }
 
   let updated = 0
@@ -217,7 +211,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   res.json({
     ok: true,
     summary: {
-      scope,
+      table: settingKey,
       scanned,
       updated,
       skipped,

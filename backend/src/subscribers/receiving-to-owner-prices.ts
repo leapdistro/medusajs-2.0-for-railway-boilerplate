@@ -1,7 +1,8 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { applyOwnerPrices } from "../lib/owner-prices-apply"
-import { sharedScopeForProfile } from "../lib/price-scope"
+import { findProfile } from "../lib/profile-store"
+import { tableFor } from "../lib/price-levels"
 
 /**
  * Auto-refresh Owner Stores PriceList after a successful receiving.
@@ -31,28 +32,25 @@ export default async function receivingToOwnerPrices({
     return
   }
 
-  /* Map receiving profile → owner-prices scope (lib/price-scope.ts). flower / flower-cbd /
-   * flower-cbg all resolve to the flower scope — they share the same
-   * markup + PriceList (see owner-prices-apply in-scope filter for the
-   * matching prefix-strip). pre-roll (with hyphen) → preroll (snake).
-   * flower-thc-p has no owner-prices mapping today (case-pack branch
-   * uses its own pricing model). Future profiles fall back to a soft
-   * no-op log. */
-  const scope = sharedScopeForProfile(profileKey)
-  if (!scope) {
-    logger.info(`[receiving-to-owner-prices] profile "${profileKey}" has no owner-prices mapping; skipping`)
+  /* The received profile's markup setting (priceTables.owner). CBD and
+   * CBG flower share flower's per-QP markup + PriceList; THC-P has none
+   * (case-pack branch uses its own pricing model). */
+  const profile = await findProfile(container, profileKey)
+  const table = profile ? tableFor(profile, "owner") : null
+  if (!table) {
+    logger.info(`[receiving-to-owner-prices] profile "${profileKey}" has no owner markup configured; skipping`)
     return
   }
 
   try {
-    const result = await applyOwnerPrices(container, scope)
+    const result = await applyOwnerPrices(container, table)
     if (!result.ok) {
-      logger.warn(`[receiving-to-owner-prices] apply ${scope} failed: ${result.error}`)
+      logger.warn(`[receiving-to-owner-prices] apply ${table} failed: ${result.error}`)
       return
     }
     const propagated = result.added + result.updated
     logger.info(
-      `[receiving-to-owner-prices] ${scope}: ${propagated} prices refreshed · ${result.skipped} skipped (history ${event?.data?.history_id})`,
+      `[receiving-to-owner-prices] ${table}: ${propagated} prices refreshed · ${result.skipped} skipped (history ${event?.data?.history_id})`,
     )
   } catch (e: any) {
     /* Non-blocking — receiving already succeeded. The operator can

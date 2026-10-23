@@ -1,13 +1,15 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import {
-  applyGroupPrices,
-  type GroupKey,
-  type GroupScope,
-} from "../../../../../../lib/group-prices-apply"
+import { applyGroupPrices, type GroupKey } from "../../../../../../lib/group-prices-apply"
+import { GROUP_LEVELS, resolveRequestTable } from "../../../../../../lib/price-levels"
+import { loadProfiles } from "../../../../../../lib/profile-store"
 
 /**
  * POST /admin/mbs/settings/group-prices/apply
- *   { scope: "flower" | "preroll", group: "distro" | "tier_2" | "tier_3" }
+ *   { table, group: "distro" | "tier_2" | "tier_3", dryRun? }
+ *
+ * `table` is the mbs-settings key a category profile names at that
+ * level (priceTables in MBS Settings → Categories). Legacy
+ * { scope: "flower" | "preroll" } still resolves through the profiles.
  *
  * Thin HTTP wrapper around `applyGroupPrices` (lib/group-prices-apply.ts).
  * The shared lib was extracted so the receiving.saved subscriber can
@@ -18,31 +20,25 @@ import {
  * the lib. This handler only parses body, validates enum values, and
  * shapes the response.
  */
-
-const VALID_SCOPES: GroupScope[] = ["flower", "preroll"]
-const VALID_GROUPS: GroupKey[] = ["distro", "tier_2", "tier_3"]
-
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const body = (req.body ?? {}) as { scope?: GroupScope; group?: GroupKey }
-  const scope = body.scope ?? "flower"
+  const body = (req.body ?? {}) as { table?: unknown; scope?: unknown; group?: GroupKey; dryRun?: unknown }
   const group = body.group ?? "distro"
-
-  if (!VALID_SCOPES.includes(scope)) {
+  if (!GROUP_LEVELS.includes(group)) {
     res.status(400).json({
       ok: false,
-      message: `Invalid scope "${scope}" — must be one of ${VALID_SCOPES.join(", ")}`,
-    })
-    return
-  }
-  if (!VALID_GROUPS.includes(group)) {
-    res.status(400).json({
-      ok: false,
-      message: `Invalid group "${group}" — must be one of ${VALID_GROUPS.join(", ")}`,
+      message: `Invalid group "${group}" — must be one of ${GROUP_LEVELS.join(", ")}`,
     })
     return
   }
 
-  const result = await applyGroupPrices(req.scope, scope, group)
+  const { profiles } = await loadProfiles(req.scope)
+  const resolved = resolveRequestTable(profiles, group, body)
+  if ("error" in resolved) {
+    res.status(400).json({ ok: false, message: resolved.error })
+    return
+  }
+
+  const result = await applyGroupPrices(req.scope, resolved.table, group, { dryRun: body.dryRun === true })
 
   if (!result.ok) {
     /* Configuration errors (settings missing, customer group missing)
@@ -58,5 +54,5 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  res.json({ ok: true, summary: result.summary })
+  res.json({ ok: true, summary: result.summary, ...(result.planned ? { planned: result.planned } : {}) })
 }

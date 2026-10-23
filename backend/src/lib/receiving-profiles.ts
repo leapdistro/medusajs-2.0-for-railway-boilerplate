@@ -142,6 +142,27 @@ export type ReceivingProfile = {
   /** Retired from receiving. Kept so price applies still cover the
    *  products it already created. */
   archived?: boolean
+  /** Customer-group and owner price tables (mbs-settings keys). Default
+   *  prices stay on `tierPricesSettingKey`. Profiles naming the same key
+   *  share that table; an unset level has no prices for the category.
+   *  See lib/price-levels.ts. */
+  priceTables?: PriceTables
+}
+
+export type PriceTables = {
+  tier_2?: string
+  tier_3?: string
+  distro?: string
+  /** Setting holding the Owner Stores markup per stock unit. */
+  owner?: string
+}
+
+/* CBD and CBG flower share the THC-A flower group tables and markup. */
+const FLOWER_PRICE_TABLES: PriceTables = {
+  tier_2: "flower_tier_2_prices",
+  tier_3: "flower_tier_3_prices",
+  distro: "flower_distro_prices",
+  owner: "flower_owner_markup_per_qp",
 }
 
 /* ─── Flower ─── */
@@ -184,6 +205,7 @@ export const FLOWER_PROFILE: ReceivingProfile = {
   unitLabel: { singular: "QP", plural: "QPs" },
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
+  priceTables: FLOWER_PRICE_TABLES,
 }
 
 /* ─── Pre-Rolls ─── */
@@ -251,6 +273,12 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   unitLabel: { singular: "Box", plural: "Boxes" },
   inputUnitLabel: { singular: "box", plural: "boxes" },
   inputToPoolMultiplier: 1,
+  priceTables: {
+    tier_2: "preroll_tier_2_prices",
+    tier_3: "preroll_tier_3_prices",
+    distro: "preroll_distro_prices",
+    owner: "preroll_owner_markup_per_box",
+  },
 }
 
 /* ─── Flower — THC-P ─── */
@@ -291,6 +319,8 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
   unitLabel: { singular: "Box", plural: "Boxes" },
   inputUnitLabel: { singular: "box", plural: "boxes" },
   inputToPoolMultiplier: 1,
+  /* Category retired 2026-08; kept so its products stay priced. */
+  archived: true,
 }
 
 /* ─── Flower — CBD ─── */
@@ -343,6 +373,7 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   unitLabel: { singular: "QP", plural: "QPs" },
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
+  priceTables: FLOWER_PRICE_TABLES,
 }
 
 /* ─── Flower — CBG ─── */
@@ -379,6 +410,7 @@ export const FLOWER_CBG_PROFILE: ReceivingProfile = {
   unitLabel: { singular: "QP", plural: "QPs" },
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
+  priceTables: FLOWER_PRICE_TABLES,
 }
 
 /* ─── Registry ─── */

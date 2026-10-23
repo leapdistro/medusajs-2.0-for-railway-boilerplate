@@ -1,5 +1,6 @@
-import type { ProfileKey, ReceivingProfile } from "./receiving-profiles"
-import { loadProfiles, resolveProfileCategories } from "./profile-store"
+import type { ReceivingProfile } from "./receiving-profiles"
+import { loadProfiles, resolveProfileCategories, type ResolvedSubcategory } from "./profile-store"
+import { profilesForTable, type PriceLevel } from "./price-levels"
 
 /**
  * Which products a price table is allowed to touch.
@@ -11,51 +12,43 @@ import { loadProfiles, resolveProfileCategories } from "./profile-store"
  * products and the reverse. Each apply now also requires the product to
  * sit under one of its receiving profiles' categories.
  *
- * The categories come from the receiving profiles (parent category, or
- * the profile's subcategory root when it has one), loaded from MBS
- * Settings → Categories, so a table covers exactly the products its
- * profiles receive.
+ * A table's profiles are the ones that name it at that level (MBS
+ * Settings → Categories, lib/price-levels.ts), so a table covers exactly
+ * the products its profiles receive.
  */
 
-/** Customer-group and owner price tables are shared across profiles:
- *  CBG has no group tables of its own and uses the CBD Flower ones. */
-export type SharedPriceScope = "flower" | "preroll"
+export type ScopedCategory = { profile: ReceivingProfile; subcategory: ResolvedSubcategory }
 
-export const SHARED_SCOPE_PROFILES: Record<SharedPriceScope, ProfileKey[]> = {
-  flower: ["flower", "flower-cbd", "flower-cbg"],
-  preroll: ["pre-roll"],
+export type TableScope = {
+  profiles: ReceivingProfile[]
+  /** Every category the profiles receive into: each live sub-category
+   *  and anything under it, mapped to the profile + sub-category. */
+  categories: Map<string, ScopedCategory>
 }
 
-/** The shared scope a receiving profile's group/owner prices live in,
- *  or null when it has none (THC-P). */
-export function sharedScopeForProfile(profileKey: string): SharedPriceScope | null {
-  for (const [scope, keys] of Object.entries(SHARED_SCOPE_PROFILES)) {
-    if ((keys as string[]).includes(profileKey)) return scope as SharedPriceScope
-  }
-  return null
+/** The profiles and categories priced from `tableKey` at `level`. */
+export async function scopeForTable(
+  container: any,
+  query: any,
+  level: PriceLevel,
+  tableKey: string,
+): Promise<TableScope> {
+  const { profiles } = await loadProfiles(container)
+  const matched = profilesForTable(profiles, level, tableKey)
+  return { profiles: matched, categories: await categoriesForProfiles(query, matched) }
 }
 
 /** Category ids for the profiles whose default selling prices come from
  *  `settingKey`. */
 export async function categoryIdsForTierSetting(container: any, query: any, settingKey: string): Promise<Set<string>> {
-  const { profiles } = await loadProfiles(container)
-  return categoryIdsForProfiles(query, profiles.filter((p) => p.tierPricesSettingKey === settingKey))
+  const { categories } = await scopeForTable(container, query, "default", settingKey)
+  return new Set(categories.keys())
 }
 
-/** Category ids for the profiles sharing a group/owner price scope. */
-export async function categoryIdsForSharedScope(container: any, query: any, scope: SharedPriceScope): Promise<Set<string>> {
-  const { profiles } = await loadProfiles(container)
-  const keys = SHARED_SCOPE_PROFILES[scope] as string[]
-  return categoryIdsForProfiles(query, profiles.filter((p) => keys.includes(p.key)))
-}
-
-/** Ids of every category the given profiles receive into: each live
- *  sub-category (resolveProfileCategories, the same list receiving uses)
- *  and anything under it. */
-export async function categoryIdsForProfiles(
+async function categoriesForProfiles(
   query: any,
   profiles: ReceivingProfile[],
-): Promise<Set<string>> {
+): Promise<Map<string, ScopedCategory>> {
   const { data } = await query.graph({
     entity: "product_category",
     fields: ["id", "parent_category_id"],
@@ -68,24 +61,38 @@ export async function categoryIdsForProfiles(
     children.set(c.parent_category_id, list)
   }
 
-  const ids = new Set<string>()
+  const out = new Map<string, ScopedCategory>()
   for (const profile of profiles) {
     const { profile: resolved } = await resolveProfileCategories(query, profile)
-    const stack = resolved.subcategories.map((s) => s.id)
-    while (stack.length > 0) {
-      const id = stack.pop()!
-      if (ids.has(id)) continue
-      ids.add(id)
-      stack.push(...(children.get(id) ?? []))
+    for (const subcategory of resolved.subcategories) {
+      const stack = [subcategory.id]
+      while (stack.length > 0) {
+        const id = stack.pop()!
+        if (out.has(id)) continue
+        out.set(id, { profile, subcategory })
+        stack.push(...(children.get(id) ?? []))
+      }
     }
   }
-  return ids
+  return out
+}
+
+/** The first of the product's categories inside the scope, or null. */
+export function scopedCategoryOf(
+  product: { categories?: Array<{ id?: string | null } | null> | null } | null | undefined,
+  categories: Map<string, ScopedCategory>,
+): ScopedCategory | null {
+  for (const c of product?.categories ?? []) {
+    const hit = c?.id ? categories.get(String(c.id)) : undefined
+    if (hit) return hit
+  }
+  return null
 }
 
 /** True when any of the product's categories is in `ids`. */
 export function productInCategories(
   product: { categories?: Array<{ id?: string | null } | null> | null } | null | undefined,
-  ids: Set<string>,
+  ids: Set<string> | Map<string, unknown>,
 ): boolean {
   return (product?.categories ?? []).some((c) => !!c?.id && ids.has(String(c.id)))
 }

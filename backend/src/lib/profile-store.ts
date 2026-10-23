@@ -2,6 +2,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
 import {
   PROFILES,
+  type PriceTables,
   type PricingModel,
   type ReceivingProfile,
   type SubcategoryDef,
@@ -38,6 +39,11 @@ export async function loadProfiles(container: any): Promise<LoadedProfiles> {
   const profiles: ReceivingProfile[] = []
   for (const entry of raw) {
     const { profile, errors } = normalizeProfile(entry)
+    /* Lists saved before price tables were configurable (Phase 2) carry
+     * none; built-in profiles keep the tables they had. */
+    if (profile && !profile.priceTables && PROFILES[profile.key]?.priceTables) {
+      profile.priceTables = PROFILES[profile.key].priceTables
+    }
     if (profile) profiles.push(profile)
     else logger.warn(`[profile-store] skipping invalid category profile "${entry?.key ?? "?"}": ${errors.join("; ")}`)
   }
@@ -249,6 +255,14 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     errors.push("tier pricing needs a price table key (lowercase, underscores)")
   }
 
+  const priceTables: PriceTables = {}
+  for (const level of ["tier_2", "tier_3", "distro", "owner"] as const) {
+    const k = str(p?.priceTables?.[level])
+    if (!k) continue
+    if (!SETTING_KEY_RE.test(k)) errors.push(`${level} price table "${k}" must be lowercase with underscores`)
+    else priceTables[level] = k
+  }
+
   const inputToPoolMultiplier = posNum(p?.inputToPoolMultiplier)
   if (inputToPoolMultiplier == null) errors.push("receiving unit multiplier must be above 0")
 
@@ -275,6 +289,9 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     inputToPoolMultiplier: inputToPoolMultiplier ?? 1,
     ...(str(p?.qboCategoryBranch) ? { qboCategoryBranch: str(p.qboCategoryBranch) } : {}),
     ...(p?.archived ? { archived: true } : {}),
+    /* Kept when sent, even empty, so clearing every table sticks; only
+     * a missing field falls back to the built-in tables in loadProfiles. */
+    ...(p?.priceTables && typeof p.priceTables === "object" ? { priceTables } : {}),
   }
   return errors.length > 0 ? { profile: null, errors } : { profile, errors }
 }

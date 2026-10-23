@@ -64,7 +64,7 @@ export default async function probeApplyTwice({ container }: ExecArgs) {
   logger.info("")
 
   logger.info("── Calling applyOwnerPrices() — pass 1 ──")
-  const pass1 = await applyOwnerPrices(container, scope)
+  const pass1 = await applyOwnerPrices(container, markupKey)
   logger.info(`pass1 result: ok=${pass1.ok} added=${pass1.added} updated=${pass1.updated} skipped=${pass1.skipped}`)
   if ((pass1 as any).error) logger.error(`pass1 error: ${(pass1 as any).error}`)
   logger.info(`pass1 skip_reasons: ${JSON.stringify(pass1.skip_reasons ?? {})}`)
@@ -77,7 +77,7 @@ export default async function probeApplyTwice({ container }: ExecArgs) {
   logger.info("")
 
   logger.info("── Calling applyOwnerPrices() — pass 2 ──")
-  const pass2 = await applyOwnerPrices(container, scope)
+  const pass2 = await applyOwnerPrices(container, markupKey)
   logger.info(`pass2 result: ok=${pass2.ok} added=${pass2.added} updated=${pass2.updated} skipped=${pass2.skipped}`)
   if ((pass2 as any).error) logger.error(`pass2 error: ${(pass2 as any).error}`)
   logger.info(`pass2 skip_reasons: ${JSON.stringify(pass2.skip_reasons ?? {})}`)
