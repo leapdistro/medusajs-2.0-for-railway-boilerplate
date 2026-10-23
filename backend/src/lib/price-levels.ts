@@ -16,6 +16,17 @@ export type PriceLevel = "default" | GroupLevel | "owner"
 
 export const GROUP_LEVELS: GroupLevel[] = ["distro", "tier_2", "tier_3"]
 
+/** Every level in the order MBS Settings shows its tab. */
+export const PRICE_LEVELS: PriceLevel[] = ["default", "tier_2", "tier_3", "distro", "owner"]
+
+export const PRICE_LEVEL_LABELS: Record<PriceLevel, string> = {
+  default: "Default Prices",
+  tier_2: "Chain of Stores",
+  tier_3: "Low Volume",
+  distro: "Distro Prices",
+  owner: "Owner Markup",
+}
+
 /** Customer group + PriceList per group level. One PriceList per level
  *  holds every category's prices for it. */
 export const GROUP_LEVEL_CONFIG: Record<GroupLevel, {
