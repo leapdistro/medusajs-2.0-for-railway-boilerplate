@@ -45,7 +45,9 @@ export async function categoryIdsForTierSetting(container: any, query: any, sett
   return new Set(categories.keys())
 }
 
-async function categoriesForProfiles(
+/** Categories the given profiles receive into, each mapped to its profile
+ *  + sub-category. */
+export async function categoriesForProfiles(
   query: any,
   profiles: ReceivingProfile[],
 ): Promise<Map<string, ScopedCategory>> {

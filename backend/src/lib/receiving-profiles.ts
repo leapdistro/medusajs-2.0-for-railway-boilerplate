@@ -147,6 +147,10 @@ export type ReceivingProfile = {
    *  share that table; an unset level has no prices for the category.
    *  See lib/price-levels.ts. */
   priceTables?: PriceTables
+  /** Bucket in the `shipping_rates` setting holding this category's
+   *  per-variant shipping cost (lib/shipping-rates.ts). Profiles naming
+   *  the same bucket share it. */
+  shippingRatesKey?: string
 }
 
 export type PriceTables = {
@@ -206,6 +210,7 @@ export const FLOWER_PROFILE: ReceivingProfile = {
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
   priceTables: FLOWER_PRICE_TABLES,
+  shippingRatesKey: "flower",
 }
 
 /* ─── Pre-Rolls ─── */
@@ -279,6 +284,7 @@ export const PREROLL_PROFILE: ReceivingProfile = {
     distro: "preroll_distro_prices",
     owner: "preroll_owner_markup_per_box",
   },
+  shippingRatesKey: "preroll",
 }
 
 /* ─── Flower — THC-P ─── */
@@ -321,6 +327,7 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
   inputToPoolMultiplier: 1,
   /* Category retired 2026-08; kept so its products stay priced. */
   archived: true,
+  shippingRatesKey: "thcp_flower",
 }
 
 /* ─── Flower — CBD ─── */
@@ -374,6 +381,7 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
   priceTables: FLOWER_PRICE_TABLES,
+  shippingRatesKey: "flower",
 }
 
 /* ─── Flower — CBG ─── */
@@ -411,6 +419,7 @@ export const FLOWER_CBG_PROFILE: ReceivingProfile = {
   inputUnitLabel: { singular: "lb", plural: "lbs" },
   inputToPoolMultiplier: 4,
   priceTables: FLOWER_PRICE_TABLES,
+  shippingRatesKey: "flower",
 }
 
 /* ─── Registry ─── */

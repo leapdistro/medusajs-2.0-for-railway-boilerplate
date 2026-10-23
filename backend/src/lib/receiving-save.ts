@@ -8,6 +8,7 @@ import { MBS_ATTRIBUTES_MODULE } from "../modules/mbs-attributes"
 import { baseSku, generateSku } from "./sku"
 import { FLOWER_PROFILE, getSubcategory, getVariantDef, getVariantsForRow, type ReceivingProfile } from "./receiving-profiles"
 import { resolveProfileCategories } from "./profile-store"
+import { rateForProfile, type ShippingRates } from "./shipping-rates"
 
 /**
  * Slice 2C — receiving save orchestrator.
@@ -151,14 +152,7 @@ function asNumber(v: string | number | null | undefined): number | null {
 
 /* ---- Shared invoice context for all rows in one save ---- */
 
-export type ShippingRates = {
-  flower?: { qp?: number; half?: number; lb?: number }
-  preroll?: Record<string, Record<string, number>>
-  /* THC-P Flower: same nesting as preroll (subcatKey → sizeKey → dollars).
-   * One cell today (thc-p → 8pk); shape allows future sizes without a
-   * settings migration. */
-  thcp_flower?: Record<string, Record<string, number>>
-}
+export type { ShippingRates } from "./shipping-rates"
 
 export type SaveContext = {
   /** Active receiving profile — drives variant axes, subcategory lookups,
@@ -190,29 +184,6 @@ export type SaveContext = {
   enumRootHandle: string
   /** Default shipping profile id — required link or cart checkout fails. */
   shippingProfileId: string
-}
-
-/** Lookup helper: tier_key + size_key → flat shipping rate in USD.
- *  Tier discriminates flower vs pre-roll subtree. Returns null when
- *  no matching entry — caller decides whether to throw or skip. */
-export function lookupShippingRate(
-  rates: ShippingRates | null,
-  tierKey: string,
-  sizeKey: string,
-): number | null {
-  if (!rates) return null
-  if (tierKey === "classic" || tierKey === "exotic" || tierKey === "super" || tierKey === "snow" || tierKey === "rapper") {
-    const r = (rates.flower as any)?.[sizeKey]
-    return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
-  }
-  if (tierKey === "thc-p") {
-    /* THC-P Flower rides its own bucket so THC-A flower rates (flat
-     * qp/half/lb) don't collide with THC-P's case-pack size key. */
-    const r = rates.thcp_flower?.[tierKey]?.[sizeKey]
-    return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
-  }
-  const r = rates.preroll?.[tierKey]?.[sizeKey]
-  return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null
 }
 
 export async function buildSaveContext(
@@ -691,7 +662,7 @@ export async function saveOneRow(
      *    Net flower content (for storefront per-gram pricing) lives
      *    on metadata.net_grams — independent of the shipping rate. */
     const variants = variantDefs.map((v, idx) => {
-      const shippingDollars = lookupShippingRate(ctx.shippingRates, row.tier, v.sizeKey)
+      const shippingDollars = rateForProfile(ctx.shippingRates, ctx.profile, row.tier, v.sizeKey)
       const shippingCents = shippingDollars != null ? Math.round(shippingDollars * 100) : null
       return ({
       title: v.label,

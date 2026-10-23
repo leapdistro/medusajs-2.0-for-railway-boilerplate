@@ -5,6 +5,7 @@ import { applyOwnerPrices } from "../lib/owner-prices-apply"
 import { GROUP_LEVEL_CONFIG, GROUP_LEVELS, OWNER_LEVEL_CONFIG, tableFor, type PriceLevel } from "../lib/price-levels"
 import { loadProfiles } from "../lib/profile-store"
 import { POST as tierApply } from "../api/admin/mbs/settings/tier-prices/apply/route"
+import { applyShippingRates } from "../lib/shipping-rates"
 
 /**
  * Read-only check for the price-table registry (zero-code categories,
@@ -17,8 +18,11 @@ import { POST as tierApply } from "../api/admin/mbs/settings/tier-prices/apply/r
  *   - dropped: a PriceList price no table at that level would write any
  *              more (the apply leaves it alone, but it would go stale)
  *
- * All three empty means deploying the registry and pressing Save & Apply
- * changes no price. Writes nothing.
+ * Shipping (Phase 3) gets the same three checks against variant.weight:
+ * a different rate, a first rate, or a stamped rate nothing covers.
+ *
+ * All empty means deploying the registry and pressing Save & Apply
+ * changes no price or shipping rate. Writes nothing.
  *
  *   medusa exec ./src/scripts/price-registry-dry-run.ts
  */
@@ -114,6 +118,27 @@ export default async function priceRegistryDryRun({ container }: ExecArgs) {
       for (const p of list ?? []) planned.add(p.price_set_id)
     }
     dropped("owner", await priceListPriceSets(OWNER_LEVEL_CONFIG.priceListTitle), planned)
+  }
+
+  {
+    const r = await applyShippingRates(container, { dryRun: true })
+    if (!r.ok) { report.shipping = { error: r.error }; problems += 1 }
+    else {
+      const planned = r.planned ?? []
+      const changed = planned.filter((p) => p.current != null && p.current !== p.cents)
+      const added = planned.filter((p) => p.current == null)
+      const covered = new Set(planned.map((p) => p.variant_id))
+      const { data } = await query.graph({ entity: "product_variant", fields: ["id", "weight"], filters: { deleted_at: null } })
+      const gone = (data as any[]).filter((v) => v.weight != null && Number(v.weight) > 0 && !covered.has(String(v.id)))
+      problems += changed.length + added.length + gone.length
+      report.shipping = {
+        summary: r.summary,
+        planned: planned.length,
+        changed: changed.map((p) => `${label.get(p.variant_id)}: ${p.current}¢ → ${p.cents}¢`),
+        added: added.map((p) => `${label.get(p.variant_id)}: → ${p.cents}¢`),
+        dropped: gone.map((v) => `${label.get(String(v.id))}: ${v.weight}¢ (no rate would cover it)`),
+      }
+    }
   }
 
   logger.info(JSON.stringify(report, null, 2))

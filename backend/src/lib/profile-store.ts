@@ -44,6 +44,9 @@ export async function loadProfiles(container: any): Promise<LoadedProfiles> {
     if (profile && !profile.priceTables && PROFILES[profile.key]?.priceTables) {
       profile.priceTables = PROFILES[profile.key].priceTables
     }
+    if (profile && entry?.shippingRatesKey === undefined && PROFILES[profile.key]?.shippingRatesKey) {
+      profile.shippingRatesKey = PROFILES[profile.key].shippingRatesKey
+    }
     if (profile) profiles.push(profile)
     else logger.warn(`[profile-store] skipping invalid category profile "${entry?.key ?? "?"}": ${errors.join("; ")}`)
   }
@@ -263,6 +266,11 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     else priceTables[level] = k
   }
 
+  const shippingRatesKey = str(p?.shippingRatesKey)
+  if (shippingRatesKey && !SETTING_KEY_RE.test(shippingRatesKey)) {
+    errors.push(`shipping rates bucket "${shippingRatesKey}" must be lowercase with underscores`)
+  }
+
   const inputToPoolMultiplier = posNum(p?.inputToPoolMultiplier)
   if (inputToPoolMultiplier == null) errors.push("receiving unit multiplier must be above 0")
 
@@ -292,6 +300,7 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     /* Kept when sent, even empty, so clearing every table sticks; only
      * a missing field falls back to the built-in tables in loadProfiles. */
     ...(p?.priceTables && typeof p.priceTables === "object" ? { priceTables } : {}),
+    ...(shippingRatesKey ? { shippingRatesKey } : {}),
   }
   return errors.length > 0 ? { profile: null, errors } : { profile, errors }
 }
