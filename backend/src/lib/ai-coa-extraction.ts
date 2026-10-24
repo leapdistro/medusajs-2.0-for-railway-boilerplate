@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
+import type { PrimaryCannabinoid } from "./receiving-profiles"
 
 /**
  * Anthropic-backed extractor for cannabis lab COA PDFs. Pulls out
@@ -47,7 +48,7 @@ export type ExtractCoaResult = {
  *  THCa; the extractor targets whichever the caller expects. CBD/CBG
  *  hemp COAs report CBD/CBG (or CBDa/CBGa acid forms). Undefined keeps
  *  the historical behavior (THCa-first with THC-P fallback). */
-export type PrimaryCannabinoid = "THC-A" | "THC-P" | "CBD" | "CBG"
+export type { PrimaryCannabinoid } from "./receiving-profiles"
 
 function buildPrompt(primary?: PrimaryCannabinoid): string {
   const rule1 =

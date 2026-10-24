@@ -25,6 +25,12 @@
  *  an open string. */
 export type ProfileKey = string
 
+/** The cannabinoids receiving can record a main % for. Each has its own
+ *  product attribute (cbd_percent, cbg_percent, thca_percent,
+ *  thcp_percent). */
+export const PRIMARY_CANNABINOIDS = ["CBD", "CBG", "THC-A", "THC-P"] as const
+export type PrimaryCannabinoid = (typeof PRIMARY_CANNABINOIDS)[number]
+
 /** A variant axis value (one row in the review grid maps to N variants per profile). */
 export type VariantDef = {
   /** Stable identifier — also the size suffix on the variant SKU (qp/half/lb/30pk/...). */
@@ -150,6 +156,15 @@ export type ReceivingProfile = {
   /** Retired from receiving. Kept so price applies still cover the
    *  products it already created. */
   archived?: boolean
+  /** The cannabinoid the category is sold on. Sets the receiving pages'
+   *  % column label, which product attribute the % saves to, and what
+   *  the COA reader looks for. Only meaningful when fields.cannabinoids
+   *  is on. */
+  primaryCannabinoid?: PrimaryCannabinoid
+  /** Received by uploading the supplier's invoice on the main Receiving
+   *  page. The invoice reader reads quantities and prices in
+   *  `inputUnitLabel`. Off: the category isn't offered there. */
+  invoiceUpload?: boolean
   /** Customer-group and owner price tables (mbs-settings keys). Default
    *  prices stay on `tierPricesSettingKey`. Profiles naming the same key
    *  share that table; an unset level has no prices for the category.
@@ -182,6 +197,10 @@ const FLOWER_PRICE_TABLES: PriceTables = {
 export const FLOWER_PROFILE: ReceivingProfile = {
   key: "flower",
   displayName: "Flower",
+  primaryCannabinoid: "THC-A",
+  /* THC-A receiving is paused (Texas litigation). Turning invoice
+   * upload back on in MBS Settings → Categories brings it back. */
+  invoiceUpload: false,
   parentCategoryName: "Flower",
   /* Tier categories were reparented under an intermediate "THC-A" node
    * by seed-flower-cannabinoid-cats.ts. Enumerate children of that node
@@ -226,6 +245,9 @@ export const FLOWER_PROFILE: ReceivingProfile = {
 export const PREROLL_PROFILE: ReceivingProfile = {
   key: "pre-roll",
   displayName: "Pre-Rolls",
+  primaryCannabinoid: "CBD",
+  /* Received on its own manual-entry page. */
+  invoiceUpload: false,
   parentCategoryName: "Pre-Rolls",
   subcategories: [
     /* Per-subcategory variants: CBD boxes hold 30 individual pre-rolls;
@@ -304,6 +326,8 @@ export const PREROLL_PROFILE: ReceivingProfile = {
 export const FLOWER_THCP_PROFILE: ReceivingProfile = {
   key: "flower-thc-p",
   displayName: "Flower — THC-P",
+  primaryCannabinoid: "THC-P",
+  invoiceUpload: false,
   parentCategoryName: "Flower",
   subcategories: [
     /* Single subcategory. Every row lands under Flower > THC-P. */
@@ -349,6 +373,8 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
 export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   key: "flower-cbd",
   displayName: "Flower — CBD",
+  primaryCannabinoid: "CBD",
+  invoiceUpload: true,
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbd",
   qboCategoryBranch: "CBD",
@@ -397,6 +423,8 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
 export const FLOWER_CBG_PROFILE: ReceivingProfile = {
   key: "flower-cbg",
   displayName: "Flower — CBG",
+  primaryCannabinoid: "CBG",
+  invoiceUpload: true,
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbg",
   qboCategoryBranch: "CBG",

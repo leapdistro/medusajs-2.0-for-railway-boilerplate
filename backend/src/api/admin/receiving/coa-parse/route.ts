@@ -1,5 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { extractCoa, PrimaryCannabinoid } from "../../../../lib/ai-coa-extraction"
+import { PRIMARY_CANNABINOIDS } from "../../../../lib/receiving-profiles"
 
 /**
  * POST /admin/receiving/coa-parse
@@ -24,7 +25,7 @@ import { extractCoa, PrimaryCannabinoid } from "../../../../lib/ai-coa-extractio
  *   502 — fetch or AI call failed (error string in body)
  */
 
-const VALID_PRIMARIES: readonly PrimaryCannabinoid[] = ["THC-A", "THC-P", "CBD", "CBG"]
+const VALID_PRIMARIES: readonly PrimaryCannabinoid[] = PRIMARY_CANNABINOIDS
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body ?? {}) as { coaUrl?: string; primary?: string }

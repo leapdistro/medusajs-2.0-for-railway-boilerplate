@@ -1,11 +1,15 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { extractInvoice } from "../../../../lib/ai-extraction"
+import { findProfile } from "../../../../lib/profile-store"
 
 /**
  * POST /admin/receiving/extract
  *
  * Multipart form upload:
  *   field: invoice (single PDF, ≤15 MB)
+ *   field: profileKey (optional) — the category being received. Its
+ *     receiving unit is what quantities and prices are read in, and it
+ *     must have invoice upload on. Without it: pounds, as before.
  *
  * Returns the typed JSON shape from extractInvoice() so the admin
  * Receiving page can pre-populate the review spreadsheet. No
@@ -41,7 +45,22 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  const result = await extractInvoice(invoiceFile.buffer)
+  const profileKey = String((req.body as any)?.profileKey ?? "").trim()
+  let unit: { singular: string; plural: string } | undefined
+  if (profileKey) {
+    const profile = await findProfile(req.scope, profileKey)
+    if (!profile) {
+      res.status(400).json({ ok: false, error: `Unknown category "${profileKey}".` })
+      return
+    }
+    if (!profile.invoiceUpload) {
+      res.status(400).json({ ok: false, error: `${profile.displayName} isn't set up for invoice upload (MBS Settings → Categories).` })
+      return
+    }
+    unit = profile.inputUnitLabel
+  }
+
+  const result = await extractInvoice(invoiceFile.buffer, unit)
 
   if (!result.ok) {
     res.status(502).json({

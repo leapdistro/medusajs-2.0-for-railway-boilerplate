@@ -1,6 +1,7 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { cannabinoidField } from "../../../lib/cannabinoids"
 
 /**
  * Pre-Roll Receiving — manual-entry-only page for receiving pre-roll
@@ -72,9 +73,10 @@ type Row = {
   costPerBox: number
   sellPricePerBox: number
   coa: CoaState
-  /* Pre-rolls are CBD: CBD % is the headline figure, D9 % prints on the
-   * label, THCa % is kept for the Total THC line. */
-  cbdPercent: string
+  /* % of the category's main cannabinoid (CBD for pre-rolls, set in MBS
+   * Settings → Categories). D9 % is the compliance figure; THCa % is
+   * kept for the Total THC line unless THCa is the main one. */
+  mainPercent: string
   d9Percent: string
   thcaPercent: string
   totalCannabinoidsPercent: string
@@ -94,7 +96,7 @@ const blankRow = (defaultSubcategory: string = ""): Row => ({
   costPerBox: 0,
   sellPricePerBox: 0,
   coa: { state: "idle" },
-  cbdPercent: "",
+  mainPercent: "",
   d9Percent: "",
   thcaPercent: "",
   totalCannabinoidsPercent: "",
@@ -108,6 +110,9 @@ const PreRollReceivingPage = () => {
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [shippingTotal, setShippingTotal] = useState(0)
   const [subcats, setSubcats] = useState<SubcategoryOption[] | null>(null)
+  /* The category's main cannabinoid, from its profile. */
+  const [primaryCannabinoid, setPrimaryCannabinoid] = useState<string | null>(null)
+  const main = cannabinoidField(primaryCannabinoid)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([blankRow()])
   const [saving, setSaving] = useState(false)
@@ -148,6 +153,7 @@ const PreRollReceivingPage = () => {
           variantLabel: s.variants?.[0]?.label,
         }))
         setSubcats(opts)
+        setPrimaryCannabinoid(j?.profile?.primaryCannabinoid ?? null)
         /* Seed the first row's subcategory once profile data lands. */
         if (opts.length > 0) {
           setRows((cur) => cur.map((r, i) => (i === 0 && !r.subcategory ? { ...r, subcategory: opts[0].key } : r)))
@@ -191,7 +197,7 @@ const PreRollReceivingPage = () => {
        * (mbs-settings.pre_roll_tier_prices). Field removed from the
        * row UI; operator can override per-variant in Medusa admin
        * after save if needed. */
-      r.cbdPercent.trim() &&
+      r.mainPercent.trim() &&
       r.d9Percent.trim() &&
       r.coa.state === "ready",
     )
@@ -293,7 +299,8 @@ const PreRollReceivingPage = () => {
     setRows(p.rows.map((r) => ({
       ...r,
       coa: r.coa ?? { state: "idle" },
-      cbdPercent: r.cbdPercent ?? "",
+      /* Drafts saved on 2026-10-24 called it cbdPercent. */
+      mainPercent: r.mainPercent ?? (r as any).cbdPercent ?? "",
       d9Percent: r.d9Percent ?? "",
     })))
     setDraftId(d.id)
@@ -341,9 +348,9 @@ const PreRollReceivingPage = () => {
           effects: r.effects,
           coaUrl: r.coa.state === "ready" ? r.coa.url : null,
           coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
-          cbdPercent: r.cbdPercent.trim() || null,
+          ...(main.rowField === "thcaPercent" ? {} : { thcaPercent: r.thcaPercent.trim() || null }),
+          [main.rowField]: r.mainPercent.trim() || null,
           d9Percent: r.d9Percent.trim() || null,
-          thcaPercent: r.thcaPercent.trim() || null,
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
           batchId: r.batchId.trim() || null,
           upc: r.upc.trim() || null,
@@ -601,6 +608,8 @@ const PreRollReceivingPage = () => {
             row={row}
             idx={idx}
             subcats={subcats ?? []}
+            mainLabel={main.label}
+            showThca={main.rowField !== "thcaPercent"}
             onChange={(patch) => updateRow(idx, patch)}
             onDelete={rows.length > 1 ? () => deleteRow(idx) : undefined}
             onPickCoa={(file) => onPickCoa(idx, file)}
@@ -637,10 +646,14 @@ const RowCard: React.FC<{
   row: Row
   idx: number
   subcats: SubcategoryOption[]
+  /* "CBD %" etc., from the category's main cannabinoid. */
+  mainLabel: string
+  /* Off when THCa is the main cannabinoid, so it isn't asked twice. */
+  showThca: boolean
   onChange: (patch: Partial<Row>) => void
   onDelete?: () => void
   onPickCoa: (file: File | null) => void
-}> = ({ row, idx, subcats, onChange, onDelete, onPickCoa }) => {
+}> = ({ row, idx, subcats, mainLabel, showThca, onChange, onDelete, onPickCoa }) => {
   const EFFECT_MAX = 2
   const toggleEffect = (effect: string) => {
     if (row.effects.includes(effect)) {
@@ -716,16 +729,18 @@ const RowCard: React.FC<{
         {/* Sell Price field removed — pre-roll selling prices come
           * from MBS Settings → Pre-Roll Tier Prices (keyed by
           * subcategory + variant size). */}
-        <Field label="CBD %">
-          <Input value={row.cbdPercent} onChange={(e: any) => onChange({ cbdPercent: e.target.value })} />
+        <Field label={mainLabel}>
+          <Input value={row.mainPercent} onChange={(e: any) => onChange({ mainPercent: e.target.value })} />
         </Field>
         <Field label="D9 %">
           {/* Labs print "ND" when none is detected; type it as-is. */}
           <Input value={row.d9Percent} placeholder="0.05 or ND" onChange={(e: any) => onChange({ d9Percent: e.target.value })} />
         </Field>
-        <Field label="THCa %">
-          <Input value={row.thcaPercent} onChange={(e: any) => onChange({ thcaPercent: e.target.value })} />
-        </Field>
+        {showThca && (
+          <Field label="THCa %">
+            <Input value={row.thcaPercent} onChange={(e: any) => onChange({ thcaPercent: e.target.value })} />
+          </Field>
+        )}
         <Field label="Total Cannabinoids %">
           <Input
             value={row.totalCannabinoidsPercent}

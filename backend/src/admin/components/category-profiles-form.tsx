@@ -1,5 +1,6 @@
 import { Button, Input, Label, Switch, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { CANNABINOIDS, cannabinoidField } from "../lib/cannabinoids"
 
 /**
  * MBS Settings → Categories. The one place a category is set up: it
@@ -49,6 +50,8 @@ type Profile = {
   archived?: boolean
   priceTables?: Record<string, string>
   shippingRatesKey?: string
+  primaryCannabinoid?: string
+  invoiceUpload?: boolean
 }
 type Category = { id: string; name: string; handle: string; parent_category_id: string | null; is_active?: boolean }
 
@@ -79,6 +82,7 @@ const newProfile = (cat: Category, subs: Category[], taken: Set<string>): Profil
     subcategories: subs.map((c) => ({ key: slug(c.name), categoryId: c.id, medusaName: c.name, label: c.name })),
     variants: [{ sizeKey: "unit", label: "Unit", multiplier: 1 }],
     fields: { strainType: false, bestFor: false, effects: false, cannabinoids: false, coaRequired: true, upc: true },
+    invoiceUpload: false,
     pricingModel: "tier",
     tierPricesSettingKey: `${t}_prices`,
     unitLabel: { singular: "Unit", plural: "Units" },
@@ -554,10 +558,35 @@ const ProfileEditor = ({
         <div className="grid grid-cols-2 gap-2">
           {FIELD_LABELS.map(([k, label]) => (
             <div key={k} className="flex items-center gap-2">
-              <Switch checked={!!p.fields[k]} onCheckedChange={(on) => onChange({ fields: { ...p.fields, [k]: on } })} />
+              <Switch
+                checked={!!p.fields[k]}
+                onCheckedChange={(on) => onChange({
+                  fields: { ...p.fields, [k]: on },
+                  /* Turning cannabinoids on needs a main one; CBD is what MBS sells. */
+                  ...(k === "cannabinoids" && on && !p.primaryCannabinoid ? { primaryCannabinoid: "CBD" } : {}),
+                })}
+              />
               <Label size="xsmall">{label}</Label>
             </div>
           ))}
+        </div>
+        {p.fields.cannabinoids && (
+          <Grid>
+            <Field label="Main cannabinoid"
+              hint={`The % column is "${cannabinoidField(p.primaryCannabinoid).label}", and the COA reader looks for ${p.primaryCannabinoid ?? "THC-A"}.`}>
+              <select className={selectCls} value={p.primaryCannabinoid ?? "THC-A"}
+                onChange={(e) => onChange({ primaryCannabinoid: e.target.value })}>
+                {CANNABINOIDS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+          </Grid>
+        )}
+        <div className="flex items-center gap-2">
+          <Switch checked={!!p.invoiceUpload} onCheckedChange={(on) => onChange({ invoiceUpload: on })} />
+          <Label size="xsmall">
+            Receive by invoice upload: offered on the main Receiving page, which reads the supplier's invoice
+            in {p.inputUnitLabel.plural || "its receiving unit"}
+          </Label>
         </div>
       </Section>
 

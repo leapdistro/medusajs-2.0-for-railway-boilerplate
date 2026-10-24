@@ -13,6 +13,7 @@ import {
 } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useColumnWidths, ColResizeHandle } from "../../lib/resizable-columns"
+import { cannabinoidField } from "../../lib/cannabinoids"
 
 /* Default column widths (px) for the flower receiving spreadsheet.
  * Operator can drag column edges to resize; widths persist per-browser
@@ -340,7 +341,10 @@ const UploadView: React.FC<{
    * so THC-A / CBD / CBG operators don't see each other's in-progress
    * work when they switch branches. */
   draftKind: string
-}> = ({ onExtracted, onResumeDraft, onManualEntry, draftKind }) => {
+  /* Category being received: the invoice reader reads quantities and
+   * prices in its receiving unit. */
+  profileKey: string
+}> = ({ onExtracted, onResumeDraft, onManualEntry, draftKind, profileKey }) => {
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -397,6 +401,7 @@ const UploadView: React.FC<{
     try {
       const fd = new FormData()
       fd.append("invoice", file)
+      fd.append("profileKey", profileKey)
       const res = await fetch("/admin/receiving/extract", {
         method: "POST",
         credentials: "include",
@@ -415,7 +420,7 @@ const UploadView: React.FC<{
     } finally {
       setBusy(false)
     }
-  }, [file, onExtracted])
+  }, [file, onExtracted, profileKey])
 
   return (
     <div className="flex flex-col gap-6">
@@ -515,10 +520,12 @@ const ReviewView: React.FC<{
   /* Tier options sourced live from the profile endpoint at page level —
    * lets new Medusa categories under "Flower" auto-appear in dropdowns. */
   tierOptions: Array<{ key: string; label: string }>
-  /* Which cannabinoid branch this receiving is for. Drives column
-   * labels (THCa % → CBD % / CBG %) + which server-side attribute
-   * field the numeric value lands in. */
-  cannabinoid: Cannabinoid
+  /* The category's main cannabinoid (MBS Settings → Categories). Drives
+   * the % column label, which attribute the % saves to, and what the
+   * COA reader looks for. */
+  primaryCannabinoid: string | null
+  /* The category's receiving unit, for the quantity and cost headers. */
+  inputUnit: { singular: string; plural: string }
   /* Receiving profile key sent to /admin/receiving/save so the
    * server picks the right FLOWER_*_PROFILE (subcategories, tier
    * prices, category parent). */
@@ -531,14 +538,11 @@ const ReviewView: React.FC<{
   /* If set, Save Draft updates this draft. Otherwise, first save creates one. */
   initialDraftId?: string | null
   onRestart: () => void
-}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, cannabinoid, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
-  /* Column label + save-payload field name for the primary cannabinoid
-   * percent. CBD/CBG route to their branch-specific columns added in
-   * the 2026-08 mbs-attributes migration. Server-side receiving-save
-   * reads whichever field is set. (THC-A → thcaPercent path preserved
-   * in receiving-save.ts as safe dead code for reactivation.) */
-  const cannabinoidPctLabel = cannabinoid === "cbg" ? "CBG %" : "CBD %"
-  const cannabinoidPctFieldName = cannabinoid === "cbg" ? "cbgPercent" : "cbdPercent"
+}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, primaryCannabinoid, inputUnit, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
+  /* Column label + save-payload field name for the main cannabinoid %.
+   * Each cannabinoid has its own product attribute; receiving-save
+   * writes whichever field is sent. */
+  const { label: cannabinoidPctLabel, rowField: cannabinoidPctFieldName } = cannabinoidField(primaryCannabinoid)
   /* Resizable spreadsheet columns — drag column edges to resize.
    * Widths persist per browser via localStorage. */
   const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(FLOWER_COLS_KEY, FLOWER_COL_DEFAULTS)
@@ -830,7 +834,7 @@ const ReviewView: React.FC<{
            * the AI defaults to "prefer THCa" — which on a hemp CBD COA
            * returns the trace THCa row (<0.3%) and stamps it into
            * cbd_percent. See ai-coa-extraction.ts. */
-          primary: cannabinoid === "cbg" ? "CBG" : "CBD",
+          primary: primaryCannabinoid ?? undefined,
         }),
       })
       const json = await res.json()
@@ -850,7 +854,7 @@ const ReviewView: React.FC<{
     } finally {
       setCoaParsing((cur) => { const next = new Set(cur); next.delete(idx); return next })
     }
-  }, [rows])
+  }, [rows, primaryCannabinoid])
 
   /* Bulk: run extraction on every row that has a COA but lacks both
    * percentages. Bounded concurrency keeps Anthropic happy + the
@@ -1315,8 +1319,8 @@ const ReviewView: React.FC<{
             <tr style={{ background: "#F3F1EA", borderBottom: "1.5px solid #0A0A0A" }}>
               <Th onResize={startColResize(0)}><CheckBox checked={selected.size === rows.length && rows.length > 0} indeterminate={selected.size > 0 && selected.size < rows.length} onChange={toggleAll} /></Th>
               <Th onResize={startColResize(1)}>Strain</Th>
-              <Th onResize={startColResize(2)}>Qty (lb)</Th>
-              <Th onResize={startColResize(3)}>Cost / lb</Th>
+              <Th onResize={startColResize(2)}>Qty ({inputUnit.singular})</Th>
+              <Th onResize={startColResize(3)}>Cost / {inputUnit.singular}</Th>
               <Th onResize={startColResize(4)}>Tier</Th>
               <Th onResize={startColResize(5)}>Type</Th>
               <Th onResize={startColResize(6)}>Best For</Th>
@@ -1326,7 +1330,7 @@ const ReviewView: React.FC<{
               <Th onResize={startColResize(10)}>Batch ID</Th>
               <Th onResize={startColResize(11)}>Effects</Th>
               <Th onResize={startColResize(12)}>COA</Th>
-              <Th onResize={startColResize(13)} align="right">Landed / lb</Th>
+              <Th onResize={startColResize(13)} align="right">Landed / {inputUnit.singular}</Th>
               <Th onResize={startColResize(14)} align="right">Suggested Sell (QP / Half / LB)</Th>
             </tr>
           </thead>
@@ -2036,30 +2040,51 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
  * Page shell
  * ========================================================= */
 
-/* Cannabinoid switcher — active tier-ladder branches share the same
- * form shape (5-tier ladder, QP/Half/LB variants, same fields). Only
- * the target profile, category, and tier-price settings key differ
- * per branch.
- *
- * Retired from the receiving flow but preserved as safe dead code
- * elsewhere (union member + FLOWER_PROFILE + settings rows):
- *   - THC-P (2026-08, category deactivated in Medusa)
- *   - THC-A (2026-08, pending Texas litigation — reactivating means
- *     un-commenting the switcher entry below + un-deactivating the
- *     flower-thc-a categories in Medusa). */
-type Cannabinoid = "cbd" | "cbg"
-const CANNABINOID_OPTIONS: Array<{ key: Cannabinoid; label: string; profileKey: string; settingsKey: string; draftKind: string }> = [
-  /* CBD suggested sell prices come from the "CBD Flower Prices" tab
-   * (flower_tier_prices) — the same table receiving-save prices with. */
-  { key: "cbd",   label: "CBD",   profileKey: "flower-cbd", settingsKey: "flower_tier_prices", draftKind: "flower-cbd" },
-  { key: "cbg",   label: "CBG",   profileKey: "flower-cbg", settingsKey: "flower_cbg_prices",  draftKind: "flower-cbg" },
-]
+/* The categories offered here: every one set up in MBS Settings →
+ * Categories with "Receive by invoice upload" on and not archived.
+ * They share this form (tier ladder, the same fields); what differs is
+ * the profile, its tier-price table, its main cannabinoid and its
+ * drafts. THC-A has invoice upload off while its receiving is paused;
+ * turning it back on there brings its button back. */
+type ReceivingCategory = {
+  profileKey: string
+  label: string
+  primaryCannabinoid: string | null
+  settingsKey: string | null
+  draftKind: string
+  /* What quantities and costs are entered in (lb for flower). */
+  inputUnit: { singular: string; plural: string }
+}
 
 const ReceivingPage = () => {
-  const [cannabinoid, setCannabinoid] = useState<Cannabinoid>("cbd")
+  const [categories, setCategories] = useState<ReceivingCategory[] | null>(null)
+  const [categoriesError, setCategoriesError] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/mbs/category-profiles", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const list: ReceivingCategory[] = ((j?.profiles ?? []) as any[])
+          .filter((p) => p.invoiceUpload && !p.archived)
+          .map((p) => ({
+            profileKey: p.key,
+            label: p.primaryCannabinoid ?? p.displayName,
+            primaryCannabinoid: p.primaryCannabinoid ?? null,
+            settingsKey: p.tierPricesSettingKey ?? null,
+            draftKind: p.key,
+            inputUnit: p.inputUnitLabel ?? { singular: "lb", plural: "lbs" },
+          }))
+        setCategories(list)
+        setSelectedKey((cur) => cur ?? list[0]?.profileKey ?? null)
+      })
+      .catch((e) => { if (!cancelled) setCategoriesError(e?.message ?? "Couldn't load categories") })
+    return () => { cancelled = true }
+  }, [])
   const cbdCfg = useMemo(
-    () => CANNABINOID_OPTIONS.find((o) => o.key === cannabinoid) ?? CANNABINOID_OPTIONS[0],
-    [cannabinoid],
+    () => categories?.find((c) => c.profileKey === selectedKey) ?? null,
+    [categories, selectedKey],
   )
 
   const [extracted, setExtracted] = useState<{
@@ -2079,13 +2104,13 @@ const ReceivingPage = () => {
    * in Medusa admin shows up here on next page load — no code edit. */
   const [tierOptions, setTierOptions] = useState<Array<{ key: string; label: string }>>(DEFAULT_TIER_OPTIONS)
 
-  /* Fetch tier prices whenever cannabinoid changes so the review table's
-   * suggested-sell column pulls from the right ladder (flower_tier_prices
-   * for CBD, flower_cbg_prices for CBG).
+  /* Fetch tier prices whenever the category changes so the review
+   * table's suggested-sell column pulls from its own price table.
    * Falls back to null silently — admin can still review + save. */
   useEffect(() => {
     let cancelled = false
     setTierPrices(null)
+    if (!cbdCfg?.settingsKey) return
     fetch("/admin/mbs/settings", { credentials: "include" })
       .then((r) => r.json())
       .then((j) => {
@@ -2095,16 +2120,17 @@ const ReceivingPage = () => {
       })
       .catch(() => { /* ignore — tier prices are optional UI */ })
     return () => { cancelled = true }
-  }, [cbdCfg.settingsKey])
+  }, [cbdCfg?.settingsKey])
 
   /* Dynamic tier dropdown options — merged profile + live Medusa
-   * categories. Re-fetches when cannabinoid changes so CBD/CBG land
-   * with their own tier children (cbd-classic, cbg-exotic, …) instead
-   * of THC-A's bare handles. Falls back to DEFAULT_TIER_OPTIONS if
-   * the fetch fails so the page still works offline / mid-deploy. */
+   * categories. Re-fetches when the category changes so CBD/CBG land
+   * with their own tier children (cbd-classic, cbg-exotic, …).
+   * Falls back to DEFAULT_TIER_OPTIONS if the fetch fails so the page
+   * still works offline / mid-deploy. */
   useEffect(() => {
     let cancelled = false
     setTierOptions(DEFAULT_TIER_OPTIONS)
+    if (!cbdCfg) return
     fetch(`/admin/receiving/profile/${cbdCfg.profileKey}`, { credentials: "include" })
       .then((r) => r.json())
       .then((j) => {
@@ -2114,23 +2140,23 @@ const ReceivingPage = () => {
       })
       .catch(() => { /* defaults already set */ })
     return () => { cancelled = true }
-  }, [cbdCfg.profileKey])
+  }, [cbdCfg?.profileKey])
 
-  /* Guard against silent data loss — switching cannabinoid mid-work
+  /* Guard against silent data loss — switching category mid-work
    * would swap the profile out from under an in-progress review.
    * Confirm before clearing extracted state (skip if operator hasn't
    * started reviewing anything). */
-  const changeCannabinoid = useCallback((next: Cannabinoid) => {
-    if (next === cannabinoid) return
+  const changeCategory = useCallback((next: string) => {
+    if (next === selectedKey) return
     if (extracted) {
       const ok = confirm(
-        "Switching cannabinoid will clear the current review. Save your draft first if you need to keep it. Continue?",
+        "Switching category will clear the current review. Save your draft first if you need to keep it. Continue?",
       )
       if (!ok) return
       setExtracted(null)
     }
-    setCannabinoid(next)
-  }, [cannabinoid, extracted])
+    setSelectedKey(next)
+  }, [selectedKey, extracted])
 
   return (
     <Container className="flex flex-col gap-6 p-6">
@@ -2138,26 +2164,35 @@ const ReceivingPage = () => {
         <Heading level="h1">Receiving</Heading>
         <div className="flex items-center gap-2 flex-wrap">
           <Label className="text-ui-fg-subtle">Cannabinoid</Label>
-          {CANNABINOID_OPTIONS.map((opt) => (
+          {(categories ?? []).map((opt) => (
             <Button
-              key={opt.key}
+              key={opt.profileKey}
               size="small"
-              variant={cannabinoid === opt.key ? "primary" : "secondary"}
-              onClick={() => changeCannabinoid(opt.key)}
+              variant={selectedKey === opt.profileKey ? "primary" : "secondary"}
+              onClick={() => changeCategory(opt.profileKey)}
             >
               {opt.label}
             </Button>
           ))}
         </div>
       </div>
-      {extracted ? (
+      {!cbdCfg ? (
+        <Text className="text-ui-fg-subtle">
+          {categoriesError
+            ? `Couldn't load categories: ${categoriesError}. Reload the page.`
+            : categories
+              ? "No category is set up for invoice upload. Turn on \"Receive by invoice upload\" for one in MBS Settings → Categories."
+              : "Loading categories…"}
+        </Text>
+      ) : extracted ? (
         <ReviewView
           invoice={extracted.invoice}
           fileName={extracted.fileName}
           tokens={extracted.tokens}
           tierPrices={tierPrices}
           tierOptions={tierOptions}
-          cannabinoid={cannabinoid}
+          primaryCannabinoid={cbdCfg.primaryCannabinoid}
+          inputUnit={cbdCfg.inputUnit}
           profileKey={cbdCfg.profileKey}
           draftKind={cbdCfg.draftKind}
           initialRows={extracted.initialRows}
@@ -2167,6 +2202,7 @@ const ReceivingPage = () => {
       ) : (
         <UploadView
           draftKind={cbdCfg.draftKind}
+          profileKey={cbdCfg.profileKey}
           onExtracted={(invoice, fileName, tokens) =>
             setExtracted({ invoice, fileName, tokens })
           }

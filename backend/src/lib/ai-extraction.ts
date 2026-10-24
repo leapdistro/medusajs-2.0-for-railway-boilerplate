@@ -22,9 +22,11 @@ const MODEL = "claude-sonnet-4-6"
 export type ExtractedLineItem = {
   /** Strain or product name as listed on the invoice. */
   strainName: string
-  /** Quantity in POUNDS. Always converted to lb if invoiced in another unit. */
+  /** Quantity in the category's receiving unit (pounds for flower).
+   *  The field names predate other units; the page reads them as
+   *  "quantity" and "price per receiving unit". */
   quantityLb: number
-  /** Unit price in USD per POUND. */
+  /** Unit price in USD per receiving unit. */
   unitPricePerLb: number
   /** AI's best-guess strain type from common knowledge. null when uncertain
    *  or when the strain name is truncated/unfamiliar — operator picks
@@ -80,6 +82,29 @@ Rules:
 9. notes: use this to flag anything ambiguous — e.g. "Two strains had unclear pricing units, assumed per lb". null if no flags.
 10. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
 
+export type InvoiceUnit = { singular: string; plural: string }
+
+/** The prompt for a category received in `unit`. Pounds (and no unit)
+ *  get the original prompt word for word. */
+export function invoicePrompt(unit?: InvoiceUnit): string {
+  if (!unit || unit.singular.trim().toLowerCase() === "lb") return PROMPT
+  const one = unit.singular.trim()
+  const many = unit.plural.trim() || one
+  const swap = (text: string, from: string, to: string) => {
+    if (!text.includes(from)) throw new Error(`invoice prompt is missing: ${from}`)
+    return text.replace(from, to)
+  }
+  let out = PROMPT
+  out = swap(out,
+    `3. Quantities are in POUNDS. If the invoice uses oz, kg, grams, or "QPs", convert to pounds (1 lb = 16 oz = 453.592 g = 4 QPs). Use a decimal if non-integer (e.g. half-pound = 0.5).`,
+    `3. quantityLb holds the quantity in ${many.toUpperCase()} (one ${one} each), whatever the field name says. If a line is counted in a different unit and the invoice states how many of those make one ${one} (e.g. "12 per ${one}"), convert to ${many}. If it doesn't say, use the number as printed and flag the line in notes. Use a decimal if non-integer.`)
+  out = swap(out,
+    `4. unitPricePerLb is USD per POUND. If priced per oz, kg, etc., convert. Always a number, no currency symbol.`,
+    `4. unitPricePerLb holds the USD price per ${one.toUpperCase()}, whatever the field name says. Convert the same way as quantities. Always a number, no currency symbol.`)
+  out = swap(out, `assumed per lb`, `assumed per ${one}`)
+  return out
+}
+
 export type ExtractInvoiceResult = {
   ok: boolean
   data?: ExtractedInvoice
@@ -89,7 +114,7 @@ export type ExtractInvoiceResult = {
   error?: string
 }
 
-export async function extractInvoice(pdfBytes: Buffer): Promise<ExtractInvoiceResult> {
+export async function extractInvoice(pdfBytes: Buffer, unit?: InvoiceUnit): Promise<ExtractInvoiceResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return { ok: false, raw: "", inputTokens: 0, outputTokens: 0, error: "ANTHROPIC_API_KEY env var not set" }
@@ -112,7 +137,7 @@ export async function extractInvoice(pdfBytes: Buffer): Promise<ExtractInvoiceRe
               type: "document",
               source: { type: "base64", media_type: "application/pdf", data: base64 },
             },
-            { type: "text", text: PROMPT },
+            { type: "text", text: invoicePrompt(unit) },
           ],
         },
       ],
