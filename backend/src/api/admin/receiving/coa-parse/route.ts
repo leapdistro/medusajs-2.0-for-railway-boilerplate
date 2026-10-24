@@ -62,7 +62,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  const result = await extractCoa(pdfBytes, primary)
+  /* D9 is read on every COA (d9Percent), so a category sold on D9 gets
+   * that reading as its main %, and the prompt stays as it is. */
+  const result = await extractCoa(pdfBytes, primary === "D9" ? undefined : primary)
   if (!result.ok) {
     res.status(502).json({
       ok: false,
@@ -76,7 +78,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   res.json({
     ok: true,
-    thcaPercent: result.data!.thcaPercent,
+    thcaPercent: primary === "D9" ? (result.data!.d9Percent ?? null) : result.data!.thcaPercent,
     d9Percent: result.data!.d9Percent ?? null,
     totalCannabinoidsPercent: result.data!.totalCannabinoidsPercent,
     batchId: result.data!.batchId,

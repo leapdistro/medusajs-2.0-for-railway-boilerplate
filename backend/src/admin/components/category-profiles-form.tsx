@@ -1,6 +1,6 @@
 import { Button, Input, Label, Switch, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { CANNABINOIDS, cannabinoidField } from "../lib/cannabinoids"
+import { CANNABINOIDS, cannabinoidField, type OtherCannabinoid } from "../lib/cannabinoids"
 
 /**
  * MBS Settings → Categories. The one place a category is set up: it
@@ -51,6 +51,7 @@ type Profile = {
   priceTables?: Record<string, string>
   shippingRatesKey?: string
   primaryCannabinoid?: string
+  otherCannabinoids?: OtherCannabinoid[]
   invoiceUpload?: boolean
 }
 type Category = { id: string; name: string; handle: string; parent_category_id: string | null; is_active?: boolean }
@@ -82,6 +83,7 @@ const newProfile = (cat: Category, subs: Category[], taken: Set<string>): Profil
     subcategories: subs.map((c) => ({ key: slug(c.name), categoryId: c.id, medusaName: c.name, label: c.name })),
     variants: [{ sizeKey: "unit", label: "Unit", multiplier: 1 }],
     fields: { strainType: false, bestFor: false, effects: false, cannabinoids: false, coaRequired: true, upc: true },
+    otherCannabinoids: [],
     invoiceUpload: false,
     pricingModel: "tier",
     tierPricesSettingKey: `${t}_prices`,
@@ -575,12 +577,17 @@ const ProfileEditor = ({
             <Field label="Main cannabinoid"
               hint={`The % column is "${cannabinoidField(p.primaryCannabinoid).label}", and the COA reader looks for ${p.primaryCannabinoid ?? "THC-A"}.`}>
               <select className={selectCls} value={p.primaryCannabinoid ?? "THC-A"}
-                onChange={(e) => onChange({ primaryCannabinoid: e.target.value })}>
+                onChange={(e) => onChange({
+                  primaryCannabinoid: e.target.value,
+                  /* The main one isn't also asked as an other. */
+                  otherCannabinoids: (p.otherCannabinoids ?? []).filter((o) => o.cannabinoid !== e.target.value),
+                })}>
                 {CANNABINOIDS.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </Field>
           </Grid>
         )}
+        {p.fields.cannabinoids && <OtherCannabinoids p={p} onChange={onChange} />}
         <div className="flex items-center gap-2">
           <Switch checked={!!p.invoiceUpload} onCheckedChange={(on) => onChange({ invoiceUpload: on })} />
           <Label size="xsmall">
@@ -672,6 +679,44 @@ const Section = ({ title, hint, children }: { title: string; hint?: string; chil
     {children}
   </div>
 )
+
+/* Cannabinoids recorded next to the main one, a column each on the
+ * receiving pages. Ones already on keep their order; turning one on adds
+ * its column last. */
+const OtherCannabinoids = ({ p, onChange }: { p: Profile; onChange: (patch: Partial<Profile>) => void }) => {
+  const main = p.primaryCannabinoid ?? "THC-A"
+  const on = (p.otherCannabinoids ?? []).filter((o) => o.cannabinoid !== main)
+  const off = CANNABINOIDS.filter((c) => c !== main && !on.some((o) => o.cannabinoid === c))
+  const set = (next: OtherCannabinoid[]) => onChange({ otherCannabinoids: next })
+  return (
+    <div className="flex flex-col gap-1">
+      <Label size="xsmall" weight="plus">Also record</Label>
+      {[...on, ...off.map((c) => ({ cannabinoid: c, required: false }))].map((o) => {
+        const recorded = on.some((x) => x.cannabinoid === o.cannabinoid)
+        return (
+          <div key={o.cannabinoid} className="flex items-center gap-4">
+            <div className="flex w-40 items-center gap-2">
+              <Switch checked={recorded} onCheckedChange={(v) => set(v
+                ? [...on, { cannabinoid: o.cannabinoid, required: true }]
+                : on.filter((x) => x.cannabinoid !== o.cannabinoid))} />
+              <Label size="xsmall">{cannabinoidField(o.cannabinoid).label}</Label>
+            </div>
+            {recorded && (
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={o.required}
+                  onChange={(e) => set(on.map((x) => x.cannabinoid === o.cannabinoid ? { ...x, required: e.target.checked } : x))} />
+                <Text size="xsmall">Required to save a row</Text>
+              </label>
+            )}
+          </div>
+        )
+      })}
+      <Text size="xsmall" className="text-ui-fg-subtle">
+        Each one gets its own column when receiving. The COA reader fills in D9; type the others in.
+      </Text>
+    </div>
+  )
+}
 
 const Grid = ({ children }: { children: ReactNode }) => (
   <div className="grid grid-cols-2 gap-3">{children}</div>

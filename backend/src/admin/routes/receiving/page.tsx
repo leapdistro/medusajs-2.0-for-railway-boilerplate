@@ -13,12 +13,14 @@ import {
 } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useColumnWidths, ColResizeHandle } from "../../lib/resizable-columns"
-import { cannabinoidField } from "../../lib/cannabinoids"
+import { cannabinoidField, otherCannabinoidColumns, type OtherCannabinoid } from "../../lib/cannabinoids"
 
 /* Default column widths (px) for the flower receiving spreadsheet.
  * Operator can drag column edges to resize; widths persist per-browser
  * via localStorage under FLOWER_COLS_KEY. Order MUST mirror the <Th>
- * order in the table render below. */
+ * order in the table render below. Column 8 is one column per "other
+ * cannabinoid" in the category's settings (D9 % today); flowerColDefaults
+ * repeats its width for each. */
 const FLOWER_COLS_KEY = "mbs:receiving:flower:colwidths.v1"
 const FLOWER_COL_DEFAULTS = [
   30,   // 0  select checkbox
@@ -29,7 +31,7 @@ const FLOWER_COL_DEFAULTS = [
   110,  // 5  type
   100,  // 6  best for
   130,  // 7  thca %
-  100,  // 8  d9 %
+  100,  // 8  other cannabinoid % (one per)
   100,  // 9  cann %
   130,  // 10 batch id
   220,  // 11 effects
@@ -37,6 +39,8 @@ const FLOWER_COL_DEFAULTS = [
   100,  // 13 landed / lb
   260,  // 14 suggested sell
 ]
+const flowerColDefaults = (others: number) =>
+  [...FLOWER_COL_DEFAULTS.slice(0, 8), ...Array(others).fill(FLOWER_COL_DEFAULTS[8]), ...FLOWER_COL_DEFAULTS.slice(9)]
 
 /**
  * Receiving — operator uploads a supplier invoice PDF, AI extracts the
@@ -180,8 +184,10 @@ type ReviewRow = {
    * model uses text() for decimal-friendly storage. Operator can
    * type manually OR auto-extract from the uploaded COA via AI. */
   thcaPercent: string
-  /* Delta-9 THC %, printed on CBD/CBG labels. A number or "ND". */
-  d9Percent: string
+  /* The other cannabinoids' % by name ("D9" → "0.05" or "ND"), one
+   * column each from the category's settings. D9 is printed on CBD/CBG
+   * labels. */
+  otherPercents: Record<string, string>
   totalCannabinoidsPercent: string
   /* Lab Sample/Test/Batch ID extracted from the COA. Printed on the
    * wholesale label so buyers can verify the COA. Free-form text. */
@@ -282,7 +288,7 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
       effects: [],
       coa: { state: "idle" },
       thcaPercent: "",
-      d9Percent: "",
+      otherPercents: {},
       totalCannabinoidsPercent: "",
       batchId: "",
       coaNotes: null,
@@ -306,7 +312,7 @@ const blankReviewRow = (): ReviewRow => ({
   effects: [],
   coa: { state: "idle" },
   thcaPercent: "",
-  d9Percent: "",
+  otherPercents: {},
   totalCannabinoidsPercent: "",
   batchId: "",
   coaNotes: null,
@@ -524,6 +530,8 @@ const ReviewView: React.FC<{
    * the % column label, which attribute the % saves to, and what the
    * COA reader looks for. */
   primaryCannabinoid: string | null
+  /* Cannabinoids recorded next to the main one, a column each. */
+  otherCannabinoids: OtherCannabinoid[] | null
   /* The category's receiving unit, for the quantity and cost headers. */
   inputUnit: { singular: string; plural: string }
   /* Receiving profile key sent to /admin/receiving/save so the
@@ -538,14 +546,22 @@ const ReviewView: React.FC<{
   /* If set, Save Draft updates this draft. Otherwise, first save creates one. */
   initialDraftId?: string | null
   onRestart: () => void
-}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, primaryCannabinoid, inputUnit, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
+}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, primaryCannabinoid, otherCannabinoids, inputUnit, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
   /* Column label + save-payload field name for the main cannabinoid %.
    * Each cannabinoid has its own product attribute; receiving-save
    * writes whichever field is sent. */
   const { label: cannabinoidPctLabel, rowField: cannabinoidPctFieldName } = cannabinoidField(primaryCannabinoid)
   /* Resizable spreadsheet columns — drag column edges to resize.
    * Widths persist per browser via localStorage. */
-  const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(FLOWER_COLS_KEY, FLOWER_COL_DEFAULTS)
+  const otherCols = useMemo(() => otherCannabinoidColumns(primaryCannabinoid, otherCannabinoids), [primaryCannabinoid, otherCannabinoids])
+  /* Widths are stored per column count; one other cannabinoid keeps the
+   * key widths were saved under before these were settings. */
+  const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(
+    otherCols.length === 1 ? FLOWER_COLS_KEY : `${FLOWER_COLS_KEY}.others-${otherCols.length}`,
+    flowerColDefaults(otherCols.length),
+  )
+  /* Index of the first column after the other cannabinoids. */
+  const afterOthers = 8 + otherCols.length
   const [invoice, setInvoice] = useState<ExtractedInvoice>(initialInvoice)
   const [rows, setRows] = useState<ReviewRow[]>(() => initialRows ?? makeRows(initialInvoice))
   const [saving, setSaving] = useState(false)
@@ -696,8 +712,8 @@ const ReviewView: React.FC<{
    * filled (or auto-filled by AI). Drives both the row tint
    * (orange = missing, green = complete) and the Save-button gate.
    *
-   * Required: strainName, qty, tier, type, bestFor, thca %, d9 %, cann %,
-   * COA file uploaded. Effects are intentionally optional (the brand
+   * Required: strainName, qty, tier, type, bestFor, main %, each required
+   * other cannabinoid %, cann %, COA file uploaded. Effects are intentionally optional (the brand
    * card shows max 2; zero is allowed at receiving). */
   const isRowComplete = useCallback((r: ReviewRow): boolean => {
     return !!(
@@ -707,11 +723,11 @@ const ReviewView: React.FC<{
       r.strainType &&
       r.bestFor &&
       r.thcaPercent.trim() &&
-      r.d9Percent.trim() &&
+      otherCols.every((o) => !o.required || (r.otherPercents[o.cannabinoid] ?? "").trim()) &&
       r.totalCannabinoidsPercent.trim() &&
       r.coa.state === "ready"
     )
-  }, [])
+  }, [otherCols])
   const allValid = rows.length > 0 && rows.every(isRowComplete)
 
   const updateRow = useCallback((idx: number, patch: Partial<ReviewRow>) => {
@@ -765,7 +781,7 @@ const ReviewView: React.FC<{
       effects: [],
       coa: { state: "idle" },
       thcaPercent: "",
-      d9Percent: "",
+      otherPercents: {},
       totalCannabinoidsPercent: "",
       batchId: "",
       coaNotes: null,
@@ -842,7 +858,8 @@ const ReviewView: React.FC<{
       setRows((cur) => cur.map((r, i) => i === idx ? {
         ...r,
         thcaPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.thcaPercent,
-        d9Percent: json.d9Percent != null ? String(json.d9Percent) : r.d9Percent,
+        /* The reader returns D9 on every COA; it shows when D9 is a column. */
+        otherPercents: json.d9Percent != null ? { ...r.otherPercents, D9: String(json.d9Percent) } : r.otherPercents,
         totalCannabinoidsPercent: json.totalCannabinoidsPercent != null ? String(json.totalCannabinoidsPercent) : r.totalCannabinoidsPercent,
         batchId: json.batchId ? String(json.batchId) : r.batchId,
         coaNotes: json.notes ?? null,
@@ -862,7 +879,7 @@ const ReviewView: React.FC<{
   const parseAllCoas = useCallback(async () => {
     const targets = rows
       .map((r, i) => ({ r, i }))
-      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || !r.d9Percent.trim() || !r.totalCannabinoidsPercent.trim()))
+      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || otherCols.some((o) => o.cannabinoid === "D9" && !(r.otherPercents.D9 ?? "").trim()) || !r.totalCannabinoidsPercent.trim()))
       .map(({ i }) => i)
     if (targets.length === 0) {
       toast.info("Nothing to extract", { description: "Every row with a COA already has its percentages filled." })
@@ -886,7 +903,7 @@ const ReviewView: React.FC<{
     toast.success(`Auto-fill complete`, {
       description: `${parsed} parsed · ${failed} failed · ${elapsed}s`,
     })
-  }, [rows, parseCoaForRow])
+  }, [rows, parseCoaForRow, otherCols])
 
   /* Brand spec caps card display at 2 effects, so we enforce the cap
    * here too. Clicking a third selection is a no-op; deselect first. */
@@ -981,7 +998,7 @@ const ReviewView: React.FC<{
              * name is present; adapter reads with fallback so legacy
              * records keep displaying. */
             [cannabinoidPctFieldName]: pct,
-            d9Percent: r.d9Percent.trim() || null,
+            ...Object.fromEntries(otherCols.map((o) => [o.rowField, (r.otherPercents[o.cannabinoid] ?? "").trim() || null])),
             totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
             batchId: r.batchId.trim() || null,
           }
@@ -1039,7 +1056,7 @@ const ReviewView: React.FC<{
     } finally {
       setSaving(false)
     }
-  }, [allValid, invoice, rows, draftId, computedSubtotal, computedTotal, profileKey, cannabinoidPctFieldName])
+  }, [allValid, invoice, rows, draftId, computedSubtotal, computedTotal, profileKey, cannabinoidPctFieldName, otherCols])
 
   const onPushSavedToQbo = async () => {
     if (!savedHistoryId) return
@@ -1325,13 +1342,15 @@ const ReviewView: React.FC<{
               <Th onResize={startColResize(5)}>Type</Th>
               <Th onResize={startColResize(6)}>Best For</Th>
               <Th onResize={startColResize(7)} align="right">{cannabinoidPctLabel}</Th>
-              <Th onResize={startColResize(8)} align="right">D9 %</Th>
-              <Th onResize={startColResize(9)} align="right">Cann %</Th>
-              <Th onResize={startColResize(10)}>Batch ID</Th>
-              <Th onResize={startColResize(11)}>Effects</Th>
-              <Th onResize={startColResize(12)}>COA</Th>
-              <Th onResize={startColResize(13)} align="right">Landed / {inputUnit.singular}</Th>
-              <Th onResize={startColResize(14)} align="right">Suggested Sell (QP / Half / LB)</Th>
+              {otherCols.map((o, k) => (
+                <Th key={o.cannabinoid} onResize={startColResize(8 + k)} align="right">{o.label}</Th>
+              ))}
+              <Th onResize={startColResize(afterOthers)} align="right">Cann %</Th>
+              <Th onResize={startColResize(afterOthers + 1)}>Batch ID</Th>
+              <Th onResize={startColResize(afterOthers + 2)}>Effects</Th>
+              <Th onResize={startColResize(afterOthers + 3)}>COA</Th>
+              <Th onResize={startColResize(afterOthers + 4)} align="right">Landed / {inputUnit.singular}</Th>
+              <Th onResize={startColResize(afterOthers + 5)} align="right">Suggested Sell (QP / Half / LB)</Th>
             </tr>
           </thead>
           <tbody>
@@ -1478,13 +1497,15 @@ const ReviewView: React.FC<{
                       </span>
                     )}
                   </Td>
-                  <Td align="right" style={{ minWidth: 70 }}>
-                    {/* Text, not number: labs print "ND" when none is detected. */}
-                    <Input type="text" placeholder="0.05 or ND"
-                      value={row.d9Percent}
-                      onChange={(e) => updateRow(i, { d9Percent: e.target.value })}
-                      style={{ textAlign: "right" }} />
-                  </Td>
+                  {otherCols.map((o) => (
+                    <Td key={o.cannabinoid} align="right" style={{ minWidth: 70 }}>
+                      {/* D9 takes text: labs print "ND" when none is detected. */}
+                      <Input type={o.allowsNd ? "text" : "number"} step="0.01" placeholder={o.allowsNd ? "0.05 or ND" : o.required ? "—" : "optional"}
+                        value={row.otherPercents[o.cannabinoid] ?? ""}
+                        onChange={(e) => updateRow(i, { otherPercents: { ...row.otherPercents, [o.cannabinoid]: e.target.value } })}
+                        style={{ textAlign: "right" }} />
+                    </Td>
+                  ))}
                   <Td align="right" style={{ minWidth: 70 }}>
                     <Input type="number" step="0.01" placeholder="—"
                       value={row.totalCannabinoidsPercent}
@@ -2050,6 +2071,7 @@ type ReceivingCategory = {
   profileKey: string
   label: string
   primaryCannabinoid: string | null
+  otherCannabinoids: OtherCannabinoid[] | null
   settingsKey: string | null
   draftKind: string
   /* What quantities and costs are entered in (lb for flower). */
@@ -2072,6 +2094,7 @@ const ReceivingPage = () => {
             profileKey: p.key,
             label: p.primaryCannabinoid ?? p.displayName,
             primaryCannabinoid: p.primaryCannabinoid ?? null,
+            otherCannabinoids: p.otherCannabinoids ?? null,
             settingsKey: p.tierPricesSettingKey ?? null,
             draftKind: p.key,
             inputUnit: p.inputUnitLabel ?? { singular: "lb", plural: "lbs" },
@@ -2192,6 +2215,7 @@ const ReceivingPage = () => {
           tierPrices={tierPrices}
           tierOptions={tierOptions}
           primaryCannabinoid={cbdCfg.primaryCannabinoid}
+          otherCannabinoids={cbdCfg.otherCannabinoids}
           inputUnit={cbdCfg.inputUnit}
           profileKey={cbdCfg.profileKey}
           draftKind={cbdCfg.draftKind}
@@ -2224,7 +2248,8 @@ const ReceivingPage = () => {
               ...r,
               coa: r.coa ?? { state: "idle" },
               thcaPercent: r.thcaPercent ?? "",
-              d9Percent: r.d9Percent ?? "",
+              /* Drafts saved before other cannabinoids were settings hold d9Percent. */
+              otherPercents: r.otherPercents ?? ((r as any).d9Percent ? { D9: (r as any).d9Percent } : {}),
               totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
               batchId: r.batchId ?? "",
               coaNotes: r.coaNotes ?? null,

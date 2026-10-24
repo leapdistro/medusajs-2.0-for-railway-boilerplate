@@ -3,6 +3,7 @@ import { MBS_SETTINGS_MODULE } from "../modules/mbs-settings"
 import {
   PRIMARY_CANNABINOIDS,
   PROFILES,
+  type OtherCannabinoid,
   type PrimaryCannabinoid,
   type PriceTables,
   type PricingModel,
@@ -57,6 +58,9 @@ export async function loadProfiles(container: any): Promise<LoadedProfiles> {
     }
     if (profile && entry?.invoiceUpload === undefined && builtIn?.invoiceUpload !== undefined) {
       profile.invoiceUpload = builtIn.invoiceUpload
+    }
+    if (profile && entry?.otherCannabinoids === undefined && builtIn?.otherCannabinoids) {
+      profile.otherCannabinoids = builtIn.otherCannabinoids
     }
     if (profile) profiles.push(profile)
     else logger.warn(`[profile-store] skipping invalid category profile "${entry?.key ?? "?"}": ${errors.join("; ")}`)
@@ -351,6 +355,20 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     errors.push(`main cannabinoid must be one of ${PRIMARY_CANNABINOIDS.join(", ")}`)
   }
 
+  const otherCannabinoids: OtherCannabinoid[] = []
+  for (const o of Array.isArray(p?.otherCannabinoids) ? p.otherCannabinoids : []) {
+    const c = str(o?.cannabinoid)
+    if (!(PRIMARY_CANNABINOIDS as readonly string[]).includes(c)) {
+      errors.push(`other cannabinoid "${c}" must be one of ${PRIMARY_CANNABINOIDS.join(", ")}`)
+    } else if (c === (primaryCannabinoid || "THC-A")) {
+      errors.push(`${c} is already the main cannabinoid`)
+    } else if (otherCannabinoids.some((x) => x.cannabinoid === c)) {
+      errors.push(`${c} is listed twice under other cannabinoids`)
+    } else {
+      otherCannabinoids.push({ cannabinoid: c as PrimaryCannabinoid, required: !!o?.required })
+    }
+  }
+
   const inputToPoolMultiplier = posNum(p?.inputToPoolMultiplier)
   if (inputToPoolMultiplier == null) errors.push("receiving unit multiplier must be above 0")
 
@@ -384,6 +402,8 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
     ...(shippingRatesKey ? { shippingRatesKey } : {}),
     ...(primaryCannabinoid ? { primaryCannabinoid: primaryCannabinoid as PrimaryCannabinoid } : {}),
     ...(typeof p?.invoiceUpload === "boolean" ? { invoiceUpload: p.invoiceUpload } : {}),
+    /* Kept when sent, even empty, like priceTables. */
+    ...(Array.isArray(p?.otherCannabinoids) ? { otherCannabinoids } : {}),
   }
   return errors.length > 0 ? { profile: null, errors } : { profile, errors }
 }

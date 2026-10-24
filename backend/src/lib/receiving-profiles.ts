@@ -25,11 +25,14 @@
  *  an open string. */
 export type ProfileKey = string
 
-/** The cannabinoids receiving can record a main % for. Each has its own
+/** The cannabinoids receiving can record a % for. Each has its own
  *  product attribute (cbd_percent, cbg_percent, thca_percent,
- *  thcp_percent). */
-export const PRIMARY_CANNABINOIDS = ["CBD", "CBG", "THC-A", "THC-P"] as const
+ *  thcp_percent, d9_percent), so this list follows those columns. */
+export const PRIMARY_CANNABINOIDS = ["CBD", "CBG", "THC-A", "THC-P", "D9"] as const
 export type PrimaryCannabinoid = (typeof PRIMARY_CANNABINOIDS)[number]
+
+/** A cannabinoid recorded next to the main one, e.g. D9 % on CBD flower. */
+export type OtherCannabinoid = { cannabinoid: PrimaryCannabinoid; required: boolean }
 
 /** A variant axis value (one row in the review grid maps to N variants per profile). */
 export type VariantDef = {
@@ -161,6 +164,9 @@ export type ReceivingProfile = {
    *  the COA reader looks for. Only meaningful when fields.cannabinoids
    *  is on. */
   primaryCannabinoid?: PrimaryCannabinoid
+  /** Cannabinoids recorded next to the main one, one column each, in
+   *  this order. Required ones block saving a row until filled. */
+  otherCannabinoids?: OtherCannabinoid[]
   /** Received by uploading the supplier's invoice on the main Receiving
    *  page. The invoice reader reads quantities and prices in
    *  `inputUnitLabel`. Off: the category isn't offered there. */
@@ -198,6 +204,7 @@ export const FLOWER_PROFILE: ReceivingProfile = {
   key: "flower",
   displayName: "Flower",
   primaryCannabinoid: "THC-A",
+  otherCannabinoids: [{ cannabinoid: "D9", required: true }],
   /* THC-A receiving is paused (Texas litigation). Turning invoice
    * upload back on in MBS Settings → Categories brings it back. */
   invoiceUpload: false,
@@ -246,6 +253,7 @@ export const PREROLL_PROFILE: ReceivingProfile = {
   key: "pre-roll",
   displayName: "Pre-Rolls",
   primaryCannabinoid: "CBD",
+  otherCannabinoids: [{ cannabinoid: "D9", required: true }, { cannabinoid: "THC-A", required: false }],
   /* Received on its own manual-entry page. */
   invoiceUpload: false,
   parentCategoryName: "Pre-Rolls",
@@ -327,6 +335,7 @@ export const FLOWER_THCP_PROFILE: ReceivingProfile = {
   key: "flower-thc-p",
   displayName: "Flower — THC-P",
   primaryCannabinoid: "THC-P",
+  otherCannabinoids: [{ cannabinoid: "D9", required: true }],
   invoiceUpload: false,
   parentCategoryName: "Flower",
   subcategories: [
@@ -374,6 +383,7 @@ export const FLOWER_CBD_PROFILE: ReceivingProfile = {
   key: "flower-cbd",
   displayName: "Flower — CBD",
   primaryCannabinoid: "CBD",
+  otherCannabinoids: [{ cannabinoid: "D9", required: true }],
   invoiceUpload: true,
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbd",
@@ -424,6 +434,7 @@ export const FLOWER_CBG_PROFILE: ReceivingProfile = {
   key: "flower-cbg",
   displayName: "Flower — CBG",
   primaryCannabinoid: "CBG",
+  otherCannabinoids: [{ cannabinoid: "D9", required: true }],
   invoiceUpload: true,
   parentCategoryName: "Flower",
   subcategoryParentHandle: "flower-cbg",
