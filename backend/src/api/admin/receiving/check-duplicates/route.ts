@@ -1,6 +1,8 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { findNearMatches, normalizeForMatch, type NearMatch } from "../../../../lib/fuzzy-match"
+import { findProfile } from "../../../../lib/profile-store"
+import { categoriesForProfiles, scopedCategoryOf } from "../../../../lib/price-scope"
 
 /**
  * POST /admin/receiving/check-duplicates
@@ -24,6 +26,12 @@ import { findNearMatches, normalizeForMatch, type NearMatch } from "../../../../
  *
  * The receiving page uses the new shape for real-time row checks +
  * pre-save validation; the older shape is still hit on initial extract.
+ *
+ * With `profileKey`, only products in that category's sub-categories
+ * count, and a product's tier is its sub-category key. Receiving save
+ * matches the same way, so a CBG strain named like a CBD one is no
+ * longer reported as a restock. Without it, the old flower-wide guess
+ * from handle prefixes is used.
  */
 
 const TIER_PREFIXES = ["classic-", "exotic-", "super-", "snow-", "rapper-"] as const
@@ -55,17 +63,37 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body ?? {}) as {
     strainNames?: string[]
     rows?: Array<{ strainName?: string; tier?: string }>
+    profileKey?: string
   }
 
   /* Build the candidate set once — every classification needs it. */
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
   const { data: products } = await query.graph({
     entity: "product",
-    fields: ["id", "handle", "title", "categories.handle"],
+    fields: ["id", "handle", "title", "categories.id", "categories.handle"],
   })
+
+  const profile = body.profileKey ? await findProfile(req.scope, String(body.profileKey)) : null
+  if (body.profileKey && !profile) {
+    res.status(400).json({ ok: false, error: `Unknown receiving profile: ${body.profileKey}` })
+    return
+  }
+  const scope = profile ? await categoriesForProfiles(query, [profile]) : null
 
   const candidates: ProductCandidate[] = []
   for (const p of products as any[]) {
+    if (scope) {
+      const hit = scopedCategoryOf(p, scope)
+      if (hit) {
+        candidates.push({
+          productId: p.id,
+          handle: (p.handle ?? "").toLowerCase(),
+          title: p.title ?? "",
+          tier: hit.subcategory.key as TierKey,
+        })
+      }
+      continue
+    }
     const handle = (p.handle ?? "").toLowerCase()
     const prefix = TIER_PREFIXES.find((pre) => handle.startsWith(pre))
     if (prefix) {
@@ -131,7 +159,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
   const legacyCandidates = candidates
-    .filter((c) => c.tier !== null && TIER_PREFIXES.some((pre) => c.handle.startsWith(pre)))
+    .filter((c) => c.tier !== null && (scope || TIER_PREFIXES.some((pre) => c.handle.startsWith(pre))))
     .map((c) => ({ handle: c.handle, title: c.title, tier: c.tier as string }))
   const matches: Record<string, NearMatch[]> = {}
   for (const name of names) {

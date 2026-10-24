@@ -62,7 +62,7 @@ export async function findProfile(container: any, key: string): Promise<Receivin
 
 /* ─── Live subcategories ─── */
 
-type Category = {
+export type Category = {
   id: string
   name: string
   handle: string
@@ -84,6 +84,10 @@ export type ResolvedProfile = {
   parent: Category | null
   /** The category whose children are the subcategories. */
   enumRoot: Category | null
+  /** The profile as it should be stored: linked to its categories by id,
+   *  every live sub-category listed (so its key never changes with a
+   *  rename), sizes only where a sub-category has its own. */
+  linked: ReceivingProfile
 }
 
 /**
@@ -110,26 +114,30 @@ export async function resolveProfileCategories(
     fields: ["id", "name", "handle", "parent_category_id", "is_active", "metadata"],
   })
   const cats = (data ?? []) as Category[]
-  const hasChildren = new Set(cats.map((c) => c.parent_category_id).filter(Boolean))
-  const parent = cats.find((c) => c.name === profile.parentCategoryName && !c.parent_category_id) ?? null
-  const enumRoot = profile.subcategoryParentHandle
-    ? cats.find((c) => c.handle === profile.subcategoryParentHandle) ?? null
-    : parent
+  const { parent, enumRoot } = findProfileRoot(cats, profile)
   if (!enumRoot) {
-    return { profile: { ...profile, subcategories: [] }, parent, enumRoot: null }
+    return { profile: { ...profile, subcategories: [] }, parent, enumRoot: null, linked: profile }
   }
+
+  const hasChildren = new Set(cats.map((c) => c.parent_category_id).filter(Boolean))
+  /* Id first, so a rename in Medusa keeps the entry; the name only for
+   * entries saved before ids. */
+  const matchFor = (cat: Category) =>
+    profile.subcategories.find((s) => s.categoryId === cat.id) ??
+    profile.subcategories.find((s) => !s.categoryId && s.medusaName === cat.name)
 
   const subcategories: ResolvedSubcategory[] = cats
     .filter((c) => c.parent_category_id === enumRoot.id)
-    .filter((c) =>
-      profile.subcategories.some((s) => s.medusaName === c.name) ||
-      (c.is_active !== false && !hasChildren.has(c.id)),
-    )
+    .filter((c) => !!matchFor(c) || (c.is_active !== false && !hasChildren.has(c.id)))
     .map((cat) => {
-      const match = profile.subcategories.find((s) => s.medusaName === cat.name)
+      const match = matchFor(cat)
       if (match) {
         return {
           ...match,
+          categoryId: cat.id,
+          medusaName: cat.name,
+          /* A label that was just the old name follows the rename. */
+          label: !match.label || match.label === match.medusaName ? cat.name : match.label,
           id: cat.id,
           handle: cat.handle,
           variants: match.variants && match.variants.length > 0 ? match.variants : profile.variants,
@@ -138,6 +146,7 @@ export async function resolveProfileCategories(
       const fromMeta = parseVariantsFromCategoryMetadata(cat.metadata)
       return {
         key: slugifyKey(cat.name),
+        categoryId: cat.id,
         medusaName: cat.name,
         label: cat.name,
         id: cat.id,
@@ -146,7 +155,54 @@ export async function resolveProfileCategories(
       }
     })
 
-  return { profile: { ...profile, subcategories }, parent, enumRoot }
+  /* Names come from Medusa, so everything downstream (SKUs, the
+   * QuickBooks category chain, error messages) uses the current ones. */
+  const live = {
+    ...profile,
+    categoryId: enumRoot.id,
+    parentCategoryName: parent?.name ?? profile.parentCategoryName,
+    subcategoryParentHandle: parent && parent.id !== enumRoot.id ? enumRoot.handle : undefined,
+  }
+  if (!live.subcategoryParentHandle) delete live.subcategoryParentHandle
+  const linked: ReceivingProfile = {
+    ...live,
+    subcategories: subcategories.map((s) => {
+      const own = matchFor({ id: s.id, name: s.medusaName } as Category)?.variants
+      return {
+        key: s.key,
+        categoryId: s.id,
+        medusaName: s.medusaName,
+        label: s.label,
+        ...(own && own.length > 0 ? { variants: own } : {}),
+      }
+    }),
+  }
+  return { profile: { ...live, subcategories }, parent, enumRoot, linked }
+}
+
+/**
+ * The category a profile receives into (its sub-categories' parent) and
+ * that category's top-level ancestor. Found by id when the profile has
+ * one; otherwise by the parent's name and the optional root handle.
+ */
+export function findProfileRoot(
+  cats: Category[],
+  profile: Pick<ReceivingProfile, "categoryId" | "parentCategoryName" | "subcategoryParentHandle">,
+): { parent: Category | null; enumRoot: Category | null } {
+  if (profile.categoryId) {
+    const byId = new Map(cats.map((c) => [c.id, c]))
+    const enumRoot = byId.get(profile.categoryId) ?? null
+    let parent = enumRoot
+    for (let hops = 0; parent?.parent_category_id && hops < 20; hops++) {
+      parent = byId.get(parent.parent_category_id) ?? null
+    }
+    return { parent, enumRoot }
+  }
+  const parent = cats.find((c) => c.name === profile.parentCategoryName && !c.parent_category_id) ?? null
+  const enumRoot = profile.subcategoryParentHandle
+    ? cats.find((c) => c.handle === profile.subcategoryParentHandle) ?? null
+    : parent
+  return { parent, enumRoot }
 }
 
 const DEFAULT_VARIANT: VariantDef = { sizeKey: "default", label: "Unit", multiplier: 1 }
@@ -174,6 +230,7 @@ const KEY_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
  * be one segment. */
 const SIZE_KEY_RE = /^[a-z0-9]+$/
 const SETTING_KEY_RE = /^[a-z0-9_]+$/
+const CATEGORY_ID_RE = /^pcat_[A-Za-z0-9]+$/
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 const posNum = (v: unknown) => {
@@ -230,23 +287,30 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
   if (!KEY_RE.test(key)) errors.push(`key "${key}" must be lowercase words joined by hyphens`)
   const displayName = str(p?.displayName)
   if (!displayName) errors.push("display name is required")
+  const categoryId = str(p?.categoryId)
+  if (categoryId && !CATEGORY_ID_RE.test(categoryId)) errors.push(`category id "${categoryId}" isn't a Medusa category id`)
   const parentCategoryName = str(p?.parentCategoryName)
-  if (!parentCategoryName) errors.push("parent category is required")
+  if (!categoryId && !parentCategoryName) errors.push("pick the Medusa category it receives into")
 
   const subcategories: SubcategoryDef[] = []
   if (p?.subcategories != null && !Array.isArray(p.subcategories)) errors.push("subcategories must be a list")
   for (const s of Array.isArray(p?.subcategories) ? p.subcategories : []) {
     const sKey = str(s?.key)
+    const sId = str(s?.categoryId)
     const medusaName = str(s?.medusaName)
     if (!KEY_RE.test(sKey)) { errors.push(`subcategory key "${sKey}" must be lowercase words joined by hyphens`); continue }
-    if (!medusaName) { errors.push(`subcategory "${sKey}" needs its Medusa category name`); continue }
-    const sub: SubcategoryDef = { key: sKey, medusaName, label: str(s?.label) || medusaName }
+    if (sId && !CATEGORY_ID_RE.test(sId)) { errors.push(`subcategory "${sKey}" has a bad Medusa category id "${sId}"`); continue }
+    if (!sId && !medusaName) { errors.push(`subcategory "${sKey}" needs its Medusa category`); continue }
+    const sub: SubcategoryDef = { key: sKey, ...(sId ? { categoryId: sId } : {}), medusaName, label: str(s?.label) || medusaName || sKey }
     const variants = normalizeVariants(s?.variants, `subcategory "${sKey}"`, errors)
     if (variants.length > 0) sub.variants = variants
     subcategories.push(sub)
   }
   for (const [i, s] of subcategories.entries()) {
     if (subcategories.findIndex((o) => o.key === s.key) !== i) errors.push(`subcategory key "${s.key}" is used twice`)
+    if (s.categoryId && subcategories.findIndex((o) => o.categoryId === s.categoryId) !== i) {
+      errors.push(`subcategory "${s.key}" points at the same Medusa category as another one`)
+    }
   }
 
   const variants = normalizeVariants(p?.variants, "sizes", errors)
@@ -278,6 +342,7 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
   const profile: ReceivingProfile = {
     key,
     displayName,
+    ...(categoryId ? { categoryId } : {}),
     parentCategoryName,
     ...(str(p?.subcategoryParentHandle) ? { subcategoryParentHandle: str(p.subcategoryParentHandle) } : {}),
     subcategories,
@@ -317,6 +382,9 @@ export function normalizeProfileList(list: unknown): { profiles: ReceivingProfil
   }
   for (const [i, p] of profiles.entries()) {
     if (profiles.findIndex((o) => o.key === p.key) !== i) errors.push(`category key "${p.key}" is used twice`)
+    if (p.categoryId && profiles.findIndex((o) => o.categoryId === p.categoryId) !== i) {
+      errors.push(`${p.displayName}: another category already receives into the same Medusa category`)
+    }
   }
   return { profiles, errors }
 }

@@ -105,6 +105,8 @@ const PreRollReceivingPage = () => {
   const [profileError, setProfileError] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([blankRow()])
   const [saving, setSaving] = useState(false)
+  /* "Strain: reason" for each row the last Save couldn't save. */
+  const [saveErrors, setSaveErrors] = useState<string[]>([])
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null)
   const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
   const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
@@ -249,9 +251,10 @@ const PreRollReceivingPage = () => {
     setSavingDraft(true)
     try {
       const url = draftId ? `/admin/receiving/drafts/${draftId}` : "/admin/receiving/drafts"
-      const method = draftId ? "PUT" : "POST"
+      /* The drafts/:id route updates on POST or PATCH; PUT 404'd, so
+       * updating a resumed draft failed. */
       const res = await fetch(url, {
-        method,
+        method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payload: buildDraftPayload(), summary: buildDraftSummary() }),
@@ -301,6 +304,7 @@ const PreRollReceivingPage = () => {
   const onSave = async () => {
     if (!allValid || saving) return
     setSaving(true)
+    setSaveErrors([])
     try {
       const body = {
         profileKey: "pre-roll",
@@ -360,20 +364,15 @@ const PreRollReceivingPage = () => {
         }
       } else {
         toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
-          description: "See errors. Fix and re-save (succeeded rows skip-restock).",
+          description: "Saved rows are already in stock. Remove them before saving again, or their stock is added twice.",
         })
         /* Surface per-row errors inline by stamping the row with the error
          * string (lightweight — no need for the full status-pill machinery
          * of the flower review view in v1). */
         const results = (json.results ?? []) as Array<{ strainName: string; action: string; error?: string }>
-        const errors = results
+        setSaveErrors(results
           .filter((r) => r.action === "failed")
-          .map((r) => `${r.strainName}: ${r.error ?? "unknown error"}`)
-          .join("\n")
-        if (errors) {
-          // eslint-disable-next-line no-console
-          console.warn("[pre-roll receiving] partial-fail errors:\n" + errors)
-        }
+          .map((r) => `${r.strainName}: ${r.error ?? "unknown error"}`))
       }
     } catch (e: any) {
       toast.error("Save failed", { description: e?.message ?? "Network error" })
@@ -454,7 +453,7 @@ const PreRollReceivingPage = () => {
         <div>
           <Heading level="h1">Pre-Roll Receiving</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            Manual entry — THC-A + Hashholes. Use the main Receiving page for flower.
+            Manual entry. Use the main Receiving page for flower.
             {lastSavedAt && <> · draft saved {timeAgo(lastSavedAt)}</>}
           </Text>
         </div>
@@ -467,6 +466,17 @@ const PreRollReceivingPage = () => {
           </Button>
         </div>
       </div>
+
+      {saveErrors.length > 0 && (
+        <div style={{ border: "1.5px solid #B91C1C", background: "#fff", padding: 14 }}>
+          <Text size="small" weight="plus" style={{ color: "#B91C1C" }}>
+            {saveErrors.length} row{saveErrors.length === 1 ? "" : "s"} not saved. The other rows ARE saved and in stock: delete them from the form before saving again, or their stock is added twice.
+          </Text>
+          {saveErrors.map((e, i) => (
+            <Text key={i} size="small" style={{ color: "#7F1D1D" }}>{e}</Text>
+          ))}
+        </div>
+      )}
 
       {/* Resume Drafts — only renders when drafts exist */}
       {!draftsLoading && drafts.length > 0 && (

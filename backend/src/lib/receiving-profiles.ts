@@ -52,7 +52,11 @@ export type VariantDef = {
 export type SubcategoryDef = {
   /** Stable lowercase key (classic/exotic/...thc-a/hashholes/...) — used for metadata + SKUs. */
   key: string
-  /** Exact name of the Medusa product_category to attach the product to. Must already exist. */
+  /** Medusa product_category id. Matched before the name, so renaming the
+   *  category in Medusa keeps its key, sizes and prices. */
+  categoryId?: string
+  /** Name of the Medusa product_category. Only used to find it when there
+   *  is no categoryId (built-in profiles, lists saved before ids). */
   medusaName: string
   /** Human label in admin UI. */
   label: string
@@ -97,6 +101,10 @@ export type ReceivingProfile = {
   key: ProfileKey
   /** "Flower", "Pre-Rolls" — title-cased category for UI + Medusa parent category name. */
   displayName: string
+  /** Medusa id of the category whose children are the sub-categories
+   *  (Pre-Rolls, or Flower → CBD). When set it wins over the names
+   *  below, which resolveProfileCategories then fills from Medusa. */
+  categoryId?: string
   /** Top-level Medusa product_category name (parent). Must already exist in catalog. */
   parentCategoryName: string
   /** Optional: handle of an intermediate category whose *children* are the

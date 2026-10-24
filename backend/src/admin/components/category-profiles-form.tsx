@@ -1,16 +1,16 @@
-import { Button, Input, Label, Switch, Text, toast } from "@medusajs/ui"
+import { Button, Input, Label, Switch, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 
 /**
- * MBS Settings → Categories. Edits the `category_profiles` setting
- * through /admin/mbs/category-profiles, which validates the whole list
- * before writing (lib/profile-store.ts).
+ * MBS Settings → Categories. The one place a category is set up: it
+ * creates and renames the Medusa categories (through
+ * /admin/mbs/category-profiles/categories) and edits the
+ * `category_profiles` setting (/admin/mbs/category-profiles, which
+ * validates the whole list before writing, lib/profile-store.ts).
  *
- * One card per category: where its products live in Medusa, how it's
- * received (units, sizes, required fields), and which price table its
- * default prices come from. Sub-categories that exist in Medusa are
- * picked up automatically; the Sub-categories list here is only for
- * ones that need their own label or sizes.
+ * Profiles link to their Medusa categories by id, so a rename (here or
+ * in Medusa) changes nothing else. Top-level Medusa categories nothing
+ * receives into show as "Not set up".
  */
 
 type Size = {
@@ -21,7 +21,7 @@ type Size = {
   unitLabel?: string
   unitsPerVariant?: number | string
 }
-type Sub = { key: string; medusaName: string; label: string; variants?: Size[] }
+type Sub = { key: string; categoryId?: string; medusaName: string; label: string; variants?: Size[] }
 type Unit = { singular: string; plural: string }
 type Fields = {
   strainType: boolean
@@ -34,6 +34,7 @@ type Fields = {
 type Profile = {
   key: string
   displayName: string
+  categoryId?: string
   parentCategoryName: string
   subcategoryParentHandle?: string
   subcategories: Sub[]
@@ -46,8 +47,10 @@ type Profile = {
   inputToPoolMultiplier: number | string
   qboCategoryBranch?: string
   archived?: boolean
+  priceTables?: Record<string, string>
+  shippingRatesKey?: string
 }
-type Category = { id: string; name: string; handle: string; parent_category_id: string | null }
+type Category = { id: string; name: string; handle: string; parent_category_id: string | null; is_active?: boolean }
 
 const FIELD_LABELS: Array<[keyof Fields, string]> = [
   ["strainType", "Strain type (Indica / Sativa / Hybrid)"],
@@ -58,30 +61,72 @@ const FIELD_LABELS: Array<[keyof Fields, string]> = [
   ["upc", "UPC barcode"],
 ]
 
-const blankProfile = (): Profile => ({
-  key: "",
-  displayName: "",
-  parentCategoryName: "",
-  subcategories: [],
-  variants: [{ sizeKey: "unit", label: "Unit", multiplier: 1 }],
-  fields: { strainType: false, bestFor: false, effects: false, cannabinoids: false, coaRequired: false, upc: true },
-  pricingModel: "tier",
-  tierPricesSettingKey: "",
-  unitLabel: { singular: "Unit", plural: "Units" },
-  inputUnitLabel: { singular: "unit", plural: "units" },
-  inputToPoolMultiplier: 1,
-})
-
 const slug = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+const tableSlug = (s: string) => slug(s).replace(/-/g, "_")
+
+/* A new category starts with one size, its own blank price tables and
+ * shipping bucket, so its sections appear in the price and shipping
+ * tabs straight away. */
+const newProfile = (cat: Category, subs: Category[], taken: Set<string>): Profile => {
+  let key = slug(cat.name) || "category"
+  for (let i = 2; taken.has(key); i++) key = `${slug(cat.name)}-${i}`
+  const t = tableSlug(key)
+  return {
+    key,
+    displayName: cat.name,
+    categoryId: cat.id,
+    parentCategoryName: cat.name,
+    subcategories: subs.map((c) => ({ key: slug(c.name), categoryId: c.id, medusaName: c.name, label: c.name })),
+    variants: [{ sizeKey: "unit", label: "Unit", multiplier: 1 }],
+    fields: { strainType: false, bestFor: false, effects: false, cannabinoids: false, coaRequired: true, upc: true },
+    pricingModel: "tier",
+    tierPricesSettingKey: `${t}_prices`,
+    unitLabel: { singular: "Unit", plural: "Units" },
+    inputUnitLabel: { singular: "unit", plural: "units" },
+    inputToPoolMultiplier: 1,
+    priceTables: {
+      tier_2: `${t}_tier_2_prices`,
+      tier_3: `${t}_tier_3_prices`,
+      distro: `${t}_distro_prices`,
+      owner: `${t}_owner_markup_per_unit`,
+    },
+    shippingRatesKey: t,
+  }
+}
 
 const selectCls = "h-8 w-full border border-ui-border-base bg-ui-bg-field px-2 text-sm rounded-md"
+
+async function categoryAction(body: Record<string, unknown>) {
+  const res = await fetch("/admin/mbs/category-profiles/categories", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json?.message ?? `Request failed (${res.status})`)
+  return json
+}
+
+/* "Flower › CBD" for a category id. */
+function pathOf(categories: Category[], id?: string): string {
+  const byId = new Map(categories.map((c) => [c.id, c]))
+  const names: string[] = []
+  for (let c = id ? byId.get(id) : undefined, hops = 0; c && hops < 20; hops++) {
+    names.unshift(c.name)
+    c = c.parent_category_id ? byId.get(c.parent_category_id) : undefined
+  }
+  return names.join(" › ")
+}
 
 export const CategoryProfilesForm = () => {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set())
   const [categories, setCategories] = useState<Category[]>([])
+  const [unlinked, setUnlinked] = useState<Category[]>([])
   const [source, setSource] = useState<string>("")
   const [open, setOpen] = useState<number | null>(null)
+  const [adding, setAdding] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
@@ -95,6 +140,7 @@ export const CategoryProfilesForm = () => {
       setProfiles(json.profiles ?? [])
       setSavedKeys(new Set((json.profiles ?? []).map((p: Profile) => p.key)))
       setCategories(json.categories ?? [])
+      setUnlinked(json.unlinked ?? [])
       setSource(json.source ?? "")
     } catch (e: any) {
       toast.error(e?.message ?? "Couldn't load categories")
@@ -108,10 +154,26 @@ export const CategoryProfilesForm = () => {
   const update = (i: number, patch: Partial<Profile>) =>
     setProfiles((list) => list.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
 
-  const addProfile = () => {
-    setProfiles((list) => [...list, blankProfile()])
-    setOpen(profiles.length)
+  /* Medusa changed under us (create / add / rename): refresh the tree
+   * without touching unsaved profile edits. */
+  const refreshCategories = async () => {
+    const res = await fetch("/admin/mbs/category-profiles", { credentials: "include" })
+    const json = await res.json().catch(() => ({}))
+    if (res.ok) {
+      setCategories(json.categories ?? [])
+      setUnlinked(json.unlinked ?? [])
+    }
   }
+
+  const addLinked = (cat: Category, subs: Category[]) => {
+    const p = newProfile(cat, subs, new Set(profiles.map((x) => x.key)))
+    setProfiles((list) => [...list, p])
+    setOpen(profiles.length)
+    setUnlinked((list) => list.filter((c) => c.id !== cat.id))
+  }
+
+  const setUp = (cat: Category) =>
+    addLinked(cat, categories.filter((c) => c.parent_category_id === cat.id && c.is_active !== false))
 
   const save = async () => {
     setSaving(true)
@@ -128,11 +190,9 @@ export const CategoryProfilesForm = () => {
         setErrors(json?.errors ?? [json?.message ?? `Save failed (${res.status})`])
         throw new Error("Not saved — fix the problems listed above the categories.")
       }
-      setProfiles(json.profiles)
-      setSavedKeys(new Set(json.profiles.map((p: Profile) => p.key)))
-      setSource("settings")
       toast.success("Categories saved")
       for (const w of json.warnings ?? []) toast.warning(w)
+      await load()
     } catch (e: any) {
       toast.error(e?.message ?? "Save failed")
     } finally {
@@ -145,9 +205,9 @@ export const CategoryProfilesForm = () => {
   return (
     <div className="flex flex-col gap-4">
       <Text size="small" className="text-ui-fg-subtle">
-        How each category is received: where its products live in Medusa, its units and sizes, the
-        fields the receiving form asks for, and the price table its default prices come from.
-        Sub-categories you add in Medusa appear automatically.
+        Every category is set up here: its Medusa categories, how it's received (units, sizes, the
+        fields the receiving form asks for) and its price tables. Adding or renaming a category or
+        sub-category here does it in Medusa too. Sub-categories added straight in Medusa still show up.
         {source === "built-in" && " These are the built-in setups; nothing is stored until you save."}
       </Text>
 
@@ -169,8 +229,11 @@ export const CategoryProfilesForm = () => {
           >
             <span>
               <Text size="small" weight="plus" as="span">{p.displayName || "New category"}</Text>
-              <Text size="xsmall" as="span" className="text-ui-fg-subtle ml-2">{p.key}</Text>
+              <Text size="xsmall" as="span" className="text-ui-fg-subtle ml-2">
+                {p.categoryId ? pathOf(categories, p.categoryId) || "Medusa category missing" : p.parentCategoryName}
+              </Text>
               {p.archived && <Text size="xsmall" as="span" className="text-ui-fg-muted ml-2">· archived</Text>}
+              {!savedKeys.has(p.key) && <Text size="xsmall" as="span" className="text-ui-fg-interactive ml-2">· not saved yet</Text>}
             </span>
             <Text size="xsmall" className="text-ui-fg-subtle">{open === i ? "Close" : "Edit"}</Text>
           </button>
@@ -179,20 +242,151 @@ export const CategoryProfilesForm = () => {
               profile={p}
               isSaved={savedKeys.has(p.key)}
               categories={categories}
+              onCategoriesChanged={refreshCategories}
               onChange={(patch) => update(i, patch)}
               onRemove={() => {
                 setProfiles((list) => list.filter((_, idx) => idx !== i))
                 setOpen(null)
+                refreshCategories()
               }}
             />
           )}
         </div>
       ))}
 
+      {unlinked.map((c) => (
+        <div key={c.id} className="border border-dashed border-ui-border-strong rounded-md px-4 py-3 flex items-center justify-between">
+          <span>
+            <Text size="small" weight="plus" as="span">{c.name}</Text>
+            <Text size="xsmall" as="span" className="text-ui-fg-subtle ml-2">In Medusa · not set up</Text>
+          </span>
+          <Button variant="secondary" size="small" onClick={() => setUp(c)}>Set up receiving</Button>
+        </div>
+      ))}
+
+      {adding && (
+        <AddCategory
+          categories={categories}
+          onCancel={() => setAdding(false)}
+          onCreated={async (cat, subs) => {
+            setAdding(false)
+            await refreshCategories()
+            addLinked(cat, subs)
+            toast.success(`${cat.name} created in Medusa`, {
+              description: "Fill in its sizes and units below, then press Save categories.",
+            })
+          }}
+        />
+      )}
+
       <div className="flex gap-2">
-        <Button variant="secondary" size="small" onClick={addProfile}>Add category</Button>
+        {!adding && <Button variant="secondary" size="small" onClick={() => setAdding(true)}>Add category</Button>}
         <Button size="small" onClick={save} isLoading={saving}>Save categories</Button>
       </div>
+    </div>
+  )
+}
+
+const AddCategory = ({
+  categories,
+  onCancel,
+  onCreated,
+}: {
+  categories: Category[]
+  onCancel: () => void
+  onCreated: (cat: Category, subs: Category[]) => void
+}) => {
+  const [name, setName] = useState("")
+  const [parentId, setParentId] = useState("")
+  const [subs, setSubs] = useState("")
+  const [busy, setBusy] = useState(false)
+  const subNames = subs.split(/[\n,]/).map((s) => s.trim()).filter(Boolean)
+
+  const create = async () => {
+    if (!name.trim()) { toast.error("Give the category a name."); return }
+    setBusy(true)
+    try {
+      const j = await categoryAction({ action: "create", name, parentId: parentId || undefined, subcategories: subNames })
+      onCreated(j.category, j.subcategories ?? [])
+    } catch (e: any) {
+      toast.error(e?.message ?? "Couldn't create the category")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="border border-ui-border-base rounded-md px-4 py-4 flex flex-col gap-3">
+      <Text size="small" weight="plus">New category</Text>
+      <Grid>
+        <Field label="Name">
+          <Input size="small" value={name} placeholder="Edibles" onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Put it under" hint="Top level for a new kind of product. Under Flower for a new Flower branch next to CBD and CBG.">
+          <select className={selectCls} value={parentId} onChange={(e) => setParentId(e.target.value)}>
+            <option value="">Top level</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{pathOf(categories, c.id)}</option>)}
+          </select>
+        </Field>
+      </Grid>
+      <Field label="Sub-categories" hint="One per line or comma-separated, e.g. Gummies, Chocolates. Each receiving row picks one. You can add more later.">
+        <Textarea value={subs} rows={3} onChange={(e) => setSubs(e.target.value)} />
+      </Field>
+      <Text size="xsmall" className="text-ui-fg-subtle">
+        Creates {name.trim() || "the category"}{subNames.length > 0 ? ` and ${subNames.length} sub-categor${subNames.length === 1 ? "y" : "ies"}` : ""} in Medusa now. The receiving setup is stored when you press Save categories.
+      </Text>
+      <div className="flex gap-2">
+        <Button size="small" onClick={create} isLoading={busy}>Create</Button>
+        <Button variant="transparent" size="small" onClick={onCancel} disabled={busy}>Cancel</Button>
+      </div>
+    </div>
+  )
+}
+
+/* A Medusa category name with an inline Rename. */
+const RenameableName = ({
+  category,
+  onRenamed,
+}: {
+  category: Category | undefined
+  onRenamed: (name: string) => void
+}) => {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(category?.name ?? "")
+  const [busy, setBusy] = useState(false)
+  if (!category) return <Text size="small" className="text-ui-fg-error">Missing in Medusa</Text>
+
+  const submit = async () => {
+    const next = text.trim()
+    if (!next || next === category.name) { setEditing(false); return }
+    setBusy(true)
+    try {
+      await categoryAction({ action: "rename", id: category.id, name: next })
+      onRenamed(next)
+      setEditing(false)
+      toast.success(`Renamed to ${next}`)
+    } catch (e: any) {
+      toast.error(e?.message ?? "Rename failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <Text size="small">{category.name}</Text>
+        {category.is_active === false && <Text size="xsmall" className="text-ui-fg-muted">inactive</Text>}
+        <Button variant="transparent" size="small" onClick={() => { setText(category.name); setEditing(true) }}>Rename</Button>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <Input size="small" value={text} autoFocus onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setEditing(false) }} />
+      <Button size="small" onClick={submit} isLoading={busy}>Rename</Button>
+      <Button variant="transparent" size="small" onClick={() => setEditing(false)} disabled={busy}>Cancel</Button>
     </div>
   )
 }
@@ -201,73 +395,89 @@ const ProfileEditor = ({
   profile: p,
   isSaved,
   categories,
+  onCategoriesChanged,
   onChange,
   onRemove,
 }: {
   profile: Profile
   isSaved: boolean
   categories: Category[]
+  onCategoriesChanged: () => Promise<void> | void
   onChange: (patch: Partial<Profile>) => void
   onRemove: () => void
 }) => {
-  const topLevel = useMemo(() => categories.filter((c) => !c.parent_category_id), [categories])
-  const parent = topLevel.find((c) => c.name === p.parentCategoryName)
-  /* Sub-category root options: the parent itself, or any category under it. */
-  const descendants = useMemo(() => {
-    if (!parent) return []
-    const out: Category[] = []
-    const walk = (id: string) => {
-      for (const c of categories.filter((x) => x.parent_category_id === id)) {
-        out.push(c)
-        walk(c.id)
-      }
+  const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
+  const root = p.categoryId ? byId.get(p.categoryId) : undefined
+  const [newSub, setNewSub] = useState("")
+  const [addingSub, setAddingSub] = useState(false)
+
+  const setSub = (si: number, patch: Partial<Sub>) => {
+    const subs = [...p.subcategories]
+    subs[si] = { ...subs[si], ...patch }
+    onChange({ subcategories: subs })
+  }
+
+  const addSub = async () => {
+    const name = newSub.trim()
+    if (!name || !root) return
+    setAddingSub(true)
+    try {
+      const j = await categoryAction({ action: "add-sub", parentId: root.id, name })
+      const taken = new Set(p.subcategories.map((s) => s.key))
+      let key = slug(name) || "sub"
+      for (let i = 2; taken.has(key); i++) key = `${slug(name)}-${i}`
+      onChange({ subcategories: [...p.subcategories, { key, categoryId: j.category.id, medusaName: name, label: name }] })
+      setNewSub("")
+      await onCategoriesChanged()
+      toast.success(`${name} added under ${root.name}`, { description: "Press Save categories to store its setup." })
+    } catch (e: any) {
+      toast.error(e?.message ?? "Couldn't add the sub-category")
+    } finally {
+      setAddingSub(false)
     }
-    walk(parent.id)
-    return out
-  }, [categories, parent])
-  const root = p.subcategoryParentHandle
-    ? categories.find((c) => c.handle === p.subcategoryParentHandle)
-    : parent
-  const liveSubs = root ? categories.filter((c) => c.parent_category_id === root.id) : []
+  }
 
   return (
     <div className="border-t border-ui-border-base px-4 py-4 flex flex-col gap-5">
       <Section title="Category">
         <Grid>
-          <Field label="Display name">
+          <Field label="Display name" hint="What receiving and the price tabs call it.">
             <Input
               size="small"
               value={p.displayName}
-              onChange={(e) => onChange({ displayName: e.target.value, ...(isSaved ? {} : { key: slug(e.target.value) }) })}
+              onChange={(e) => onChange({ displayName: e.target.value })}
             />
           </Field>
-          <Field label="Key" hint={isSaved ? "Fixed once saved: receiving pages and products refer to it." : "Lowercase words joined by hyphens."}>
+          <Field label="Key" hint={isSaved ? "Fixed once saved: drafts and products refer to it." : "Lowercase words joined by hyphens."}>
             <Input size="small" value={p.key} disabled={isSaved} onChange={(e) => onChange({ key: slug(e.target.value) })} />
           </Field>
-          <Field label="Parent category (Medusa)">
-            <select
-              className={selectCls}
-              value={p.parentCategoryName}
-              onChange={(e) => onChange({ parentCategoryName: e.target.value, subcategoryParentHandle: undefined })}
-            >
-              <option value="">Choose…</option>
-              {topLevel.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-            </select>
+          <Field label="Medusa category" hint={root ? pathOf(categories, root.id) : undefined}>
+            <RenameableName
+              key={root?.id}
+              category={root}
+              onRenamed={() => onCategoriesChanged()}
+            />
           </Field>
-          <Field label="Sub-categories live under" hint="Use a deeper category when the parent has a level in between (Flower → CBD → Classic).">
+          <Field label="Receives into" hint="Only change this to point the setup at a different Medusa category.">
             <select
               className={selectCls}
-              value={p.subcategoryParentHandle ?? ""}
-              onChange={(e) => onChange({ subcategoryParentHandle: e.target.value || undefined })}
+              value={p.categoryId ?? ""}
+              onChange={(e) => {
+                const cat = byId.get(e.target.value)
+                if (!cat) return
+                onChange({
+                  categoryId: cat.id,
+                  subcategories: categories
+                    .filter((c) => c.parent_category_id === cat.id && c.is_active !== false)
+                    .map((c) => ({ key: slug(c.name), categoryId: c.id, medusaName: c.name, label: c.name })),
+                })
+              }}
             >
-              <option value="">{p.parentCategoryName || "The parent"} itself</option>
-              {descendants.map((c) => <option key={c.id} value={c.handle}>{c.name} ({c.handle})</option>)}
+              {!p.categoryId && <option value="">Choose…</option>}
+              {categories.map((c) => <option key={c.id} value={c.id}>{pathOf(categories, c.id)}</option>)}
             </select>
           </Field>
         </Grid>
-        <Text size="xsmall" className="text-ui-fg-subtle">
-          Sub-categories in Medusa now: {liveSubs.length ? liveSubs.map((c) => c.name).join(", ") : "none"}
-        </Text>
       </Section>
 
       <Section title="Units">
@@ -289,72 +499,55 @@ const ProfileEditor = ({
         <SizesEditor sizes={p.variants} onChange={(variants) => onChange({ variants })} />
       </Section>
 
-      <Section title="Sub-categories with their own label or sizes" hint="Only needed when a sub-category differs, e.g. Hashholes sell 15 ct boxes while the rest sell 30 ct.">
-        {p.subcategories.map((s, si) => (
-          <div key={si} className="border border-ui-border-base rounded-md p-3 flex flex-col gap-3">
-            <Grid>
-              <Field label="Medusa category">
-                <select
-                  className={selectCls}
-                  value={s.medusaName}
-                  onChange={(e) => {
-                    const subs = [...p.subcategories]
-                    subs[si] = { ...s, medusaName: e.target.value, key: s.key || slug(e.target.value), label: s.label || e.target.value }
-                    onChange({ subcategories: subs })
-                  }}
-                >
-                  <option value="">Choose…</option>
-                  {liveSubs.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-                  {s.medusaName && !liveSubs.some((c) => c.name === s.medusaName) && (
-                    <option value={s.medusaName}>{s.medusaName} (not in Medusa)</option>
-                  )}
-                </select>
-              </Field>
-              <Field label="Key" hint="Used in SKUs and price tables.">
-                <Input size="small" value={s.key} onChange={(e) => {
-                  const subs = [...p.subcategories]
-                  subs[si] = { ...s, key: slug(e.target.value) }
-                  onChange({ subcategories: subs })
-                }} />
-              </Field>
-              <Field label="Label">
-                <Input size="small" value={s.label} onChange={(e) => {
-                  const subs = [...p.subcategories]
-                  subs[si] = { ...s, label: e.target.value }
-                  onChange({ subcategories: subs })
-                }} />
-              </Field>
-            </Grid>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={!!s.variants?.length}
-                onCheckedChange={(on) => {
-                  const subs = [...p.subcategories]
-                  subs[si] = { ...s, variants: on ? [{ sizeKey: "", label: "", multiplier: 1 }] : undefined }
-                  onChange({ subcategories: subs })
-                }}
-              />
-              <Label size="xsmall">Own sizes</Label>
+      <Section title="Sub-categories" hint="Each receiving row picks one. Renames and new sub-categories happen in Medusa right away.">
+        {p.subcategories.map((s, si) => {
+          const cat = s.categoryId ? byId.get(s.categoryId) : categories.find((c) => c.parent_category_id === root?.id && c.name === s.medusaName)
+          return (
+            <div key={s.categoryId ?? si} className="border border-ui-border-base rounded-md p-3 flex flex-col gap-3">
+              <Grid>
+                <Field label="Medusa category">
+                  <RenameableName
+                    key={cat?.id}
+                    category={cat}
+                    onRenamed={(name) => {
+                      setSub(si, { medusaName: name, ...(s.label === s.medusaName ? { label: name } : {}) })
+                      onCategoriesChanged()
+                    }}
+                  />
+                </Field>
+                <Field label="Key" hint={isSaved && s.categoryId ? "Used in SKUs and price tables; fixed." : "Used in SKUs and price tables."}>
+                  <Input size="small" value={s.key} disabled={isSaved && !!s.categoryId && !!s.key}
+                    onChange={(e) => setSub(si, { key: slug(e.target.value) })} />
+                </Field>
+                <Field label="Label" hint="Shown in receiving and the price tabs.">
+                  <Input size="small" value={s.label} onChange={(e) => setSub(si, { label: e.target.value })} />
+                </Field>
+              </Grid>
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={!!s.variants?.length}
+                  onCheckedChange={(on) => setSub(si, { variants: on ? [{ sizeKey: "", label: "", multiplier: 1 }] : undefined })}
+                />
+                <Label size="xsmall">Own sizes (e.g. Hashholes sell 15 ct boxes while the rest sell 30 ct)</Label>
+              </div>
+              {!!s.variants?.length && (
+                <SizesEditor sizes={s.variants} onChange={(variants) => setSub(si, { variants })} />
+              )}
             </div>
-            {!!s.variants?.length && (
-              <SizesEditor sizes={s.variants} onChange={(variants) => {
-                const subs = [...p.subcategories]
-                subs[si] = { ...s, variants }
-                onChange({ subcategories: subs })
-              }} />
-            )}
-            <div>
-              <Button variant="transparent" size="small" onClick={() => onChange({ subcategories: p.subcategories.filter((_, x) => x !== si) })}>
-                Remove sub-category
-              </Button>
-            </div>
+          )
+        })}
+        {root ? (
+          <div className="flex items-center gap-2">
+            <Input size="small" value={newSub} placeholder={`New sub-category under ${root.name}`}
+              onChange={(e) => setNewSub(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addSub() }} />
+            <Button variant="secondary" size="small" onClick={addSub} isLoading={addingSub} disabled={!newSub.trim()}>
+              Add sub-category
+            </Button>
           </div>
-        ))}
-        <div>
-          <Button variant="secondary" size="small" onClick={() => onChange({ subcategories: [...p.subcategories, { key: "", medusaName: "", label: "" }] })}>
-            Add sub-category
-          </Button>
-        </div>
+        ) : (
+          <Text size="xsmall" className="text-ui-fg-subtle">Pick its Medusa category above to add sub-categories.</Text>
+        )}
       </Section>
 
       <Section title="Receiving form asks for">
@@ -395,7 +588,7 @@ const ProfileEditor = ({
           <Label size="xsmall">Archived (can't be received; existing products keep their prices)</Label>
         </div>
         {!isSaved && (
-          <Button variant="transparent" size="small" onClick={onRemove}>Remove</Button>
+          <Button variant="transparent" size="small" onClick={onRemove}>Remove setup</Button>
         )}
       </div>
     </div>

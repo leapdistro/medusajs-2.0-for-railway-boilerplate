@@ -580,7 +580,7 @@ const ReviewView: React.FC<{
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ strainNames: names }),
+      body: JSON.stringify({ strainNames: names, profileKey }),
     })
       .then((r) => r.json())
       .then((j) => {
@@ -621,7 +621,7 @@ const ReviewView: React.FC<{
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ rows: parsed.map((p) => ({ strainName: p.s, tier: p.t })) }),
+        body: JSON.stringify({ profileKey, rows: parsed.map((p) => ({ strainName: p.s, tier: p.t })) }),
       })
         .then((r) => r.json())
         .then((j) => {
@@ -1013,7 +1013,7 @@ const ReviewView: React.FC<{
         }
       } else {
         toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
-          description: "See per-row errors below. Fix and re-save (succeeded rows skip-restock automatically).",
+          description: "Rows marked saved are already in stock. Remove them before saving again, or their stock is added twice.",
         })
       }
     } catch (e: any) {

@@ -3,29 +3,38 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 import {
   CATEGORY_PROFILES_KEY,
+  findProfileRoot,
   loadProfiles,
   normalizeProfileList,
+  resolveProfileCategories,
+  type Category,
 } from "../../../../lib/profile-store"
 
 /**
  * GET  /admin/mbs/category-profiles
- *   → { profiles, source, categories }
+ *   → { profiles, source, categories, unlinked }
  *   `source` is "built-in" until the Categories tab is first saved.
- *   `categories` is the Medusa tree (id, name, handle, parent) for the
- *   parent / sub-category-root pickers.
+ *   Each profile comes back linked to its Medusa categories by id, with
+ *   its live sub-categories listed and live names filled in, so the next
+ *   save stores ids and a rename in Medusa can't break it.
+ *   `categories` is the Medusa tree; `unlinked` are top-level categories
+ *   no profile receives into ("Not set up" in the tab).
  *
  * POST /admin/mbs/category-profiles  body { profiles }
  *   Validates every profile (lib/profile-store normalizeProfile) and
  *   writes the whole list to the `category_profiles` setting. Rejects
  *   the save with the reasons when anything is invalid, so receiving
- *   never reads a half-valid profile. Unknown Medusa categories are
- *   returned as warnings, not errors: the operator may create the
- *   category after setting up its profile.
+ *   never reads a half-valid profile. A profile whose Medusa category
+ *   is missing comes back as a warning, not an error.
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const { profiles, source } = await loadProfiles(req.scope)
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+  const linked = await Promise.all(profiles.map((p) => resolveProfileCategories(query, p)))
   const categories = await listCategories(req)
-  res.json({ profiles, source, categories })
+  const covered = new Set(linked.map((r) => r.parent?.id).filter(Boolean))
+  const unlinked = categories.filter((c) => !c.parent_category_id && !covered.has(c.id))
+  res.json({ profiles: linked.map((r) => r.linked), source, categories, unlinked })
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
@@ -41,10 +50,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const categories = await listCategories(req)
   const warnings: string[] = []
   for (const p of profiles) {
-    const parent = categories.find((c) => c.name === p.parentCategoryName && !c.parent_category_id)
-    if (!parent) warnings.push(`${p.displayName}: no top-level Medusa category named "${p.parentCategoryName}" yet.`)
-    if (p.subcategoryParentHandle && !categories.some((c) => c.handle === p.subcategoryParentHandle)) {
-      warnings.push(`${p.displayName}: no Medusa category with handle "${p.subcategoryParentHandle}" yet.`)
+    if (!findProfileRoot(categories, p).enumRoot) {
+      warnings.push(`${p.displayName}: its Medusa category doesn't exist (deleted?). Receiving it will fail until you pick one.`)
     }
   }
 
@@ -63,7 +70,7 @@ async function listCategories(req: MedusaRequest) {
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
   const { data } = await query.graph({
     entity: "product_category",
-    fields: ["id", "name", "handle", "parent_category_id"],
+    fields: ["id", "name", "handle", "parent_category_id", "is_active"],
   })
-  return (data ?? []) as Array<{ id: string; name: string; handle: string; parent_category_id: string | null }>
+  return (data ?? []) as Category[]
 }
