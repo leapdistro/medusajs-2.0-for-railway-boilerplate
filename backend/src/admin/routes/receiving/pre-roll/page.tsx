@@ -107,6 +107,7 @@ const PreRollReceivingPage = () => {
   const [saving, setSaving] = useState(false)
   /* "Strain: reason" for each row the last Save couldn't save. */
   const [saveErrors, setSaveErrors] = useState<string[]>([])
+  const [nothingSaved, setNothingSaved] = useState(false)
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null)
   const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
   const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
@@ -351,10 +352,13 @@ const PreRollReceivingPage = () => {
       if (!res.ok && !json?.summary) {
         throw new Error(json?.error ?? `Save failed (${res.status})`)
       }
-      const s = json.summary as { created: number; restocked: number; failed: number }
+      const s = json.summary as { created: number; restocked: number; failed: number; alreadySaved?: number }
+      const skipped = s.alreadySaved ? ` · ${s.alreadySaved} already saved, skipped` : ""
       if (s.failed === 0) {
+        setSaveErrors([])
+        setNothingSaved(false)
         toast.success("Pre-Roll receiving saved", {
-          description: `${s.created} created · ${s.restocked} restocked`,
+          description: `${s.created} created · ${s.restocked} restocked${skipped}`,
         })
         /* Draft was auto-deleted by the save route when draftId was set. */
         setDraftId(null)
@@ -363,9 +367,16 @@ const PreRollReceivingPage = () => {
           setSavedSummary({ created: s.created, restocked: s.restocked })
         }
       } else {
-        toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
-          description: "Saved rows are already in stock. Remove them before saving again, or their stock is added twice.",
-        })
+        setNothingSaved(!!json.nothingSaved)
+        if (json.nothingSaved) {
+          toast.warning(`Nothing saved: ${s.failed} row${s.failed === 1 ? "" : "s"} need fixing`, {
+            description: "No stock or products were changed. Fix the listed rows and save again.",
+          })
+        } else {
+          toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked + (s.alreadySaved ?? 0)} rows failed`, {
+            description: "The other rows are saved. Fix the failed rows and save again: rows already saved are skipped.",
+          })
+        }
         /* Surface per-row errors inline by stamping the row with the error
          * string (lightweight — no need for the full status-pill machinery
          * of the flower review view in v1). */
@@ -470,7 +481,9 @@ const PreRollReceivingPage = () => {
       {saveErrors.length > 0 && (
         <div style={{ border: "1.5px solid #B91C1C", background: "#fff", padding: 14 }}>
           <Text size="small" weight="plus" style={{ color: "#B91C1C" }}>
-            {saveErrors.length} row{saveErrors.length === 1 ? "" : "s"} not saved. The other rows ARE saved and in stock: delete them from the form before saving again, or their stock is added twice.
+            {nothingSaved
+              ? `Nothing saved. Fix ${saveErrors.length === 1 ? "this row" : `these ${saveErrors.length} rows`} and save again.`
+              : `${saveErrors.length} row${saveErrors.length === 1 ? "" : "s"} not saved. The other rows are saved; saving again skips them.`}
           </Text>
           {saveErrors.map((e, i) => (
             <Text key={i} size="small" style={{ color: "#7F1D1D" }}>{e}</Text>

@@ -8,9 +8,12 @@ import {
 } from "../../../../lib/idempotency"
 import {
   buildSaveContext,
+  checkRow,
   computeShipPerLb,
   saveOneRow,
+  type RowCheck,
   type SaveRow,
+  type SaveRowResult,
   type ShippingRates,
   type TierKey,
   type TierPriceMap,
@@ -35,13 +38,16 @@ import { RECEIVING_DRAFTS_MODULE } from "../../../../modules/receiving-drafts"
  * Behavior:
  *   1. Resolve tier prices from mbs-settings (`flower_tier_prices`)
  *   2. Build save context (categories, sales channel, location)
- *   3. Loop rows; each is best-effort — failures don't abort the rest
- *   4. Write a receiving_history record summarizing what happened
- *   5. Delete the draft (if any) on full or partial success
- *   6. Respond with per-row outcomes for the admin to render
+ *   3. Build the save context
+ *   4. Skip rows this invoice + supplier already saved ("already-saved")
+ *   5. Check every other row; if any fails, save NOTHING and return
+ *      the failing rows (the rest come back "not-saved")
+ *   6. Save rows; a row failing mid-write doesn't abort the rest
+ *   7. Merge into the invoice's receiving_history record
+ *   8. Delete the draft (if any) once every row is saved
  *
  * Response:
- *   200 { ok: true, summary: { created, restocked, failed }, results: [...], historyId, errors: [...] }
+ *   200 { ok, nothingSaved?, summary: { created, restocked, failed, alreadySaved }, results: [...], historyId, historyError?, error? }
  *   400 on body validation issues
  *   500 on context-build failure (categories missing, etc.)
  */
@@ -67,6 +73,20 @@ type Body = {
 }
 
 const IDEMPOTENCY_NS = "receiving-save"
+
+const normName = (s: unknown) => String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase()
+/* One line per strain per sub-category: the same strain can be
+ * received into two tiers on one invoice. */
+const lineKey = (strainName: unknown, tier: unknown) => `${normName(strainName)}|${String(tier ?? "")}`
+
+/* Runs fn over items, 6 at a time. */
+async function inPool<T>(items: T[], fn: (item: T) => Promise<void>, size = 6) {
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < items.length) await fn(items[cursor++])
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker))
+}
 
 /* Replace res.json/status with a recording wrapper so we can cache
  * whatever the handler emitted under the idempotency key. The cached
@@ -187,108 +207,187 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  /* 3. Process rows with bounded concurrency. Each row creates a
-   *    separate strain (different inventory item, different product
-   *    handle), so they're independent — no race risk inside one
-   *    receiving. Serial was burning ~8s/row × 29 = 4 min, which
-   *    blew past the browser's HTTP timeout (60-120s) and silently
-   *    orphaned products. CONCURRENCY=6 brings 29 rows to ~30-40s. */
-  const CONCURRENCY = 6
-  const results: Awaited<ReturnType<typeof saveOneRow>>[] = new Array(body.rows.length)
-  let cursor = 0
-  const worker = async () => {
-    while (cursor < body.rows!.length) {
-      const myIdx = cursor++
-      const row = body.rows![myIdx]
-      const result = await saveOneRow(req.scope, row, ctx)
-      results[myIdx] = result
-      if (result.action === "failed") {
-        logger.warn(`[receiving:save] ${row.strainName}: ${result.error}`)
+  const rows = body.rows
+  const history: any = req.scope.resolve(RECEIVING_HISTORY_MODULE)
+
+  /* 4. Rows this invoice already saved. Saving again after a partial
+   *    failure re-sends every row; without this the rows that worked
+   *    the first time would be restocked a second time. A row counts as
+   *    saved when this invoice's record (same number AND supplier, since
+   *    two suppliers can both use "1001") has it as created or
+   *    restocked. If the lookup itself fails, nothing is saved: guessing
+   *    "not saved" is what doubles stock. */
+  let existingRecord: any = null
+  try {
+    const sameNumber = await history.listReceivingRecords(
+      { invoice_number: [body.invoiceNumber] },
+      { take: 50, order: { created_at: "DESC" } },
+    )
+    const supplierKey = normName(body.supplier?.name)
+    existingRecord = (sameNumber as any[]).find((r) => normName(r.supplier?.name) === supplierKey) ?? null
+  } catch (e: any) {
+    logger.error(`[receiving:save] history lookup failed: ${e?.message}`)
+    res.status(500).json({ ok: false, error: `Couldn't check what invoice ${body.invoiceNumber} already saved, so nothing was saved: ${e?.message ?? e}` })
+    return
+  }
+  const savedKeys = new Set(
+    ((existingRecord?.line_results ?? []) as any[])
+      .filter((l) => l.action === "created" || l.action === "restocked")
+      .map((l) => lineKey(l.strainName, l.tier)),
+  )
+
+  const results: SaveRowResult[] = new Array(rows.length)
+  const toSave: number[] = []
+  rows.forEach((row, i) => {
+    if (savedKeys.has(lineKey(row.strainName, row.tier))) {
+      results[i] = {
+        strainName: row.strainName,
+        tier: row.tier,
+        action: "already-saved",
+        qtyQps: 0,
+        landedPerQp: 0,
+        sellPrices: null,
+      }
+    } else {
+      toSave.push(i)
+    }
+  })
+
+  /* 5. Check every row before writing anything (read-only), so a bad
+   *    row stops the receiving with nothing changed instead of leaving
+   *    half of it in stock. Rows are checked again as they save, in
+   *    case the catalog changed in between. */
+  const checks = new Map<number, RowCheck>()
+  await inPool(toSave, async (i) => {
+    checks.set(i, await checkRow(req.scope, rows[i], ctx))
+  })
+  const errors = new Map<number, string>()
+  for (const i of toSave) {
+    const err = checks.get(i)?.error
+    if (err) errors.set(i, err)
+  }
+  /* Problems only visible across rows: the same strain twice, or two
+   * strains that would get the same SKU or restock the same product.
+   * Saved side by side, the second would fail or its stock would be
+   * lost. */
+  const flagShared = (keyOf: (i: number) => string | null, message: (others: string) => string) => {
+    const groups = new Map<string, number[]>()
+    for (const i of toSave) {
+      const k = keyOf(i)
+      if (k) groups.set(k, [...(groups.get(k) ?? []), i])
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue
+      for (const i of group) {
+        if (errors.has(i)) continue
+        const others = group.filter((j) => j !== i).map((j) => `row ${j + 1}`).join(", ")
+        errors.set(i, message(others))
       }
     }
   }
-  await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, body.rows.length) }, worker),
+  flagShared(
+    (i) => lineKey(rows[i].strainName, rows[i].tier),
+    (others) => `Same strain and sub-category as ${others}. Combine them into one row.`,
   )
+  flagShared(
+    (i) => {
+      const plan = checks.get(i)?.plan
+      return plan?.kind === "create" ? `sku:${plan.baseSku}` : plan?.kind === "restock" ? `product:${plan.productId}` : null
+    },
+    (others) => `Would save to the same product or SKU as ${others}. Rename one of the strains.`,
+  )
+
+  if (errors.size > 0) {
+    for (const i of toSave) {
+      const base = checks.get(i)!.base
+      results[i] = errors.has(i)
+        ? { ...base, action: "failed", error: errors.get(i) }
+        : { ...base, action: "not-saved" }
+    }
+    logger.warn(`[receiving:save] invoice ${body.invoiceNumber}: ${errors.size} row(s) failed the check, nothing saved`)
+    res.json({
+      ok: false,
+      nothingSaved: true,
+      summary: { created: 0, restocked: 0, failed: errors.size, alreadySaved: rows.length - toSave.length },
+      results,
+      historyId: existingRecord?.id,
+      error: errors.size === 1 ? Array.from(errors.values())[0] : undefined,
+    })
+    return
+  }
+
+  /* 6. Save, 6 rows at a time. Each row creates a separate strain
+   *    (different inventory item, different product handle), and the
+   *    cross-row check above guarantees that, so they're independent.
+   *    Serial was burning ~8s/row × 29 = 4 min, which blew past the
+   *    browser's HTTP timeout (60-120s) and silently orphaned
+   *    products. 6 at a time brings 29 rows to ~30-40s. */
+  await inPool(toSave, async (i) => {
+    const result = await saveOneRow(req.scope, rows[i], ctx)
+    results[i] = result
+    if (result.action === "failed") {
+      logger.warn(`[receiving:save] ${rows[i].strainName}: ${result.error}`)
+    }
+  })
 
   const summary = {
     created: results.filter((r) => r.action === "created").length,
     restocked: results.filter((r) => r.action === "restocked").length,
     failed: results.filter((r) => r.action === "failed").length,
+    alreadySaved: rows.length - toSave.length,
   }
 
-  /* 4. Audit trail. Always write — even if everything failed,
-   *    operators want to see what was attempted.
-   *
-   *    Idempotent by invoice_number: each invoice should have ONE
-   *    receiving_record. On retry (same invoice number), we update
-   *    the existing row's line_results instead of inserting a new
-   *    one. Latest-wins is correct — earlier attempts are noise.
-   *    Audit before this change shipped: 8 rows for one invoice. */
-  const history: any = req.scope.resolve(RECEIVING_HISTORY_MODULE)
-  let historyId: string | undefined
+  /* 7. Audit trail: one record per invoice + supplier. Saving again
+   *    merges into it, by strain + sub-category: this attempt's rows
+   *    win, earlier rows not in it are kept, and skipped rows keep
+   *    their earlier entry. */
+  let historyId: string | undefined = existingRecord?.id
   let historyError: string | undefined
-  try {
-    const totalQps = results.reduce((s, r) => s + (r.qtyQps || 0), 0)
-    const existing = body.invoiceNumber
-      ? await history.listReceivingRecords({ invoice_number: [body.invoiceNumber] }, { take: 1 }).catch(() => [])
-      : []
+  const attempted = toSave.map((i) => results[i])
+  if (attempted.length > 0) {
+    try {
+      const byLine = new Map<string, any>()
+      for (const r of (existingRecord?.line_results ?? []) as any[]) byLine.set(lineKey(r.strainName, r.tier), r)
+      for (const r of attempted) byLine.set(lineKey(r.strainName, r.tier), r)
+      const lineResults = Array.from(byLine.values())
 
-    /* Merge line_results by strain name when updating an existing
-     * record — latest attempt per strain wins, but prior successes
-     * for strains NOT in this batch are preserved. Stops a 2-strain
-     * retry of a 30-strain invoice from wiping the 28 prior successes
-     * out of the audit trail.
-     *
-     * Reasonable invariant: each invoice has one row per strain.
-     * Duplicates within an invoice are a data-entry mistake; we keep
-     * the latest version regardless. */
-    let mergedLineResults = results
-    let mergedTotalQps = totalQps
-    if (existing?.length > 0) {
-      const prior = (existing[0].line_results ?? []) as Array<{ strainName: string;[k: string]: any }>
-      const byStrain = new Map<string, any>()
-      for (const r of prior) byStrain.set(String(r.strainName ?? ""), r)
-      for (const r of results) byStrain.set(String(r.strainName ?? ""), r)
-      mergedLineResults = Array.from(byStrain.values()) as typeof results
-      mergedTotalQps = mergedLineResults.reduce((s, r: any) => s + (r.qtyQps || 0), 0)
+      const recordPayload = {
+        invoice_number: body.invoiceNumber,
+        invoice_date: body.invoiceDate,
+        supplier: body.supplier ?? {},
+        shipping_total: String((body.shippingTotal ?? 0).toFixed(2)),
+        invoice_total: String((body.total ?? 0).toFixed(2)),
+        total_qps: lineResults.reduce((s, r: any) => s + (r.qtyQps || 0), 0),
+        line_results: lineResults,
+        notes: null,
+      }
+      if (existingRecord) {
+        logger.info(`[receiving:save] updating EXISTING history record ${existingRecord.id} (${lineResults.length} line_results, ${attempted.length} from this save)…`)
+        await history.updateReceivingRecords([{ id: existingRecord.id, ...recordPayload }])
+        logger.info(`[receiving:save] ✓ history record ${historyId} merged`)
+      } else {
+        logger.info(`[receiving:save] writing NEW history record (${lineResults.length} line_results)…`)
+        const [record] = await history.createReceivingRecords([recordPayload])
+        historyId = record.id
+        logger.info(`[receiving:save] ✓ history record ${historyId}`)
+      }
+    } catch (e: any) {
+      /* Surface FULL error including stack to terminal AND propagate to
+       * response body so the operator sees it in the toast / browser
+       * console. Silently swallowing here is what hid the bug for hours. */
+      historyError = e?.message ?? String(e)
+      logger.error(`[receiving:save] ✗ HISTORY WRITE FAILED: ${historyError}`)
+      if (e?.stack) logger.error(e.stack)
     }
-
-    const recordPayload = {
-      invoice_number: body.invoiceNumber,
-      invoice_date: body.invoiceDate,
-      supplier: body.supplier ?? {},
-      shipping_total: String((body.shippingTotal ?? 0).toFixed(2)),
-      invoice_total: String((body.total ?? 0).toFixed(2)),
-      total_qps: mergedTotalQps,
-      line_results: mergedLineResults,
-      notes: null,
-    }
-    if (existing?.length > 0) {
-      logger.info(`[receiving:save] updating EXISTING history record ${existing[0].id} (merged ${mergedLineResults.length} line_results — ${results.length} new + prior preserved)…`)
-      await history.updateReceivingRecords([{ id: existing[0].id, ...recordPayload }])
-      historyId = existing[0].id
-      logger.info(`[receiving:save] ✓ history record ${historyId} merged`)
-    } else {
-      logger.info(`[receiving:save] writing NEW history record (${results.length} line_results)…`)
-      const [record] = await history.createReceivingRecords([recordPayload])
-      historyId = record.id
-      logger.info(`[receiving:save] ✓ history record ${historyId}`)
-    }
-  } catch (e: any) {
-    /* Surface FULL error including stack to terminal AND propagate to
-     * response body so the operator sees it in the toast / browser
-     * console. Silently swallowing here is what hid the bug for hours. */
-    historyError = e?.message ?? String(e)
-    logger.error(`[receiving:save] ✗ HISTORY WRITE FAILED: ${historyError}`)
-    if (e?.stack) logger.error(e.stack)
   }
 
-  /* 4b. Emit receiving.saved on full success so the owner-stores
-   *     price subscriber can refresh prices for the touched profile.
-   *     Receiving updates inventory_item.metadata.landed_per_qp, which
-   *     is the cost basis for Owner Stores PriceList rows. */
-  if (summary.failed === 0 && historyId) {
+  /* 7b. Emit receiving.saved whenever a row was written, so the
+   *     Owner Stores and customer-group price subscribers cover the
+   *     rows that saved even when another row failed. Receiving updates
+   *     inventory_item.metadata.landed_per_qp, which is the cost basis
+   *     for Owner Stores PriceList rows, and new strains need their
+   *     group prices. */
+  if (summary.created + summary.restocked > 0 && historyId) {
     try {
       const eventBus: any = req.scope.resolve(Modules.EVENT_BUS)
       await eventBus.emit({
@@ -304,8 +403,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   }
 
-  /* 5. Discard the draft if all rows succeeded. Partial success keeps
-   *    the draft so the operator can fix + retry. */
+  /* 8. Discard the draft if every row is now saved. Otherwise keep it
+   *    so the operator can fix + retry (saved rows are skipped). */
   if (body.draftId && summary.failed === 0) {
     try {
       const drafts: any = req.scope.resolve(RECEIVING_DRAFTS_MODULE)

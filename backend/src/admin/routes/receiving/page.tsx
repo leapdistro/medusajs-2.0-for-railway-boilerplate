@@ -208,7 +208,7 @@ type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: number }>
  * renders, plus an optional error string. */
 type SaveRowResult = {
   strainName: string
-  action: "created" | "restocked" | "failed"
+  action: "created" | "restocked" | "failed" | "already-saved" | "not-saved"
   productId?: string
   productHandle?: string
   qtyQps: number
@@ -998,10 +998,15 @@ const ReviewView: React.FC<{
         throw new Error(json?.error ?? `Save failed (${res.status})`)
       }
       setSaveResults(json.results ?? [])
-      const s = json.summary as { created: number; restocked: number; failed: number }
-      if (s.failed === 0) {
+      const s = json.summary as { created: number; restocked: number; failed: number; alreadySaved?: number }
+      const skipped = s.alreadySaved ? ` · ${s.alreadySaved} already saved, skipped` : ""
+      if (json.nothingSaved) {
+        toast.warning(`Nothing saved: ${s.failed} row${s.failed === 1 ? "" : "s"} need fixing`, {
+          description: "No stock or products were changed. Fix the rows marked failed and save again.",
+        })
+      } else if (s.failed === 0) {
         toast.success("Receiving saved", {
-          description: `${s.created} created · ${s.restocked} restocked`,
+          description: `${s.created} created · ${s.restocked} restocked${skipped}`,
         })
         /* Clear the draft id since the draft was deleted server-side. */
         setDraftId(null)
@@ -1012,8 +1017,8 @@ const ReviewView: React.FC<{
           setSavedSummary({ created: s.created, restocked: s.restocked })
         }
       } else {
-        toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked} rows failed`, {
-          description: "Rows marked saved are already in stock. Remove them before saving again, or their stock is added twice.",
+        toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked + (s.alreadySaved ?? 0)} rows failed`, {
+          description: "The other rows are saved. Fix the failed rows and save again: rows already saved are skipped.",
         })
       }
     } catch (e: any) {
@@ -1585,6 +1590,15 @@ const SaveStatusPill: React.FC<{ result: SaveRowResult }> = ({ result }) => {
           </div>
         )}
       </div>
+    )
+  }
+  if (result.action === "not-saved" || result.action === "already-saved") {
+    const notSaved = result.action === "not-saved"
+    return (
+      <span title={notSaved ? "Nothing was saved because another row failed the check." : "Saved earlier on this invoice. Skipped so its stock isn't added twice."}
+        style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", border: "1px solid #4A4A45", color: "#4A4A45", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        {notSaved ? "not saved yet" : "✓ already saved"}
+      </span>
     )
   }
   const label = result.action === "created" ? "✓ created" : "✓ restocked"

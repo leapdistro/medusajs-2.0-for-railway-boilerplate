@@ -31,9 +31,11 @@ import { rateForProfile, type ShippingRates } from "./shipping-rates"
  * - **Identity rule** (spec §3.7): `(strainName + tier)` → product.
  *   Handle = `<tier>-<strain-slug>` so the same strain in two tiers
  *   produces two distinct products.
- * - **Best-effort, per-row.** A single row's failure doesn't abort
- *   the whole receiving — error captured + returned, other rows
- *   continue.
+ * - **Checked up front, then saved per row.** checkRow() runs for every
+ *   row before anything is written, so a bad row stops the whole
+ *   receiving. A row that still fails mid-write (network, Medusa error)
+ *   doesn't abort the rest; saving again skips rows already saved on
+ *   the same invoice (see the save route).
  */
 
 /* ---- Public types — match what the admin page sends ---- */
@@ -99,7 +101,10 @@ export type SaveRowResult = {
    *  "30 ct Box" / "15 ct Box" for pre-rolls. Used by QBO push for
    *  per-pool-unit phrasing on receiving Bill line descriptions. */
   poolUnitLabel?: string
-  action: "created" | "restocked" | "failed"
+  /** "already-saved": skipped, this invoice already saved this row.
+   *  "not-saved": the up-front check failed on another row, so nothing
+   *  was written. Neither is stored in receiving history. */
+  action: "created" | "restocked" | "failed" | "already-saved" | "not-saved"
   productId?: string
   productHandle?: string
   inventoryItemId?: string
@@ -257,13 +262,45 @@ export async function buildSaveContext(
   }
 }
 
-/* ---- Per-row save: create-or-restock ---- */
+/* ---- Per-row check: everything that can fail before a write ---- */
 
-export async function saveOneRow(
+/** What saveOneRow will do for a row that passed checkRow. */
+export type RowPlan =
+  | {
+      kind: "restock"
+      productId: string
+      productHandle: string
+      inventoryItemId: string
+      existingAttrsId: string | undefined
+      baseSku: string
+    }
+  | {
+      kind: "create"
+      createHandle: string
+      variantDefs: ReturnType<typeof getVariantsForRow>
+      proposedSkus: string[]
+      baseSku: string
+    }
+
+export type RowCheck = {
+  /** The row's result fields, with action "failed" until it is saved. */
+  base: SaveRowResult
+  plan?: RowPlan
+  error?: string
+}
+
+/**
+ * Read-only. Runs every check saveOneRow used to hit part-way through
+ * (prices, COA, sub-category, broken inventory link, SKU collision) and
+ * works out whether the row restocks or creates. The save route runs it
+ * for every row before writing anything, so a bad row stops the whole
+ * receiving instead of leaving the good rows saved and the rest not.
+ */
+export async function checkRow(
   container: any,
   row: SaveRow,
   ctx: SaveContext,
-): Promise<SaveRowResult> {
+): Promise<RowCheck> {
   const strainSlug = slugify(row.strainName)
   /* Identity = (strain + tier). Same strain at different tiers
    * (Gelato classic vs Gelato exotic) IS a real case for the
@@ -384,7 +421,7 @@ export async function saveOneRow(
     ? [ctx.profile.parentCategoryName, ...branchLevel, subcategoryMedusaName]
     : [ctx.profile.parentCategoryName, ...branchLevel]
 
-  const baseResult: SaveRowResult = {
+  const base: SaveRowResult = {
     strainName: row.strainName,
     tier: row.tier,
     tierLabel,
@@ -399,21 +436,18 @@ export async function saveOneRow(
     categoryPath,
   }
 
+  if (!row.strainName?.trim()) {
+    return { base, error: "Strain name is required." }
+  }
   if (priceError) {
-    return { ...baseResult, error: priceError }
+    return { base, error: priceError }
   }
   if (!row.coaUrl) {
-    return { ...baseResult, error: "COA URL is required to save (compliance)." }
+    return { base, error: "COA URL is required to save (compliance)." }
   }
-  /* Build a per-variant price map for the create path that supports
-   * non-flower variant keys ("30pk" for pre-rolls). */
-  const tp = sellPrices ?? {}
 
   try {
     const query = container.resolve(ContainerRegistrationKeys.QUERY)
-    const link = container.resolve(ContainerRegistrationKeys.LINK)
-    const inventoryService: any = container.resolve(Modules.INVENTORY)
-    const mbsAttrs: any = container.resolve(MBS_ATTRIBUTES_MODULE)
 
     /* 1. Find existing product by handle (= identity rule).
      *    Identity is now (strain + tier) — handle = `${tier}-${strain}`.
@@ -424,8 +458,14 @@ export async function saveOneRow(
     const tierCategoryId = ctx.subcategoryIds[row.tier]
     if (!tierCategoryId) {
       return {
-        ...baseResult,
+        base,
         error: `Sub-category "${row.tier}" doesn't exist under ${ctx.profile.parentCategoryName} in Medusa (renamed or deleted?). Fix the category, or the receiving profile, and save again.`,
+      }
+    }
+    if (!ctx.stockLocationId) {
+      return {
+        base,
+        error: `Default stock location not resolved. Run \`pnpm seed:us\` on the backend and retry.`,
       }
     }
     const productFields = [
@@ -461,8 +501,6 @@ export async function saveOneRow(
     const createHandle = (found as any[]).some((p) => p.handle === handle) ? scopedHandle : handle
 
     if (existing.length > 0) {
-      /* ---------- RESTOCK PATH ---------- */
-      const productId = existing[0].id
       const variants = (existing[0] as any).variants ?? []
       const firstInventoryId = variants[0]?.inventory_items?.[0]?.inventory?.id
       if (!firstInventoryId) {
@@ -472,16 +510,109 @@ export async function saveOneRow(
          * admin and re-receiving, or (b) manually relinking in Medusa
          * admin → Variant → Inventory. */
         return {
-          ...baseResult,
+          base,
           error: `"${row.strainName}" exists in the catalog but has no inventory item linked. Delete the product (admin → Products → "${row.strainName}" → Delete) and save again. Likely cause: prior receiving for this strain crashed mid-flow and left an orphan.`,
         }
       }
-      if (!ctx.stockLocationId) {
-        return {
-          ...baseResult,
-          error: `Default stock location not resolved. Run \`pnpm seed:us\` on the backend and retry.`,
-        }
+
+      /* Restock keeps the product's EXISTING base SKU (inventory_item.sku).
+       * Recomputing it from the form would bake in whatever strain type
+       * the operator picked this time — Blue Skittles restocked as Hybrid
+       * on 2026-09-28 got "…-hyb-…" while the product is "…-ind-…", the
+       * QBO Bill created a second item under the wrong SKU, and the next
+       * Indica restock's Bill failed with Duplicate Name. Falls back to
+       * the computed SKU only for pre-pattern legacy slugs ("guava"),
+       * which never keyed a QBO item. */
+      const skuScope = {
+        category: ctx.profile.parentCategoryName,
+        branch: ctx.profile.qboCategoryBranch,
+        subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
       }
+      const existingBaseSku = String(variants[0]?.inventory_items?.[0]?.inventory?.sku ?? "")
+      const restockBaseSku = existingBaseSku.startsWith(`${baseSku(skuScope)}-`)
+        ? existingBaseSku
+        : baseSku({ ...skuScope, type: row.strainType, strain: row.strainName })
+
+      return {
+        base,
+        plan: {
+          kind: "restock",
+          productId: existing[0].id,
+          productHandle: existing[0].handle ?? handle,
+          inventoryItemId: firstInventoryId,
+          existingAttrsId: (existing[0] as any).product_attributes?.id,
+          baseSku: restockBaseSku,
+        },
+      }
+    }
+
+    /* SKU collision check — generated SKUs must be unique across products.
+     * Same strain at the same subcategory is a restock (handled above), so any
+     * variant we find with the same proposed SKU belonging to a DIFFERENT
+     * product is a real collision (e.g. "Gold Rose Runtz" abbrevs the same
+     * as "Gold Rose Runner"). Fail this row with a descriptive message;
+     * the operator renames the strain and re-saves. */
+    /* Per-subcategory variant resolution — Pre-Rolls THC-A uses
+     * 30 ct boxes while Hashholes uses 15 ct boxes. Flower's tiers
+     * all share the QP/Half/LB variants via profile.variants fallback. */
+    const variantDefs = getVariantsForRow(ctx.profile, row.tier)
+    const skuParts = {
+      category: ctx.profile.parentCategoryName,
+      /* Injects "cbd"/"cbg" between cat-3 and subcat-3 for CBD/CBG
+       * profiles; undefined for THC-A so existing SKUs stay identical. */
+      branch: ctx.profile.qboCategoryBranch,
+      subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
+      type: row.strainType,
+      strain: row.strainName,
+    }
+    const proposedSkus = variantDefs.map((v) => generateSku({ ...skuParts, size: v.sizeKey }))
+    const productService: any = container.resolve(Modules.PRODUCT)
+    const conflicts = await productService.listProductVariants(
+      { sku: proposedSkus },
+      { take: 10, relations: ["product"] },
+    )
+    const realCollisions = (conflicts ?? []).filter((v: any) => v?.product?.handle !== createHandle)
+    if (realCollisions.length > 0) {
+      const desc = realCollisions
+        .map((v: any) => `${v.sku} → ${v.product?.title ?? v.product?.handle ?? "unknown product"}`)
+        .join("; ")
+      return { base, error: `SKU collision: ${desc}. Rename strain to avoid.` }
+    }
+
+    return {
+      base,
+      plan: { kind: "create", createHandle, variantDefs, proposedSkus, baseSku: baseSku(skuParts) },
+    }
+  } catch (e: any) {
+    return { base, error: e?.message ?? String(e) }
+  }
+}
+
+/* ---- Per-row save: create-or-restock ---- */
+
+export async function saveOneRow(
+  container: any,
+  row: SaveRow,
+  ctx: SaveContext,
+): Promise<SaveRowResult> {
+  /* Checked again here even after the route's up-front pass: the
+   * catalog can change between the two (another save, an admin edit). */
+  const { base: baseResult, plan, error } = await checkRow(container, row, ctx)
+  if (!plan) return { ...baseResult, error }
+  const totalQps = baseResult.qtyQps
+  const landedPerQp = baseResult.landedPerQp
+  /* Build a per-variant price map for the create path that supports
+   * non-flower variant keys ("30pk" for pre-rolls). */
+  const tp = baseResult.sellPrices ?? {}
+
+  try {
+    const link = container.resolve(ContainerRegistrationKeys.LINK)
+    const inventoryService: any = container.resolve(Modules.INVENTORY)
+    const mbsAttrs: any = container.resolve(MBS_ATTRIBUTES_MODULE)
+
+    if (plan.kind === "restock") {
+      /* ---------- RESTOCK PATH ---------- */
+      const { productId, inventoryItemId: firstInventoryId } = plan
 
       /* Increment the pool by adding to the existing level. We list
        * the current level for our location, then update its
@@ -518,7 +649,7 @@ export async function saveOneRow(
       }
 
       /* Latest-COA-wins + refresh other attributes from this receiving. */
-      const existingAttrsId = (existing[0] as any).product_attributes?.id
+      const existingAttrsId = plan.existingAttrsId
       const attrPayload = {
         strain_type: row.strainType,
         best_for: row.bestFor,
@@ -550,68 +681,18 @@ export async function saveOneRow(
         }])
       } catch { /* metadata write isn't critical for restock */ }
 
-      /* Restock keeps the product's EXISTING base SKU (inventory_item.sku).
-       * Recomputing it from the form would bake in whatever strain type
-       * the operator picked this time — Blue Skittles restocked as Hybrid
-       * on 2026-09-28 got "…-hyb-…" while the product is "…-ind-…", the
-       * QBO Bill created a second item under the wrong SKU, and the next
-       * Indica restock's Bill failed with Duplicate Name. Falls back to
-       * the computed SKU only for pre-pattern legacy slugs ("guava"),
-       * which never keyed a QBO item. */
-      const skuScope = {
-        category: ctx.profile.parentCategoryName,
-        branch: ctx.profile.qboCategoryBranch,
-        subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
-      }
-      const existingBaseSku = String(variants[0]?.inventory_items?.[0]?.inventory?.sku ?? "")
-      const restockBaseSku = existingBaseSku.startsWith(`${baseSku(skuScope)}-`)
-        ? existingBaseSku
-        : baseSku({ ...skuScope, type: row.strainType, strain: row.strainName })
-
       return {
         ...baseResult,
         action: "restocked",
         productId,
-        productHandle: existing[0].handle ?? handle,
+        productHandle: plan.productHandle,
         inventoryItemId: firstInventoryId,
-        baseSku: restockBaseSku,
+        baseSku: plan.baseSku,
       }
     }
 
     /* ---------- CREATE PATH ---------- */
-
-    /* SKU collision check — generated SKUs must be unique across products.
-     * Same strain at the same subcategory is a restock (handled above), so any
-     * variant we find with the same proposed SKU belonging to a DIFFERENT
-     * product is a real collision (e.g. "Gold Rose Runtz" abbrevs the same
-     * as "Gold Rose Runner"). Fail this row with a descriptive message;
-     * the operator renames the strain and re-saves. */
-    /* Per-subcategory variant resolution — Pre-Rolls THC-A uses
-     * 30 ct boxes while Hashholes uses 15 ct boxes. Flower's tiers
-     * all share the QP/Half/LB variants via profile.variants fallback. */
-    const variantDefs = getVariantsForRow(ctx.profile, row.tier)
-    const skuParts = {
-      category: ctx.profile.parentCategoryName,
-      /* Injects "cbd"/"cbg" between cat-3 and subcat-3 for CBD/CBG
-       * profiles; undefined for THC-A so existing SKUs stay identical. */
-      branch: ctx.profile.qboCategoryBranch,
-      subcategory: getSubcategory(ctx.profile, row.tier).medusaName,
-      type: row.strainType,
-      strain: row.strainName,
-    }
-    const proposedSkus = variantDefs.map((v) => generateSku({ ...skuParts, size: v.sizeKey }))
-    const productService: any = container.resolve(Modules.PRODUCT)
-    const conflicts = await productService.listProductVariants(
-      { sku: proposedSkus },
-      { take: 10, relations: ["product"] },
-    )
-    const realCollisions = (conflicts ?? []).filter((v: any) => v?.product?.handle !== createHandle)
-    if (realCollisions.length > 0) {
-      const desc = realCollisions
-        .map((v: any) => `${v.sku} → ${v.product?.title ?? v.product?.handle ?? "unknown product"}`)
-        .join("; ")
-      return { ...baseResult, error: `SKU collision: ${desc}. Rename strain to avoid.` }
-    }
+    const { createHandle, variantDefs, proposedSkus } = plan
 
     /* 1. Create the shared inventory item first so we can pass its
      *    id into all 3 variants via inventory_items[] in one workflow
@@ -622,9 +703,8 @@ export async function saveOneRow(
      *    cat-subcat-type-strain pattern (e.g. `flo-cla-hyb-can-run`).
      *    Mirrors QBO Item SKU; collision-free across categories AND
      *    tiers AND strain types. */
-    const itemBaseSku = baseSku(skuParts)
     const created = await inventoryService.createInventoryItems({
-      sku: itemBaseSku,
+      sku: plan.baseSku,
       requires_shipping: true,
       title: row.strainName,
       metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },
@@ -639,12 +719,6 @@ export async function saveOneRow(
       return {
         ...baseResult,
         error: `"${row.strainName}" — createInventoryItems returned no id (response shape: ${JSON.stringify(created)?.slice(0, 200)}). This is usually a transient Medusa race; re-save the row.`,
-      }
-    }
-    if (!ctx.stockLocationId) {
-      return {
-        ...baseResult,
-        error: `Default stock location not resolved for "${row.strainName}". Run \`pnpm seed:us\` on the backend and retry.`,
       }
     }
 
@@ -791,7 +865,7 @@ export async function saveOneRow(
       productId,
       productHandle: createHandle,
       inventoryItemId,
-      baseSku: baseSku(skuParts),
+      baseSku: plan.baseSku,
     }
   } catch (e: any) {
     return { ...baseResult, error: e?.message ?? String(e) }
