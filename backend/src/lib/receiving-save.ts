@@ -648,21 +648,25 @@ export async function saveOneRow(
         }
       }
 
-      /* Latest-COA-wins + refresh other attributes from this receiving. */
+      /* Latest-COA-wins + refresh other attributes from this receiving.
+       * A field the page doesn't send (undefined) keeps its stored
+       * value: the Flower page sends only its own cannabinoid's %, and
+       * writing null for the rest wiped D9 % on every CBD restock. A
+       * field sent as null or a value is written. */
       const existingAttrsId = plan.existingAttrsId
-      const attrPayload = {
+      const attrPayload = Object.fromEntries(Object.entries({
         strain_type: row.strainType,
         best_for: row.bestFor,
         effects: row.effects,
         thca_percent: row.thcaPercent,
-        cbd_percent: row.cbdPercent ?? null,
-        cbg_percent: row.cbgPercent ?? null,
-        thcp_percent: row.thcpPercent ?? null,
-        d9_percent: row.d9Percent ?? null,
+        cbd_percent: row.cbdPercent,
+        cbg_percent: row.cbgPercent,
+        thcp_percent: row.thcpPercent,
+        d9_percent: row.d9Percent,
         total_cannabinoids_percent: row.totalCannabinoidsPercent,
         coa_url: row.coaUrl,
-        batch_id: row.batchId ?? null,
-      }
+        batch_id: row.batchId,
+      }).filter(([, v]) => v !== undefined))
       if (existingAttrsId) {
         await mbsAttrs.updateProductAttributes({ id: existingAttrsId, ...attrPayload })
       } else {

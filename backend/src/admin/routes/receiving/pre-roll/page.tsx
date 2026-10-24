@@ -72,6 +72,10 @@ type Row = {
   costPerBox: number
   sellPricePerBox: number
   coa: CoaState
+  /* Pre-rolls are CBD: CBD % is the headline figure, D9 % prints on the
+   * label, THCa % is kept for the Total THC line. */
+  cbdPercent: string
+  d9Percent: string
   thcaPercent: string
   totalCannabinoidsPercent: string
   /* Lab Sample/Test/Batch ID from the COA — populated by the AI
@@ -90,6 +94,8 @@ const blankRow = (defaultSubcategory: string = ""): Row => ({
   costPerBox: 0,
   sellPricePerBox: 0,
   coa: { state: "idle" },
+  cbdPercent: "",
+  d9Percent: "",
   thcaPercent: "",
   totalCannabinoidsPercent: "",
   batchId: "",
@@ -185,6 +191,8 @@ const PreRollReceivingPage = () => {
        * (mbs-settings.pre_roll_tier_prices). Field removed from the
        * row UI; operator can override per-variant in Medusa admin
        * after save if needed. */
+      r.cbdPercent.trim() &&
+      r.d9Percent.trim() &&
       r.coa.state === "ready",
     )
   }, [supplier, invoiceNumber, invoiceDate, rows])
@@ -282,7 +290,12 @@ const PreRollReceivingPage = () => {
     /* Persisted rows may have a stale coa state shape — coerce to idle
      * so the operator re-attaches if needed. COA URLs that were uploaded
      * stay valid since they're persisted in MinIO. */
-    setRows(p.rows.map((r) => ({ ...r, coa: r.coa ?? { state: "idle" } })))
+    setRows(p.rows.map((r) => ({
+      ...r,
+      coa: r.coa ?? { state: "idle" },
+      cbdPercent: r.cbdPercent ?? "",
+      d9Percent: r.d9Percent ?? "",
+    })))
     setDraftId(d.id)
     setLastSavedAt(new Date())
   }
@@ -328,6 +341,8 @@ const PreRollReceivingPage = () => {
           effects: r.effects,
           coaUrl: r.coa.state === "ready" ? r.coa.url : null,
           coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
+          cbdPercent: r.cbdPercent.trim() || null,
+          d9Percent: r.d9Percent.trim() || null,
           thcaPercent: r.thcaPercent.trim() || null,
           totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
           batchId: r.batchId.trim() || null,
@@ -701,6 +716,13 @@ const RowCard: React.FC<{
         {/* Sell Price field removed — pre-roll selling prices come
           * from MBS Settings → Pre-Roll Tier Prices (keyed by
           * subcategory + variant size). */}
+        <Field label="CBD %">
+          <Input value={row.cbdPercent} onChange={(e: any) => onChange({ cbdPercent: e.target.value })} />
+        </Field>
+        <Field label="D9 %">
+          {/* Labs print "ND" when none is detected; type it as-is. */}
+          <Input value={row.d9Percent} placeholder="0.05 or ND" onChange={(e: any) => onChange({ d9Percent: e.target.value })} />
+        </Field>
         <Field label="THCa %">
           <Input value={row.thcaPercent} onChange={(e: any) => onChange({ thcaPercent: e.target.value })} />
         </Field>

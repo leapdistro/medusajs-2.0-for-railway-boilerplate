@@ -76,6 +76,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   res.json({
     ok: true,
     thcaPercent: result.data!.thcaPercent,
+    d9Percent: result.data!.d9Percent ?? null,
     totalCannabinoidsPercent: result.data!.totalCannabinoidsPercent,
     batchId: result.data!.batchId,
     notes: result.data!.notes,

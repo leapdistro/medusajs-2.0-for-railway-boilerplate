@@ -28,12 +28,13 @@ const FLOWER_COL_DEFAULTS = [
   110,  // 5  type
   100,  // 6  best for
   130,  // 7  thca %
-  100,  // 8  cann %
-  130,  // 9  batch id
-  220,  // 10 effects
-  140,  // 11 coa
-  100,  // 12 landed / lb
-  260,  // 13 suggested sell
+  100,  // 8  d9 %
+  100,  // 9  cann %
+  130,  // 10 batch id
+  220,  // 11 effects
+  140,  // 12 coa
+  100,  // 13 landed / lb
+  260,  // 14 suggested sell
 ]
 
 /**
@@ -178,6 +179,8 @@ type ReviewRow = {
    * model uses text() for decimal-friendly storage. Operator can
    * type manually OR auto-extract from the uploaded COA via AI. */
   thcaPercent: string
+  /* Delta-9 THC %, printed on CBD/CBG labels. A number or "ND". */
+  d9Percent: string
   totalCannabinoidsPercent: string
   /* Lab Sample/Test/Batch ID extracted from the COA. Printed on the
    * wholesale label so buyers can verify the COA. Free-form text. */
@@ -278,6 +281,7 @@ function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
       effects: [],
       coa: { state: "idle" },
       thcaPercent: "",
+      d9Percent: "",
       totalCannabinoidsPercent: "",
       batchId: "",
       coaNotes: null,
@@ -301,6 +305,7 @@ const blankReviewRow = (): ReviewRow => ({
   effects: [],
   coa: { state: "idle" },
   thcaPercent: "",
+  d9Percent: "",
   totalCannabinoidsPercent: "",
   batchId: "",
   coaNotes: null,
@@ -687,7 +692,7 @@ const ReviewView: React.FC<{
    * filled (or auto-filled by AI). Drives both the row tint
    * (orange = missing, green = complete) and the Save-button gate.
    *
-   * Required: strainName, qty, tier, type, bestFor, thca %, cann %,
+   * Required: strainName, qty, tier, type, bestFor, thca %, d9 %, cann %,
    * COA file uploaded. Effects are intentionally optional (the brand
    * card shows max 2; zero is allowed at receiving). */
   const isRowComplete = useCallback((r: ReviewRow): boolean => {
@@ -698,6 +703,7 @@ const ReviewView: React.FC<{
       r.strainType &&
       r.bestFor &&
       r.thcaPercent.trim() &&
+      r.d9Percent.trim() &&
       r.totalCannabinoidsPercent.trim() &&
       r.coa.state === "ready"
     )
@@ -755,6 +761,7 @@ const ReviewView: React.FC<{
       effects: [],
       coa: { state: "idle" },
       thcaPercent: "",
+      d9Percent: "",
       totalCannabinoidsPercent: "",
       batchId: "",
       coaNotes: null,
@@ -831,6 +838,7 @@ const ReviewView: React.FC<{
       setRows((cur) => cur.map((r, i) => i === idx ? {
         ...r,
         thcaPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.thcaPercent,
+        d9Percent: json.d9Percent != null ? String(json.d9Percent) : r.d9Percent,
         totalCannabinoidsPercent: json.totalCannabinoidsPercent != null ? String(json.totalCannabinoidsPercent) : r.totalCannabinoidsPercent,
         batchId: json.batchId ? String(json.batchId) : r.batchId,
         coaNotes: json.notes ?? null,
@@ -850,10 +858,10 @@ const ReviewView: React.FC<{
   const parseAllCoas = useCallback(async () => {
     const targets = rows
       .map((r, i) => ({ r, i }))
-      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || !r.totalCannabinoidsPercent.trim()))
+      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || !r.d9Percent.trim() || !r.totalCannabinoidsPercent.trim()))
       .map(({ i }) => i)
     if (targets.length === 0) {
-      toast.info("Nothing to extract", { description: "Every row with a COA already has THCa% and Cann% filled." })
+      toast.info("Nothing to extract", { description: "Every row with a COA already has its percentages filled." })
       return
     }
     const CONCURRENCY = 6
@@ -969,6 +977,7 @@ const ReviewView: React.FC<{
              * name is present; adapter reads with fallback so legacy
              * records keep displaying. */
             [cannabinoidPctFieldName]: pct,
+            d9Percent: r.d9Percent.trim() || null,
             totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
             batchId: r.batchId.trim() || null,
           }
@@ -1312,12 +1321,13 @@ const ReviewView: React.FC<{
               <Th onResize={startColResize(5)}>Type</Th>
               <Th onResize={startColResize(6)}>Best For</Th>
               <Th onResize={startColResize(7)} align="right">{cannabinoidPctLabel}</Th>
-              <Th onResize={startColResize(8)} align="right">Cann %</Th>
-              <Th onResize={startColResize(9)}>Batch ID</Th>
-              <Th onResize={startColResize(10)}>Effects</Th>
-              <Th onResize={startColResize(11)}>COA</Th>
-              <Th onResize={startColResize(12)} align="right">Landed / lb</Th>
-              <Th onResize={startColResize(13)} align="right">Suggested Sell (QP / Half / LB)</Th>
+              <Th onResize={startColResize(8)} align="right">D9 %</Th>
+              <Th onResize={startColResize(9)} align="right">Cann %</Th>
+              <Th onResize={startColResize(10)}>Batch ID</Th>
+              <Th onResize={startColResize(11)}>Effects</Th>
+              <Th onResize={startColResize(12)}>COA</Th>
+              <Th onResize={startColResize(13)} align="right">Landed / lb</Th>
+              <Th onResize={startColResize(14)} align="right">Suggested Sell (QP / Half / LB)</Th>
             </tr>
           </thead>
           <tbody>
@@ -1463,6 +1473,13 @@ const ReviewView: React.FC<{
                         ⚠ AI note
                       </span>
                     )}
+                  </Td>
+                  <Td align="right" style={{ minWidth: 70 }}>
+                    {/* Text, not number: labs print "ND" when none is detected. */}
+                    <Input type="text" placeholder="0.05 or ND"
+                      value={row.d9Percent}
+                      onChange={(e) => updateRow(i, { d9Percent: e.target.value })}
+                      style={{ textAlign: "right" }} />
                   </Td>
                   <Td align="right" style={{ minWidth: 70 }}>
                     <Input type="number" step="0.01" placeholder="—"
@@ -2171,6 +2188,7 @@ const ReceivingPage = () => {
               ...r,
               coa: r.coa ?? { state: "idle" },
               thcaPercent: r.thcaPercent ?? "",
+              d9Percent: r.d9Percent ?? "",
               totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
               batchId: r.batchId ?? "",
               coaNotes: r.coaNotes ?? null,

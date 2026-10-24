@@ -2,8 +2,9 @@ import Anthropic from "@anthropic-ai/sdk"
 
 /**
  * Anthropic-backed extractor for cannabis lab COA PDFs. Pulls out
- * THCa% and Total Cannabinoids% — the two compliance values the
- * receiving page collects per row.
+ * the primary cannabinoid %, Delta-9 THC %, Total Cannabinoids % and
+ * the batch id — the compliance values the receiving page collects
+ * per row.
  *
  * Why Sonnet 4.6: COAs are dense single-page lab reports; layout
  * varies wildly between labs. Sonnet handles the variety. Cost is
@@ -19,6 +20,9 @@ const MODEL = "claude-sonnet-4-6"
 export type ExtractedCoa = {
   /** % weight, e.g. 24.31. null if not found / unreadable. */
   thcaPercent: number | null
+  /** Delta-9 THC % (neutral THC, not THCa), or "ND" when the lab
+   *  reports none detected. Printed on CBD/CBG labels. */
+  d9Percent: number | "ND" | null
   /** Sum of all cannabinoids %, e.g. 28.04. null if not found. */
   totalCannabinoidsPercent: number | null
   /** Lab Sample / Test / Batch identifier. Free-form (labs use varied
@@ -60,6 +64,7 @@ function buildPrompt(primary?: PrimaryCannabinoid): string {
 
 {
   "thcaPercent": number|null,
+  "d9Percent": number|"ND"|null,
   "totalCannabinoidsPercent": number|null,
   "batchId": string|null,
   "notes": string|null
@@ -69,7 +74,8 @@ Rules:
 ${rule1}
 2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the primary cannabinoid value alone. Return as number only.
 3. batchId: the lab's unique identifier for THIS test/sample. Look for labels like "Sample ID", "Sample #", "Sample No.", "Test ID", "Test #", "Batch ID", "Batch #", "Lab ID", "Report ID", "Order #", "Certificate #". Return the identifier exactly as printed, including any prefix/format (e.g. "S-12345", "1A4-N7-K2", "2024-0098-A"). Prefer the most specific test-level ID over a general report ID. Strip surrounding whitespace only. Return as a string.
-4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null. Do NOT guess. Do NOT return 0 or empty string for missing values.
+3b. d9Percent: the % weight of Delta-9 THC, the neutral form. Look for labels like "Δ9-THC", "Delta-9 THC", "D9-THC", "d9-THC", "Δ9 THC". Do NOT return THCa, Total THC, Δ8-THC or THCP. If the lab prints "ND", "Not Detected" or "<LOD" for it, return the string "ND". Otherwise a number only, as printed, e.g. 0.074.
+4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null (except d9Percent, see 3b). Do NOT guess. Do NOT return 0 or empty string for missing values.
 5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", "Both THCa and THCP present, used THCa per rule", or "Two IDs present (Sample + Order), used Sample". null if clean.
 6. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
 }
