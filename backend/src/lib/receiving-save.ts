@@ -442,7 +442,9 @@ export async function checkRow(
   if (priceError) {
     return { base, error: priceError }
   }
-  if (!row.coaUrl) {
+  /* Every built-in category requires one; a category set up without
+   * "COA required" (accessories, say) saves without. */
+  if (ctx.profile.fields.coaRequired && !row.coaUrl) {
     return { base, error: "COA URL is required to save (compliance)." }
   }
 
