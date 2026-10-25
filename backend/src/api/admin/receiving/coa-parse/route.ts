@@ -28,7 +28,7 @@ import { PRIMARY_CANNABINOIDS } from "../../../../lib/receiving-profiles"
 const VALID_PRIMARIES: readonly PrimaryCannabinoid[] = PRIMARY_CANNABINOIDS
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const body = (req.body ?? {}) as { coaUrl?: string; primary?: string }
+  const body = (req.body ?? {}) as { coaUrl?: string; primary?: string; others?: string[] }
   const coaUrl = body.coaUrl?.trim()
   if (!coaUrl) {
     res.status(400).json({ ok: false, error: "coaUrl is required" })
@@ -37,6 +37,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const primary = body.primary && (VALID_PRIMARIES as readonly string[]).includes(body.primary)
     ? (body.primary as PrimaryCannabinoid)
     : undefined
+  /* The category's other cannabinoids ("also record"); D9 is always read. */
+  const others = (Array.isArray(body.others) ? body.others : [])
+    .filter((c) => (VALID_PRIMARIES as readonly string[]).includes(c))
 
   /* Fetch the COA bytes. We trust the URL because it came from our own
    * upload endpoint, but bound the size and timeout to fail fast on
@@ -64,7 +67,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   /* D9 is read on every COA (d9Percent), so a category sold on D9 gets
    * that reading as its main %, and the prompt stays as it is. */
-  const result = await extractCoa(pdfBytes, primary === "D9" ? undefined : primary)
+  const result = await extractCoa(pdfBytes, primary === "D9" ? undefined : primary, others)
   if (!result.ok) {
     res.status(502).json({
       ok: false,
@@ -80,6 +83,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     ok: true,
     thcaPercent: primary === "D9" ? (result.data!.d9Percent ?? null) : result.data!.thcaPercent,
     d9Percent: result.data!.d9Percent ?? null,
+    others: result.data!.others ?? {},
     totalCannabinoidsPercent: result.data!.totalCannabinoidsPercent,
     batchId: result.data!.batchId,
     notes: result.data!.notes,

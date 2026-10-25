@@ -32,6 +32,9 @@ export type ExtractedCoa = {
   batchId: string | null
   /** AI's flag for anything ambiguous (multiple THCa values, decarb only, etc.). */
   notes: string | null
+  /** The other cannabinoids the caller asked for, by name ("THC-A" →
+   *  0.21). Only present when some were asked for. */
+  others?: Record<string, number | null>
 }
 
 export type ExtractCoaResult = {
@@ -50,7 +53,31 @@ export type ExtractCoaResult = {
  *  the historical behavior (THCa-first with THC-P fallback). */
 export type { PrimaryCannabinoid } from "./receiving-profiles"
 
-function buildPrompt(primary?: PrimaryCannabinoid): string {
+/** How to find each cannabinoid when it's asked for next to the main
+ *  one. D9 has its own rule (3b) and is read on every COA. */
+const OTHER_RULES: Record<Exclude<PrimaryCannabinoid, "D9">, string> = {
+  CBD: `"CBD": the % weight of CBD. Prefer "Total CBD" when the COA reports it; otherwise CBD (labels "CBD", "Δ-CBD", "Cannabidiol").`,
+  CBG: `"CBG": the % weight of CBG. Prefer "Total CBG" when the COA reports it; otherwise CBG (labels "CBG", "Cannabigerol").`,
+  "THC-A": `"THC-A": the % weight of THCa, the acid form (labels "THCa", "THC-A", "THCA", "Δ9-THCa"). Not Δ9-THC and not Total THC.`,
+  "THC-P": `"THC-P": the % weight of THCP (labels "THCP", "THC-P", "Δ9-THCP", "Tetrahydrocannabiphorol").`,
+}
+
+/** The other cannabinoids the reader is asked for: known, not the main
+ *  one, not D9 (always read), each once. */
+function otherKeys(primary: PrimaryCannabinoid | undefined, others: readonly string[]): Array<keyof typeof OTHER_RULES> {
+  return [...new Set(others)].filter((c): c is keyof typeof OTHER_RULES => c in OTHER_RULES && c !== primary)
+}
+
+function buildPrompt(primary?: PrimaryCannabinoid, others: readonly string[] = []): string {
+  /* Asked for nothing extra, the prompt is exactly what it was before
+   * other cannabinoids existed. */
+  const keys = otherKeys(primary, others)
+  const othersSchema = keys.length
+    ? `,\n  "others": { ${keys.map((k) => `"${k}": number|null`).join(", ")} }`
+    : ""
+  const othersRule = keys.length
+    ? `\n3c. others: one entry per cannabinoid below, as a number only (no "%"), as printed. If the lab prints "ND", "Not Detected" or "<LOD", or the COA doesn't list it, use null.\n${keys.map((k) => `   - ${OTHER_RULES[k]}`).join("\n")}`
+    : ""
   const rule1 =
     primary === "THC-P"
       ? `1. thcaPercent (holds primary cannabinoid %, misnamed for schema backward-compat): the % weight of THCP (tetrahydrocannabiphorol). Look for labels like "THCP", "THC-P", "Δ9-THCP", "THCPa". Return as a number only — no "%", no quotes. e.g. 3.24. If the COA reports both acid (THCPa) and neutral (THCP) forms, return the RAW acid value.`
@@ -68,14 +95,14 @@ function buildPrompt(primary?: PrimaryCannabinoid): string {
   "d9Percent": number|"ND"|null,
   "totalCannabinoidsPercent": number|null,
   "batchId": string|null,
-  "notes": string|null
+  "notes": string|null${othersSchema}
 }
 
 Rules:
 ${rule1}
 2. totalCannabinoidsPercent: the % weight of Total Cannabinoids. Look for labels like "Total Cannabinoids", "Total Active Cannabinoids", "Σ Cannabinoids". This is the sum of all detected cannabinoids — should be HIGHER than the primary cannabinoid value alone. Return as number only.
 3. batchId: the lab's unique identifier for THIS test/sample. Look for labels like "Sample ID", "Sample #", "Sample No.", "Test ID", "Test #", "Batch ID", "Batch #", "Lab ID", "Report ID", "Order #", "Certificate #". Return the identifier exactly as printed, including any prefix/format (e.g. "S-12345", "1A4-N7-K2", "2024-0098-A"). Prefer the most specific test-level ID over a general report ID. Strip surrounding whitespace only. Return as a string.
-3b. d9Percent: the % weight of Delta-9 THC, the neutral form. Look for labels like "Δ9-THC", "Delta-9 THC", "D9-THC", "d9-THC", "Δ9 THC". Do NOT return THCa, Total THC, Δ8-THC or THCP. If the lab prints "ND", "Not Detected" or "<LOD" for it, return the string "ND". Otherwise a number only, as printed, e.g. 0.074.
+3b. d9Percent: the % weight of Delta-9 THC, the neutral form. Look for labels like "Δ9-THC", "Delta-9 THC", "D9-THC", "d9-THC", "Δ9 THC". Do NOT return THCa, Total THC, Δ8-THC or THCP. If the lab prints "ND", "Not Detected" or "<LOD" for it, return the string "ND". Otherwise a number only, as printed, e.g. 0.074.${othersRule}
 4. If any value is genuinely missing, unreadable, or below LOQ/LOD, use null (except d9Percent, see 3b). Do NOT guess. Do NOT return 0 or empty string for missing values.
 5. notes: flag anything ambiguous — e.g. "Two THCa values listed (raw + decarb), used raw", "Both THCa and THCP present, used THCa per rule", or "Two IDs present (Sample + Order), used Sample". null if clean.
 6. Return ONLY the JSON object. Start with { and end with }. No \`\`\` fences, no prose around it.`
@@ -102,9 +129,14 @@ function extractJsonObject(text: string): string | null {
   return null
 }
 
+/** Exposed for the dry-run checks. */
+export const coaPromptFor = buildPrompt
+
 export async function extractCoa(
   pdfBytes: Buffer,
   primary?: PrimaryCannabinoid,
+  /** Other cannabinoids to read too (the category's "also record"). */
+  others: readonly string[] = [],
 ): Promise<ExtractCoaResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
@@ -128,7 +160,7 @@ export async function extractCoa(
               type: "document",
               source: { type: "base64", media_type: "application/pdf", data: base64 },
             },
-            { type: "text", text: buildPrompt(primary) },
+            { type: "text", text: buildPrompt(primary, others) },
           ],
         },
       ],
@@ -170,6 +202,18 @@ export async function extractCoa(
       outputTokens: res.usage.output_tokens,
       error: `Model returned invalid JSON: ${e?.message ?? String(e)}`,
     }
+  }
+
+  /* Keep only what was asked for, as numbers or null. */
+  const keys = otherKeys(primary, others)
+  if (keys.length) {
+    const got = (data as any).others ?? {}
+    data.others = Object.fromEntries(keys.map((k) => {
+      const v = typeof got[k] === "string" ? Number(got[k]) : got[k]
+      return [k, typeof v === "number" && Number.isFinite(v) ? v : null]
+    }))
+  } else {
+    delete data.others
   }
 
   return {

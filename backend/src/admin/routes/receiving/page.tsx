@@ -851,6 +851,8 @@ const ReviewView: React.FC<{
            * returns the trace THCa row (<0.3%) and stamps it into
            * cbd_percent. See ai-coa-extraction.ts. */
           primary: primaryCannabinoid ?? undefined,
+          /* The category's other cannabinoids, read from the same COA. */
+          others: otherCols.map((o) => o.cannabinoid),
         }),
       })
       const json = await res.json()
@@ -858,8 +860,14 @@ const ReviewView: React.FC<{
       setRows((cur) => cur.map((r, i) => i === idx ? {
         ...r,
         thcaPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.thcaPercent,
-        /* The reader returns D9 on every COA; it shows when D9 is a column. */
-        otherPercents: json.d9Percent != null ? { ...r.otherPercents, D9: String(json.d9Percent) } : r.otherPercents,
+        /* D9 comes back on every COA (it shows when D9 is a column); the
+         * rest come back under `others` when asked for. A value the
+         * reader didn't find keeps what's typed. */
+        otherPercents: {
+          ...r.otherPercents,
+          ...(json.d9Percent != null ? { D9: String(json.d9Percent) } : {}),
+          ...Object.fromEntries(Object.entries(json.others ?? {}).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])),
+        },
         totalCannabinoidsPercent: json.totalCannabinoidsPercent != null ? String(json.totalCannabinoidsPercent) : r.totalCannabinoidsPercent,
         batchId: json.batchId ? String(json.batchId) : r.batchId,
         coaNotes: json.notes ?? null,
@@ -871,7 +879,7 @@ const ReviewView: React.FC<{
     } finally {
       setCoaParsing((cur) => { const next = new Set(cur); next.delete(idx); return next })
     }
-  }, [rows, primaryCannabinoid])
+  }, [rows, primaryCannabinoid, otherCols])
 
   /* Bulk: run extraction on every row that has a COA but lacks both
    * percentages. Bounded concurrency keeps Anthropic happy + the
@@ -879,7 +887,7 @@ const ReviewView: React.FC<{
   const parseAllCoas = useCallback(async () => {
     const targets = rows
       .map((r, i) => ({ r, i }))
-      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || otherCols.some((o) => o.cannabinoid === "D9" && !(r.otherPercents.D9 ?? "").trim()) || !r.totalCannabinoidsPercent.trim()))
+      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || otherCols.some((o) => !(r.otherPercents[o.cannabinoid] ?? "").trim()) || !r.totalCannabinoidsPercent.trim()))
       .map(({ i }) => i)
     if (targets.length === 0) {
       toast.info("Nothing to extract", { description: "Every row with a COA already has its percentages filled." })

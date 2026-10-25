@@ -712,7 +712,7 @@ const OtherCannabinoids = ({ p, onChange }: { p: Profile; onChange: (patch: Part
         )
       })}
       <Text size="xsmall" className="text-ui-fg-subtle">
-        Each one gets its own column when receiving. The COA reader fills in D9; type the others in.
+        Each one gets its own column when receiving, and the COA reader fills it in.
       </Text>
     </div>
   )
