@@ -1,7 +1,7 @@
 import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useColumnWidths } from "../../../lib/resizable-columns"
-import { cannabinoidField, otherCannabinoidColumns } from "../../../lib/cannabinoids"
+import { CANNABINOIDS, cannabinoidField, otherCannabinoidColumns } from "../../../lib/cannabinoids"
 import {
   BulkCoaDropzone, BulkSelect, CheckBox, CoaAiButton, CoaUpload, DraftCard, Field, SaveStatusPill, Td, Th,
   formatRelativeTime, type CoaState, type DraftRow, type SaveRowResult,
@@ -213,6 +213,135 @@ function fromOldDraft(payload: any): Draft {
 /* ---------- Helpers ---------- */
 const fmtMoney = (n: number) => `$${n.toFixed(2)}`
 const fmtMoneyWhole = (n: number) => `$${Math.round(n).toLocaleString()}`
+
+/* ---- Preview save: what /admin/receiving/save would do (preview: true) ---- */
+
+type PreviewResult = {
+  strainName: string
+  tierLabel?: string
+  action: "would-create" | "would-restock" | "failed" | "already-saved" | "not-saved"
+  productHandle?: string
+  baseSku?: string
+  poolUnitLabel?: string
+  landedPerQp: number
+  error?: string
+  preview?: {
+    stockBefore: number | null
+    stockAfter: number
+    landedBefore: number | null
+    variants?: Array<{ label: string; sku: string; price: number | null }>
+    attributeChanges?: Array<{ field: string; from: unknown; to: unknown }>
+  }
+}
+
+/* Stored attribute name → the column it comes from on this page. The
+ * cannabinoid ones derive from the cannabinoid list (cbdPercent →
+ * cbd_percent). */
+const ATTRIBUTE_LABELS: Record<string, string> = {
+  strain_type: "Type",
+  best_for: "Best For",
+  effects: "Effects",
+  total_cannabinoids_percent: "Cann %",
+  coa_url: "COA",
+  batch_id: "Batch ID",
+  ...Object.fromEntries(CANNABINOIDS.map((c) => {
+    const f = cannabinoidField(c)
+    return [f.rowField.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`), f.label]
+  })),
+}
+const showValue = (v: unknown) =>
+  v == null || v === "" ? "—" : Array.isArray(v) ? (v.length ? v.join(", ") : "—") : String(v)
+
+function PreviewPanel({ results, stale, unitLabel, onClose }: {
+  results: PreviewResult[]
+  stale: boolean
+  unitLabel: string
+  onClose: () => void
+}) {
+  const count = (a: PreviewResult["action"]) => results.filter((r) => r.action === a).length
+  const failed = count("failed")
+  const border = failed > 0 ? "#B91C1C" : "#0A0A0A"
+  const cell = { padding: "6px 8px", borderTop: "1px solid #E5E1D6", verticalAlign: "top" as const, fontSize: 13 }
+  return (
+    <div style={{ border: `1.5px solid ${border}`, background: "#fff", padding: 16 }}>
+      <div className="flex justify-between items-start gap-4">
+        <div>
+          <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em", color: border }}>
+            Preview · nothing saved
+          </Text>
+          <Text size="small">
+            {count("would-create")} new · {count("would-restock")} restock
+            {count("already-saved") > 0 && <> · {count("already-saved")} already saved on this invoice</>}
+            {failed > 0 && <> · <span style={{ color: "#B91C1C" }}>{failed} would fail, so Save would save nothing</span></>}
+          </Text>
+          {stale && (
+            <Text size="small" style={{ color: "#C98A00" }}>Out of date: the receiving changed since this preview. Preview again.</Text>
+          )}
+        </div>
+        <Button variant="transparent" size="small" onClick={onClose}>Close</Button>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 12, opacity: stale ? 0.5 : 1 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr style={{ textAlign: "left", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              <th style={{ padding: "6px 8px" }}>Row</th>
+              <th style={{ padding: "6px 8px" }}>Would</th>
+              <th style={{ padding: "6px 8px" }}>Product</th>
+              <th style={{ padding: "6px 8px" }}>Stock</th>
+              <th style={{ padding: "6px 8px" }}>Landed / unit</th>
+              <th style={{ padding: "6px 8px" }}>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((r, i) => {
+              const p = r.preview
+              const pool = r.poolUnitLabel ?? unitLabel
+              return (
+                <tr key={i}>
+                  <td style={cell}>{i + 1}. {r.strainName}{r.tierLabel ? <span className="text-ui-fg-muted"> · {r.tierLabel}</span> : null}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>
+                    {r.action === "would-create" && <Badge color="green" size="2xsmall">New product</Badge>}
+                    {r.action === "would-restock" && <Badge color="blue" size="2xsmall">Restock</Badge>}
+                    {r.action === "already-saved" && <Badge color="grey" size="2xsmall">Already saved</Badge>}
+                    {r.action === "not-saved" && <Badge color="grey" size="2xsmall">OK</Badge>}
+                    {r.action === "failed" && <Badge color="red" size="2xsmall">Would fail</Badge>}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", fontSize: 12 }}>
+                    {r.productHandle ?? "—"}{r.baseSku && <div className="text-ui-fg-muted">{r.baseSku}</div>}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {p ? <>{p.stockBefore ?? 0} → {p.stockAfter} {pool}</> : "—"}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {p ? <>{p.landedBefore != null ? `${fmtMoney(p.landedBefore)} → ` : ""}{fmtMoney(r.landedPerQp)} / {pool}</> : "—"}
+                  </td>
+                  <td style={cell}>
+                    {r.action === "failed" && <span style={{ color: "#B91C1C" }}>{r.error}</span>}
+                    {r.action === "already-saved" && <span className="text-ui-fg-muted">This invoice already saved it; Save skips it.</span>}
+                    {p?.variants && (
+                      <span style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {p.variants.map((v) => `${v.label} ${v.sku} ${v.price != null ? fmtMoney(v.price) : "no price"}`).join(" · ")}
+                      </span>
+                    )}
+                    {p?.attributeChanges && (p.attributeChanges.length === 0
+                      ? <span className="text-ui-fg-muted">No detail changes</span>
+                      : p.attributeChanges.map((c) => (
+                        <div key={c.field}>
+                          {ATTRIBUTE_LABELS[c.field] ?? c.field}: {c.field === "coa_url"
+                            ? (c.from ? "replaced with this COA" : "added")
+                            : <>{showValue(c.from)} → {showValue(c.to)}</>}
+                        </div>
+                      )))}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
 type TierPrices = Record<string, Record<string, number>>
 
 const readKeyFromUrl = () => {
@@ -500,6 +629,8 @@ const ReviewView: React.FC<{
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [coaParsing, setCoaParsing] = useState<Set<number>>(new Set())
   const [saveResults, setSaveResults] = useState<SaveRowResult[] | null>(null)
+  const [preview, setPreview] = useState<{ key: string; results: PreviewResult[] } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
   const [saved, setSaved] = useState<{ historyId: string; created: number; restocked: number } | null>(null)
   const [pushedBillId, setPushedBillId] = useState<string | null>(null)
   const [pushingToQbo, setPushingToQbo] = useState(false)
@@ -717,43 +848,69 @@ const ReviewView: React.FC<{
   }
 
   /* ---- Save: the same /admin/receiving/save as the other pages ---- */
+  const buildPayload = () => ({
+    profileKey: profile.key,
+    supplier: invoice.supplier,
+    invoiceNumber: invoice.invoiceNumber,
+    invoiceDate: invoice.invoiceDate,
+    shippingTotal: invoice.shippingTotal,
+    /* The supplier's printed total when read from an invoice; typed-in
+     * receivings use the rows' total, as the Pre-Rolls page did. */
+    total: initial.fromInvoice ? invoice.total : computedTotal,
+    computedSubtotal,
+    computedTotal,
+    draftId: draftId ?? undefined,
+    rows: rows.map((r) => ({
+      strainName: r.strainName.trim(),
+      quantity: r.quantity,
+      unitPrice: r.unitPrice,
+      ...(flat ? { sellPrice: r.sellPrice } : {}),
+      tier: r.subcategory,
+      strainType: f.strainType ? r.strainType : null,
+      bestFor: f.bestFor ? r.bestFor : null,
+      effects: f.effects ? r.effects : [],
+      coaUrl: r.coa.state === "ready" ? r.coa.url : null,
+      coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
+      ...(f.cannabinoids ? {
+        [main.rowField]: r.mainPercent.trim() || null,
+        ...Object.fromEntries(otherCols.map((o) => [o.rowField, (r.otherPercents[o.cannabinoid] ?? "").trim() || null])),
+        totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
+      } : {}),
+      ...(showBatch ? { batchId: r.batchId.trim() || null } : {}),
+      ...(f.upc ? { upc: r.upc.trim() || null } : {}),
+    })),
+  })
+  /* What the last preview was of: any change after it makes it stale. */
+  const payloadKey = JSON.stringify(buildPayload())
+
+  /* Same request with preview: true. The route runs every check and
+   * says what each row would do; nothing is written. */
+  const onPreview = async () => {
+    if (!allValid || previewing) return
+    setPreviewing(true)
+    try {
+      const res = await fetch("/admin/receiving/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...buildPayload(), preview: true }),
+      })
+      const json = await res.json()
+      if (!json?.summary) throw new Error(json?.error ?? `Preview failed (${res.status})`)
+      setPreview({ key: payloadKey, results: json.results ?? [] })
+    } catch (e: any) {
+      toast.error("Preview failed", { description: e?.message ?? "Network error" })
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
   const onSave = async () => {
     if (!allValid || saving) return
     setSaving(true)
     setSaveResults(null)
     try {
-      const payload = {
-        profileKey: profile.key,
-        supplier: invoice.supplier,
-        invoiceNumber: invoice.invoiceNumber,
-        invoiceDate: invoice.invoiceDate,
-        shippingTotal: invoice.shippingTotal,
-        /* The supplier's printed total when read from an invoice; typed-in
-         * receivings use the rows' total, as the Pre-Rolls page did. */
-        total: initial.fromInvoice ? invoice.total : computedTotal,
-        computedSubtotal,
-        computedTotal,
-        draftId: draftId ?? undefined,
-        rows: rows.map((r) => ({
-          strainName: r.strainName.trim(),
-          quantity: r.quantity,
-          unitPrice: r.unitPrice,
-          ...(flat ? { sellPrice: r.sellPrice } : {}),
-          tier: r.subcategory,
-          strainType: f.strainType ? r.strainType : null,
-          bestFor: f.bestFor ? r.bestFor : null,
-          effects: f.effects ? r.effects : [],
-          coaUrl: r.coa.state === "ready" ? r.coa.url : null,
-          coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
-          ...(f.cannabinoids ? {
-            [main.rowField]: r.mainPercent.trim() || null,
-            ...Object.fromEntries(otherCols.map((o) => [o.rowField, (r.otherPercents[o.cannabinoid] ?? "").trim() || null])),
-            totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
-          } : {}),
-          ...(showBatch ? { batchId: r.batchId.trim() || null } : {}),
-          ...(f.upc ? { upc: r.upc.trim() || null } : {}),
-        })),
-      }
+      const payload = buildPayload()
       const idempotencyKey = (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function")
         ? (crypto as any).randomUUID()
         : `rcv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -996,9 +1153,17 @@ const ReviewView: React.FC<{
           <Button variant="secondary" disabled={savingDraft} onClick={onSaveDraft}>
             {savingDraft ? "Saving…" : draftId ? "Update Draft" : "Save Draft"}
           </Button>
+          <Button variant="secondary" disabled={!allValid || previewing} onClick={onPreview}>
+            {previewing ? "Previewing…" : "Preview Save"}
+          </Button>
           <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0} onClick={onSave}>{saveLabel}</Button>
         </div>
       </div>
+
+      {preview && (
+        <PreviewPanel results={preview.results} stale={preview.key !== payloadKey}
+          unitLabel={unit.singular} onClose={() => setPreview(null)} />
+      )}
 
       {invoice.notes && (
         <div style={{ border: "1.5px solid #C98A00", padding: "10px 14px", background: "#fff" }}>

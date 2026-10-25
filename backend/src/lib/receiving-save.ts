@@ -103,8 +103,10 @@ export type SaveRowResult = {
   poolUnitLabel?: string
   /** "already-saved": skipped, this invoice already saved this row.
    *  "not-saved": the up-front check failed on another row, so nothing
-   *  was written. Neither is stored in receiving history. */
-  action: "created" | "restocked" | "failed" | "already-saved" | "not-saved"
+   *  was written. Neither is stored in receiving history.
+   *  "would-create" / "would-restock": a preview (nothing written). */
+  action: "created" | "restocked" | "failed" | "already-saved" | "not-saved" | "would-create" | "would-restock"
+  preview?: RowPreview
   productId?: string
   productHandle?: string
   inventoryItemId?: string
@@ -590,6 +592,98 @@ export async function checkRow(
   }
 }
 
+/**
+ * The attributes a restock writes. Latest-COA-wins + refresh the rest
+ * from this receiving. A field the page doesn't send (undefined) keeps
+ * its stored value: the Flower page sends only its own cannabinoid's %,
+ * and writing null for the rest wiped D9 % on every CBD restock. A
+ * field sent as null or a value is written.
+ */
+export function restockAttributes(row: SaveRow): Record<string, unknown> {
+  return Object.fromEntries(Object.entries({
+    strain_type: row.strainType,
+    best_for: row.bestFor,
+    effects: row.effects,
+    thca_percent: row.thcaPercent,
+    cbd_percent: row.cbdPercent,
+    cbg_percent: row.cbgPercent,
+    thcp_percent: row.thcpPercent,
+    d9_percent: row.d9Percent,
+    total_cannabinoids_percent: row.totalCannabinoidsPercent,
+    coa_url: row.coaUrl,
+    batch_id: row.batchId,
+  }).filter(([, v]) => v !== undefined))
+}
+
+/* ---- Preview: what saveOneRow would do, without writing ---- */
+
+export type RowPreview = {
+  /** Pool units at the stock location now (restock) and after saving. */
+  stockBefore: number | null
+  stockAfter: number
+  /** Landed cost per pool unit stored on the inventory item now (restock). */
+  landedBefore: number | null
+  /** Create: one entry per variant the product gets. */
+  variants?: Array<{ label: string; sku: string; price: number | null }>
+  /** Restock: stored attributes this save changes. */
+  attributeChanges?: Array<{ field: string; from: unknown; to: unknown }>
+}
+
+const sameValue = (a: unknown, b: unknown) =>
+  JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+/**
+ * Read-only. Turns a passed checkRow into what the save would change:
+ * stock and landed cost before → after, the attributes a restock
+ * overwrites, or the variants, SKUs and prices a new product gets.
+ */
+export async function previewRow(
+  container: any,
+  row: SaveRow,
+  check: RowCheck,
+  ctx: SaveContext,
+): Promise<RowPreview> {
+  const plan = check.plan!
+  const added = check.base.qtyQps
+  if (plan.kind === "create") {
+    const prices = check.base.sellPrices ?? {}
+    return {
+      stockBefore: null,
+      stockAfter: added,
+      landedBefore: null,
+      variants: plan.variantDefs.map((v, i) => ({
+        label: v.label,
+        sku: plan.proposedSkus[i],
+        price: prices[v.sizeKey] ?? null,
+      })),
+    }
+  }
+  const inventoryService: any = container.resolve(Modules.INVENTORY)
+  const [[level], [item]] = await Promise.all([
+    inventoryService.listInventoryLevels({
+      inventory_item_id: plan.inventoryItemId,
+      location_id: ctx.stockLocationId,
+    }),
+    inventoryService.listInventoryItems({ id: plan.inventoryItemId }, { select: ["id", "metadata"] }),
+  ])
+  const stockBefore = Number(level?.stocked_quantity ?? 0)
+  const landed = Number(item?.metadata?.landed_per_qp)
+  let stored: Record<string, unknown> = {}
+  if (plan.existingAttrsId) {
+    const mbsAttrs: any = container.resolve(MBS_ATTRIBUTES_MODULE)
+    stored = await mbsAttrs.retrieveProductAttributes(plan.existingAttrsId)
+  }
+  const attributeChanges = Object.entries(restockAttributes(row))
+    .filter(([field, to]) => !sameValue(stored[field], to))
+    .map(([field, to]) => ({ field, from: stored[field] ?? null, to }))
+  return {
+    stockBefore,
+    stockAfter: stockBefore + added,
+    landedBefore: Number.isFinite(landed) ? landed : null,
+    attributeChanges,
+  }
+}
+
 /* ---- Per-row save: create-or-restock ---- */
 
 export async function saveOneRow(
@@ -650,25 +744,8 @@ export async function saveOneRow(
         }
       }
 
-      /* Latest-COA-wins + refresh other attributes from this receiving.
-       * A field the page doesn't send (undefined) keeps its stored
-       * value: the Flower page sends only its own cannabinoid's %, and
-       * writing null for the rest wiped D9 % on every CBD restock. A
-       * field sent as null or a value is written. */
       const existingAttrsId = plan.existingAttrsId
-      const attrPayload = Object.fromEntries(Object.entries({
-        strain_type: row.strainType,
-        best_for: row.bestFor,
-        effects: row.effects,
-        thca_percent: row.thcaPercent,
-        cbd_percent: row.cbdPercent,
-        cbg_percent: row.cbgPercent,
-        thcp_percent: row.thcpPercent,
-        d9_percent: row.d9Percent,
-        total_cannabinoids_percent: row.totalCannabinoidsPercent,
-        coa_url: row.coaUrl,
-        batch_id: row.batchId,
-      }).filter(([, v]) => v !== undefined))
+      const attrPayload = restockAttributes(row)
       if (existingAttrsId) {
         await mbsAttrs.updateProductAttributes({ id: existingAttrsId, ...attrPayload })
       } else {

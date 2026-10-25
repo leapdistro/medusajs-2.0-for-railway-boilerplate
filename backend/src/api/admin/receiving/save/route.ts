@@ -10,6 +10,7 @@ import {
   buildSaveContext,
   checkRow,
   computeShipPerLb,
+  previewRow,
   saveOneRow,
   type RowCheck,
   type SaveRow,
@@ -46,6 +47,10 @@ import { RECEIVING_DRAFTS_MODULE } from "../../../../modules/receiving-drafts"
  *   7. Merge into the invoice's receiving_history record
  *   8. Delete the draft (if any) once every row is saved
  *
+ * With `preview: true` it stops after step 5 and returns what each row
+ * would do (would-create / would-restock, with stock, cost, attribute
+ * and SKU details), writing nothing.
+ *
  * Response:
  *   200 { ok, nothingSaved?, summary: { created, restocked, failed, alreadySaved }, results: [...], historyId, historyError?, error? }
  *   400 on body validation issues
@@ -70,6 +75,8 @@ type Body = {
    * the existing flower-only receiving page. Pre-roll receiving sends
    * "pre-roll" to switch the variant/category/pricing-model logic. */
   profileKey?: string
+  /* Run every check and report what saving would do, writing nothing. */
+  preview?: boolean
 }
 
 const IDEMPOTENCY_NS = "receiving-save"
@@ -119,7 +126,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
    * In-flight lock (60s) prevents simultaneous parallel execution if
    * two requests with the same key arrive before the first finishes;
    * the second waits for the lock to release, then reads the cache. */
-  const idemKey = String(req.headers["idempotency-key"] ?? "").trim() || null
+  const preview = body.preview === true
+  /* A preview writes nothing, so there's nothing to protect: a cached
+   * preview would hide catalog changes since. */
+  const idemKey = preview ? null : String(req.headers["idempotency-key"] ?? "").trim() || null
   if (idemKey) {
     const cached = await getIdempotentResponse(IDEMPOTENCY_NS, idemKey)
     if (cached) {
@@ -304,14 +314,48 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         ? { ...base, action: "failed", error: errors.get(i) }
         : { ...base, action: "not-saved" }
     }
-    logger.warn(`[receiving:save] invoice ${body.invoiceNumber}: ${errors.size} row(s) failed the check, nothing saved`)
+    if (!preview) logger.warn(`[receiving:save] invoice ${body.invoiceNumber}: ${errors.size} row(s) failed the check, nothing saved`)
     res.json({
       ok: false,
+      ...(preview ? { preview: true } : {}),
       nothingSaved: true,
       summary: { created: 0, restocked: 0, failed: errors.size, alreadySaved: rows.length - toSave.length },
       results,
       historyId: existingRecord?.id,
       error: errors.size === 1 ? Array.from(errors.values())[0] : undefined,
+    })
+    return
+  }
+
+  if (preview) {
+    await inPool(toSave, async (i) => {
+      const check = checks.get(i)!
+      const plan = check.plan!
+      try {
+        results[i] = {
+          ...check.base,
+          ...(plan.kind === "restock"
+            ? { action: "would-restock", productId: plan.productId, productHandle: plan.productHandle, inventoryItemId: plan.inventoryItemId }
+            : { action: "would-create", productHandle: plan.createHandle }),
+          baseSku: plan.baseSku,
+          preview: await previewRow(req.scope, rows[i], check, ctx),
+        }
+      } catch (e: any) {
+        results[i] = { ...check.base, action: "failed", error: `Preview failed: ${e?.message ?? e}` }
+      }
+    })
+    const failed = results.filter((r) => r.action === "failed").length
+    res.json({
+      ok: failed === 0,
+      preview: true,
+      summary: {
+        create: results.filter((r) => r.action === "would-create").length,
+        restock: results.filter((r) => r.action === "would-restock").length,
+        failed,
+        alreadySaved: rows.length - toSave.length,
+      },
+      results,
+      historyId: existingRecord?.id,
     })
     return
   }
