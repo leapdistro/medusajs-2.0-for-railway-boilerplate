@@ -2,7 +2,7 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
-import { findProfileRoot, loadProfiles } from "../../../../lib/profile-store"
+import { findProfileRoot, loadProfiles, resolveProfileCategories } from "../../../../lib/profile-store"
 import { loadCategoryTree } from "../../../../lib/category-tree"
 import { displayTableFor, tableFor } from "../../../../lib/price-levels"
 
@@ -33,8 +33,10 @@ import { displayTableFor, tableFor } from "../../../../lib/price-levels"
  *                     is unchanged and remains authoritative.)
  *
  * `categories` lists every active category with its display table for
- * the buyer's mode and its top-level category as it is named in Medusa
- * now; the named fields below are kept for the current storefront.
+ * the buyer's mode, its top-level category as it is named in Medusa
+ * now, and the Medusa ids of the category and of each sub-category
+ * with the price-row key it reads (the home page prices its tiles by
+ * these); the named fields below are kept for older callers.
  *
  * Gated to approved wholesale customers ONLY. Non-approved or anonymous
  * callers get 401/403 — the prices never leave the backend for them.
@@ -90,13 +92,17 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   const active = profiles.filter((p) => !p.archived)
-  const [flowerPrices, preRollPrices, cbdFlowerPrices, cbgFlowerPrices, categoryPrices, tree] = await Promise.all([
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+  const [flowerPrices, preRollPrices, cbdFlowerPrices, cbgFlowerPrices, categoryPrices, tree, resolved] = await Promise.all([
     read(flowerKey),
     read(prerollKey),
     read(cbdKey),
     read(cbgKey),
     Promise.all(active.map((p) => read(displayTableFor(p, mode)))),
-    loadCategoryTree(req.scope.resolve(ContainerRegistrationKeys.QUERY)),
+    loadCategoryTree(query),
+    /* Which price row each sub-category reads, so the home page can
+     * price a tile by its Medusa category. */
+    Promise.all(active.map((p) => resolveProfileCategories(query, p).catch(() => null))),
   ])
   const topOf = (p: (typeof active)[number]) => findProfileRoot([...tree.byId.values()], p).parent
 
@@ -118,6 +124,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       parent_category_handle: topOf(p)?.handle ?? null,
       table: displayTableFor(p, mode),
       prices: categoryPrices[i] ?? null,
+      category_id: resolved[i]?.enumRoot?.id ?? null,
+      subcategories: (resolved[i]?.profile.subcategories ?? []).map((s) => ({ category_id: s.id, key: s.key })),
     })),
     /* Echo back the resolved mode + source keys for debugging. */
     pricing_mode: mode ?? "default",
