@@ -100,9 +100,13 @@ export async function findOrCreateVendor(
   supplier: { name: string; email?: string | null; phone?: string | null; address?: string | null },
 ): Promise<{ id: string; displayName: string; created: boolean }> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
+  /* QBO trims names it stores but matches queries exactly, so "Also
+   * Known As " (trailing space, 2026-10-26) missed vendor "Also Known
+   * As" and the create then failed as a duplicate. */
+  const name = supplier.name.trim().replace(/\s+/g, " ")
   /* QBO Query language is SQL-ish. Quote single quotes in the value by
    * doubling them (the standard QBO escape). */
-  const safe = supplier.name.replace(/'/g, "''")
+  const safe = name.replace(/'/g, "''")
   const query = `select * from Vendor where DisplayName = '${safe}'`
   const found = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
   const existing = found?.QueryResponse?.Vendor?.[0]
@@ -110,12 +114,25 @@ export async function findOrCreateVendor(
     return { id: String(existing.Id), displayName: existing.DisplayName, created: false }
   }
 
-  const body: any = { DisplayName: supplier.name }
+  const body: any = { DisplayName: name }
   if (supplier.email) body.PrimaryEmailAddr = { Address: supplier.email }
   if (supplier.phone) body.PrimaryPhone = { FreeFormNumber: supplier.phone }
   if (supplier.address) body.BillAddr = { Line1: supplier.address }
 
-  const created = await qboFetch(fresh, `/vendor`, { method: "POST", body: JSON.stringify(body) })
+  let created: any
+  try {
+    created = await qboFetch(fresh, `/vendor`, { method: "POST", body: JSON.stringify(body) })
+  } catch (e: any) {
+    /* "Duplicate Name Exists … Id=64": the query missed a vendor QBO
+     * still considers the same name (case, spacing). Use it when that
+     * Id is a vendor; a customer or employee with the name rethrows. */
+    const dupId = /Duplicate Name Exists[\s\S]*?Id=(\d+)/.exec(String(e?.message ?? ""))?.[1]
+    if (!dupId) throw e
+    const json = await qboFetch(fresh, `/vendor/${dupId}`).catch(() => null)
+    const dup = json?.Vendor
+    if (!dup?.Id) throw e
+    return { id: String(dup.Id), displayName: dup.DisplayName, created: false }
+  }
   const v = created?.Vendor
   if (!v?.Id) throw new Error(`Vendor create returned no Id: ${JSON.stringify(created).slice(0, 200)}`)
   return { id: String(v.Id), displayName: v.DisplayName, created: true }
