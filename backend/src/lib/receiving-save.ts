@@ -756,8 +756,10 @@ export async function saveOneRow(
         })
       }
 
-      /* Update inventory item metadata with latest landed cost. */
-      try {
+      /* Update inventory item metadata with latest landed cost. Free
+       * stock ($0) keeps the cost already there: it's the basis for
+       * Owner prices and the next bill. */
+      if (landedPerQp > 0) try {
         await inventoryService.updateInventoryItems([{
           id: firstInventoryId,
           metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },

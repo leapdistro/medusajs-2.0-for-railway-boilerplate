@@ -1,5 +1,5 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
-import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
+import { Badge, Button, Checkbox, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useColumnWidths } from "../../lib/resizable-columns"
 import { CANNABINOIDS, cannabinoidField, otherCannabinoidColumns } from "../../lib/cannabinoids"
@@ -644,12 +644,17 @@ const ReviewView: React.FC<{
   const [saved, setSaved] = useState<{ historyId: string; created: number; restocked: number } | null>(null)
   const [pushedBillId, setPushedBillId] = useState<string | null>(null)
   const [pushingToQbo, setPushingToQbo] = useState(false)
+  /* Rows with no cost save at $0 only when the operator says it's free
+   * stock: a $0 cost blocks the QBO bill and Owner prices. */
+  const [freeStockOk, setFreeStockOk] = useState(false)
 
   /* ---- Totals and shipping spread (by quantity share, as the old Flower page did) ---- */
   const totalQty = rows.reduce((s, r) => s + (r.quantity || 0), 0)
   const shipPerUnit = totalQty > 0 ? (invoice.shippingTotal || 0) / totalQty : 0
   const computedSubtotal = rows.reduce((s, r) => s + (r.quantity || 0) * (r.unitPrice || 0), 0)
   const computedTotal = computedSubtotal + (invoice.shippingTotal || 0)
+  const zeroCostRows = rows.filter((r) => !((r.unitPrice || 0) > 0))
+  const zeroCostBlocked = zeroCostRows.length > 0 && !freeStockOk
   const subtotalDiverges = initial.fromInvoice && invoice.subtotal != null && Math.abs(invoice.subtotal - computedSubtotal) > 0.01
   const totalDiverges = initial.fromInvoice && Math.abs((invoice.total || 0) - computedTotal) > 0.01
 
@@ -871,6 +876,7 @@ const ReviewView: React.FC<{
     computedSubtotal,
     computedTotal,
     draftId: draftId ?? undefined,
+    ...(zeroCostRows.length > 0 && freeStockOk ? { freeStock: true } : {}),
     rows: rows.map((r) => ({
       strainName: r.strainName.trim(),
       quantity: r.quantity,
@@ -917,7 +923,7 @@ const ReviewView: React.FC<{
   }
 
   const onSave = async () => {
-    if (!allValid || saving) return
+    if (!allValid || saving || zeroCostBlocked) return
     setSaving(true)
     setSaveResults(null)
     try {
@@ -1144,7 +1150,7 @@ const ReviewView: React.FC<{
     )
   }
 
-  const saveLabel = saving ? "Saving…" : unconfirmedConflicts > 0
+  const saveLabel = saving ? "Saving…" : zeroCostBlocked ? "Add Cost or Confirm Free Stock" : unconfirmedConflicts > 0
     ? `Resolve ${unconfirmedConflicts} Conflict${unconfirmedConflicts === 1 ? "" : "s"} First`
     : `Save ${rows.length} Product${rows.length === 1 ? "" : "s"}`
   const incomplete = rows.filter((r) => !isRowComplete(r)).length
@@ -1167,13 +1173,30 @@ const ReviewView: React.FC<{
           <Button variant="secondary" disabled={!allValid || previewing} onClick={onPreview}>
             {previewing ? "Previewing…" : "Preview Save"}
           </Button>
-          <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0} onClick={onSave}>{saveLabel}</Button>
+          <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0 || zeroCostBlocked} onClick={onSave}>{saveLabel}</Button>
         </div>
       </div>
 
       {preview && (
         <PreviewPanel results={preview.results} stale={preview.key !== payloadKey}
           unitLabel={unit.singular} onClose={() => setPreview(null)} />
+      )}
+
+      {zeroCostRows.length > 0 && (
+        <div className="flex flex-col gap-2" style={{ border: "1.5px solid #C98A00", padding: "10px 14px", background: "#fff" }}>
+          <Text size="small" weight="plus" style={{ color: "#C98A00", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            No cost on {zeroCostRows.length} row{zeroCostRows.length === 1 ? "" : "s"}
+          </Text>
+          <Text size="small">
+            {zeroCostRows.map((r) => r.strainName.trim() || "(unnamed)").join(", ")}. Enter the cost per {unit.singular}, or confirm
+            this is free stock. Free stock saves at $0: it isn't on the QuickBooks bill and gets no Owner prices.
+            A restock keeps the product's current cost.
+          </Text>
+          <div className="flex items-center gap-2">
+            <Checkbox id="free-stock" checked={freeStockOk} onCheckedChange={(v) => setFreeStockOk(v === true)} />
+            <Label htmlFor="free-stock" size="small">This is free stock: save at $0 cost</Label>
+          </div>
+        </div>
       )}
 
       {invoice.notes && (
@@ -1348,7 +1371,7 @@ const ReviewView: React.FC<{
             {rows.length} products · {totalQty.toFixed(2)} {totalQty === 1 ? unit.singular : unit.plural} total
           </Text>
         </div>
-        <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0} onClick={onSave}>{saveLabel}</Button>
+        <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0 || zeroCostBlocked} onClick={onSave}>{saveLabel}</Button>
       </div>
     </div>
   )

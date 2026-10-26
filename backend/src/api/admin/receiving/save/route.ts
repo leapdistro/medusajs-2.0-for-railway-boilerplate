@@ -77,6 +77,10 @@ type Body = {
   profileKey?: string
   /* Run every check and report what saving would do, writing nothing. */
   preview?: boolean
+  /* The operator confirmed rows with no cost are free stock. Without
+   * it, a row at $0 is refused: it would zero the cost basis, leave the
+   * QBO bill empty and skip Owner prices (receiving 1112). */
+  freeStock?: boolean
 }
 
 const IDEMPOTENCY_NS = "receiving-save"
@@ -162,6 +166,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (!body.invoiceNumber || !body.invoiceDate) {
     res.status(400).json({ ok: false, error: "invoiceNumber and invoiceDate are required" })
     return
+  }
+
+  if (!preview && body.freeStock !== true) {
+    const noCost = body.rows.filter((r) => !(Number(r.unitPrice) > 0))
+    if (noCost.length > 0) {
+      res.status(400).json({
+        ok: false,
+        error: `No cost on ${noCost.map((r) => r.strainName || "(unnamed)").join(", ")}. Enter the cost, or confirm it's free stock.`,
+      })
+      return
+    }
   }
 
   /* 1. Resolve the receiving profile (default "flower" for backward compat). */
