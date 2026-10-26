@@ -5,6 +5,7 @@ import {
   createBill,
   findOrCreateItem,
   findOrCreateVendor,
+  getActiveVendor,
   getDefaultAccounts,
   resolveCategoryChain,
 } from "../../../../lib/qbo-api"
@@ -104,7 +105,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   /* 3. Vendor. */
-  const supplier = (record.supplier ?? {}) as { name?: string; email?: string | null; phone?: string | null; address?: string | null }
+  const supplier = (record.supplier ?? {}) as { name?: string; email?: string | null; phone?: string | null; address?: string | null; qboVendorId?: string | null }
   if (!supplier.name) {
     return res.status(400).json({ ok: false, error: "Receiving has no supplier.name — can't match vendor in QBO." })
   }
@@ -119,12 +120,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   try {
-    const vendor = await findOrCreateVendor(qbo, conn, {
-      name: supplier.name,
-      email: supplier.email ?? null,
-      phone: supplier.phone ?? null,
-      address: supplier.address ?? null,
-    })
+    /* Picked from the QBO vendor list at receiving: use that vendor.
+     * Older receivings, or one whose vendor was since made inactive,
+     * match by name as before. */
+    const picked = supplier.qboVendorId ? await getActiveVendor(qbo, conn, supplier.qboVendorId) : null
+    const vendor = picked
+      ? { id: picked.id, displayName: picked.displayName, created: false }
+      : await findOrCreateVendor(qbo, conn, {
+        name: supplier.name,
+        email: supplier.email ?? null,
+        phone: supplier.phone ?? null,
+        address: supplier.address ?? null,
+      })
 
     /* 5. Lines: one per successfully-saved row. */
     type LineResult = {

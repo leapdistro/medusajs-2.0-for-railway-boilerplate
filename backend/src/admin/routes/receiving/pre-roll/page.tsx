@@ -2,6 +2,7 @@ import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { cannabinoidField, otherCannabinoidColumns, type OtherCannabinoid, type OtherCannabinoidColumn } from "../../../lib/cannabinoids"
+import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../../components/vendor-picker"
 
 /**
  * Pre-Roll Receiving — manual-entry-only page for receiving pre-roll
@@ -104,7 +105,13 @@ const blankRow = (defaultSubcategory: string = ""): Row => ({
 })
 
 const PreRollReceivingPage = () => {
-  const [supplier, setSupplier] = useState({ name: "", phone: "", email: "", address: "" })
+  const [supplier, setSupplier] = useState({ name: "", phone: "", email: "", address: "", qboVendorId: null as string | null })
+  const vendors = useQboVendors()
+  /* The picker works in nulls; this page keeps blanks as "". */
+  const supplierFields: SupplierFields = {
+    name: supplier.name, phone: supplier.phone || null, email: supplier.email || null,
+    address: supplier.address || null, qboVendorId: supplier.qboVendorId,
+  }
   const [invoiceNumber, setInvoiceNumber] = useState("")
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [shippingTotal, setShippingTotal] = useState(0)
@@ -186,7 +193,7 @@ const PreRollReceivingPage = () => {
   }, [rows, shippingTotal])
 
   const allValid = useMemo(() => {
-    if (!supplier.name?.trim() || !invoiceNumber.trim() || !invoiceDate) return false
+    if (!supplierReady(supplierFields, vendors) || !invoiceNumber.trim() || !invoiceDate) return false
     if (rows.length === 0) return false
     return rows.every((r) =>
       r.strainName.trim() &&
@@ -203,7 +210,7 @@ const PreRollReceivingPage = () => {
       otherCols.every((o) => !o.required || (r.otherPercents[o.cannabinoid] ?? "").trim()) &&
       r.coa.state === "ready",
     )
-  }, [supplier, invoiceNumber, invoiceDate, rows, otherCols])
+  }, [supplier, vendors, invoiceNumber, invoiceDate, rows, otherCols])
 
   const updateRow = useCallback((idx: number, patch: Partial<Row>) => {
     setRows((cur) => cur.map((r, i) => {
@@ -291,7 +298,7 @@ const PreRollReceivingPage = () => {
 
   const onResumeDraft = (d: { id: string; payload: any }) => {
     const p = d.payload as ReturnType<typeof buildDraftPayload>
-    setSupplier(p.supplier)
+    setSupplier({ qboVendorId: null, ...p.supplier })
     setInvoiceNumber(p.invoiceNumber)
     setInvoiceDate(p.invoiceDate)
     setShippingTotal(p.shippingTotal)
@@ -443,7 +450,7 @@ const PreRollReceivingPage = () => {
   }
 
   const onStartNew = () => {
-    setSupplier({ name: "", phone: "", email: "", address: "" })
+    setSupplier({ name: "", phone: "", email: "", address: "", qboVendorId: null })
     setInvoiceNumber("")
     setInvoiceDate(new Date().toISOString().slice(0, 10))
     setShippingTotal(0)
@@ -555,7 +562,8 @@ const PreRollReceivingPage = () => {
           </Text>
           <div className="flex flex-col gap-3">
             <Field label="Name (required)">
-              <Input value={supplier.name} onChange={(e: any) => setSupplier({ ...supplier, name: e.target.value })} />
+              <VendorPicker supplier={supplierFields} list={vendors}
+                onChange={(s) => setSupplier({ name: s.name, phone: s.phone ?? "", email: s.email ?? "", address: s.address ?? "", qboVendorId: s.qboVendorId ?? null })} />
             </Field>
             <Field label="Phone">
               <Input value={supplier.phone} onChange={(e: any) => setSupplier({ ...supplier, phone: e.target.value })} />

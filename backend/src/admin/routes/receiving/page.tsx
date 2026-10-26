@@ -17,6 +17,7 @@ import {
   BulkCoaDropzone, BulkSelect, CheckBox, CoaAiButton, CoaUpload, DraftCard, Field, SaveStatusPill, Td, Th,
   formatRelativeTime, type CoaState, type DraftRow, type DraftSummary, type SaveRowResult,
 } from "../../components/receiving-parts"
+import { VendorPicker, supplierReady, useQboVendors } from "../../components/vendor-picker"
 import { cannabinoidField, otherCannabinoidColumns, type OtherCannabinoid } from "../../lib/cannabinoids"
 
 /* Default column widths (px) for the flower receiving spreadsheet.
@@ -122,6 +123,7 @@ type ExtractedSupplier = {
   phone: string | null
   email: string | null
   address: string | null
+  qboVendorId?: string | null
 }
 type ExtractedInvoice = {
   supplier: ExtractedSupplier
@@ -693,7 +695,9 @@ const ReviewView: React.FC<{
       r.coa.state === "ready"
     )
   }, [otherCols])
-  const allValid = rows.length > 0 && rows.every(isRowComplete)
+  const vendors = useQboVendors()
+  const vendorOk = supplierReady(invoice.supplier, vendors)
+  const allValid = vendorOk && rows.length > 0 && rows.every(isRowComplete)
 
   const updateRow = useCallback((idx: number, patch: Partial<ReviewRow>) => {
     setRows((cur) => cur.map((r, i) => {
@@ -1132,7 +1136,8 @@ const ReviewView: React.FC<{
         <div className="flex flex-col gap-3" style={{ border: "1.5px solid #E5E1D6", padding: 16 }}>
           <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}>Supplier</Text>
           <Field label="Name">
-            <Input value={invoice.supplier.name} onChange={(e) => setInvoice((c) => ({ ...c, supplier: { ...c.supplier, name: e.target.value } }))} />
+            <VendorPicker supplier={invoice.supplier} list={vendors}
+              onChange={(supplier) => setInvoice((c) => ({ ...c, supplier }))} />
           </Field>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Phone">
@@ -1562,7 +1567,7 @@ const ReviewView: React.FC<{
       <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 12 }}>
         <div className="flex gap-4">
           <Badge color={allValid ? "green" : "orange"}>
-            {allValid ? "Ready to save" : `${rows.filter((r) => !isRowComplete(r)).length} rows incomplete`}
+            {allValid ? "Ready to save" : !vendorOk ? "Pick the supplier from QuickBooks" : `${rows.filter((r) => !isRowComplete(r)).length} rows incomplete`}
           </Badge>
           <Text size="small" className="text-ui-fg-subtle">
             {rows.length} products · {rows.reduce((s, r) => s + r.quantityLb, 0).toFixed(2)} lb total

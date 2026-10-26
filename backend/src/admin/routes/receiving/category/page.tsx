@@ -6,6 +6,7 @@ import {
   BulkCoaDropzone, BulkSelect, CheckBox, CoaAiButton, CoaUpload, DraftCard, Field, SaveStatusPill, Td, Th,
   formatRelativeTime, type CoaState, type DraftRow, type SaveRowResult,
 } from "../../../components/receiving-parts"
+import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../../components/vendor-picker"
 
 /**
  * Receiving for every category (Phase 4c). One spreadsheet, built from
@@ -59,7 +60,7 @@ const MAX_EFFECTS = 2
 const TYPE_TO_BEST_FOR: Record<StrainType, BestFor> = { Sativa: "day", Hybrid: "evening", Indica: "night" }
 
 /* ---------- Invoice (matches server-side ai-extraction.ts) ---------- */
-type Supplier = { name: string; phone: string | null; email: string | null; address: string | null }
+type Supplier = SupplierFields
 type Invoice = {
   supplier: Supplier
   invoiceNumber: string
@@ -158,6 +159,7 @@ function fromOldDraft(payload: any): Draft {
           phone: payload.supplier.phone || null,
           email: payload.supplier.email || null,
           address: payload.supplier.address || null,
+          qboVendorId: payload.supplier.qboVendorId ?? null,
         },
         invoiceNumber: payload.invoiceNumber ?? "",
         invoiceDate: payload.invoiceDate ?? blankInvoice().invoiceDate,
@@ -698,7 +700,8 @@ const ReviewView: React.FC<{
   const unconfirmedConflicts = rows.filter((r) => r.classification?.tierConflict && !r.confirmedTierConflict).length
 
   /* ---- Completeness: what this category asks for ---- */
-  const headerComplete = !!(invoice.supplier.name.trim() && invoice.invoiceNumber.trim() && invoice.invoiceDate)
+  const vendors = useQboVendors()
+  const headerComplete = !!(supplierReady(invoice.supplier, vendors) && invoice.invoiceNumber.trim() && invoice.invoiceDate)
   const isRowComplete = useCallback((r: Row): boolean => !!(
     r.strainName.trim() &&
     r.quantity > 0 &&
@@ -1177,7 +1180,8 @@ const ReviewView: React.FC<{
         <div className="flex flex-col gap-3" style={{ border: "1.5px solid #E5E1D6", padding: 16 }}>
           <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}>Supplier</Text>
           <Field label="Name (required)">
-            <Input value={invoice.supplier.name} onChange={(e) => setInvoice((c) => ({ ...c, supplier: { ...c.supplier, name: e.target.value } }))} />
+            <VendorPicker supplier={invoice.supplier} list={vendors}
+              onChange={(supplier) => setInvoice((c) => ({ ...c, supplier }))} />
           </Field>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Phone">
@@ -1330,7 +1334,7 @@ const ReviewView: React.FC<{
       <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 12 }}>
         <div className="flex gap-4 items-center">
           <Badge color={allValid ? "green" : "orange"}>
-            {allValid ? "Ready to save" : !headerComplete ? "Supplier name, invoice # and date needed" : `${incomplete} row${incomplete === 1 ? "" : "s"} incomplete`}
+            {allValid ? "Ready to save" : !headerComplete ? "Supplier (a QuickBooks vendor), invoice # and date needed" : `${incomplete} row${incomplete === 1 ? "" : "s"} incomplete`}
           </Badge>
           <Text size="small" className="text-ui-fg-subtle">
             {rows.length} products · {totalQty.toFixed(2)} {totalQty === 1 ? unit.singular : unit.plural} total

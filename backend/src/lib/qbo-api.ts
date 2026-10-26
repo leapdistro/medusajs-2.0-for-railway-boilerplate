@@ -138,6 +138,51 @@ export async function findOrCreateVendor(
   return { id: String(v.Id), displayName: v.DisplayName, created: true }
 }
 
+/* ─── Vendor list (receiving's supplier dropdown) ─── */
+
+export type QboVendor = {
+  id: string
+  displayName: string
+  email: string | null
+  phone: string | null
+  address: string | null
+}
+
+const vendorFromQbo = (v: any): QboVendor => {
+  const a = v?.BillAddr ?? {}
+  const cityLine = [a.City, [a.CountrySubDivisionCode, a.PostalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ")
+  return {
+    id: String(v.Id),
+    displayName: v.DisplayName,
+    email: v.PrimaryEmailAddr?.Address ?? null,
+    phone: v.PrimaryPhone?.FreeFormNumber ?? null,
+    address: [a.Line1, a.Line2, cityLine].filter(Boolean).join(", ") || null,
+  }
+}
+
+/** Every active vendor, A→Z. Read live so a vendor added in QBO shows up
+ *  the next time the list loads. */
+export async function listVendors(qbo: QboService, conn: QboConnectionRow): Promise<QboVendor[]> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const out: QboVendor[] = []
+  const page = 1000
+  for (let start = 1; ; start += page) {
+    const query = `select * from Vendor where Active = true orderby DisplayName startposition ${start} maxresults ${page}`
+    const json = await qboFetch(fresh, `/query?query=${encodeURIComponent(query)}`)
+    const batch = (json?.QueryResponse?.Vendor ?? []) as any[]
+    out.push(...batch.map(vendorFromQbo))
+    if (batch.length < page) return out
+  }
+}
+
+/** One vendor by Id, or null when it's gone or inactive. */
+export async function getActiveVendor(qbo: QboService, conn: QboConnectionRow, id: string): Promise<QboVendor | null> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const json = await qboFetch(fresh, `/vendor/${encodeURIComponent(id)}`).catch(() => null)
+  const v = json?.Vendor
+  return v?.Id && v.Active !== false ? vendorFromQbo(v) : null
+}
+
 /* ─── Customer find-or-create ─── */
 
 export type CustomerInput = {
