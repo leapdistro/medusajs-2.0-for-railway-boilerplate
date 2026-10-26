@@ -1,7 +1,9 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
-import { loadProfiles } from "../../../../lib/profile-store"
+import { findProfileRoot, loadProfiles } from "../../../../lib/profile-store"
+import { loadCategoryTree } from "../../../../lib/category-tree"
 import { displayTableFor, tableFor } from "../../../../lib/price-levels"
 
 /**
@@ -31,8 +33,8 @@ import { displayTableFor, tableFor } from "../../../../lib/price-levels"
  *                     is unchanged and remains authoritative.)
  *
  * `categories` lists every active category with its display table for
- * the buyer's mode; the named fields below are kept for the current
- * storefront.
+ * the buyer's mode and its top-level category as it is named in Medusa
+ * now; the named fields below are kept for the current storefront.
  *
  * Gated to approved wholesale customers ONLY. Non-approved or anonymous
  * callers get 401/403 — the prices never leave the backend for them.
@@ -88,13 +90,15 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   const active = profiles.filter((p) => !p.archived)
-  const [flowerPrices, preRollPrices, cbdFlowerPrices, cbgFlowerPrices, categoryPrices] = await Promise.all([
+  const [flowerPrices, preRollPrices, cbdFlowerPrices, cbgFlowerPrices, categoryPrices, tree] = await Promise.all([
     read(flowerKey),
     read(prerollKey),
     read(cbdKey),
     read(cbgKey),
     Promise.all(active.map((p) => read(displayTableFor(p, mode)))),
+    loadCategoryTree(req.scope.resolve(ContainerRegistrationKeys.QUERY)),
   ])
+  const topOf = (p: (typeof active)[number]) => findProfileRoot([...tree.byId.values()], p).parent
 
   return res.json({
     ok: true,
@@ -110,7 +114,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     categories: active.map((p, i) => ({
       key: p.key,
       name: p.displayName,
-      parent_category: p.parentCategoryName,
+      parent_category: topOf(p)?.name ?? p.parentCategoryName,
+      parent_category_handle: topOf(p)?.handle ?? null,
       table: displayTableFor(p, mode),
       prices: categoryPrices[i] ?? null,
     })),
