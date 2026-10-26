@@ -1,298 +1,87 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
-import {
-  Button,
-  Container,
-  Heading,
-  Input,
-  Label,
-  Select,
-  Text,
-  Textarea,
-  Badge,
-  toast,
-} from "@medusajs/ui"
+import { Badge, Button, Container, Heading, Input, Label, Select, Text, Textarea, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useColumnWidths } from "../../lib/resizable-columns"
+import { CANNABINOIDS, cannabinoidField, otherCannabinoidColumns } from "../../lib/cannabinoids"
 import {
   BulkCoaDropzone, BulkSelect, CheckBox, CoaAiButton, CoaUpload, DraftCard, Field, SaveStatusPill, Td, Th,
-  formatRelativeTime, type CoaState, type DraftRow, type DraftSummary, type SaveRowResult,
+  formatRelativeTime, type CoaState, type DraftRow, type SaveRowResult,
 } from "../../components/receiving-parts"
-import { VendorPicker, supplierReady, useQboVendors } from "../../components/vendor-picker"
-import { cannabinoidField, otherCannabinoidColumns, type OtherCannabinoid } from "../../lib/cannabinoids"
-
-/* Default column widths (px) for the flower receiving spreadsheet.
- * Operator can drag column edges to resize; widths persist per-browser
- * via localStorage under FLOWER_COLS_KEY. Order MUST mirror the <Th>
- * order in the table render below. Column 8 is one column per "other
- * cannabinoid" in the category's settings (D9 % today); flowerColDefaults
- * repeats its width for each. */
-const FLOWER_COLS_KEY = "mbs:receiving:flower:colwidths.v1"
-const FLOWER_COL_DEFAULTS = [
-  30,   // 0  select checkbox
-  200,  // 1  strain
-  80,   // 2  qty (lb)
-  100,  // 3  cost / lb
-  100,  // 4  tier
-  110,  // 5  type
-  100,  // 6  best for
-  130,  // 7  thca %
-  100,  // 8  other cannabinoid % (one per)
-  100,  // 9  cann %
-  130,  // 10 batch id
-  220,  // 11 effects
-  140,  // 12 coa
-  100,  // 13 landed / lb
-  260,  // 14 suggested sell
-]
-const flowerColDefaults = (others: number) =>
-  [...FLOWER_COL_DEFAULTS.slice(0, 8), ...Array(others).fill(FLOWER_COL_DEFAULTS[8]), ...FLOWER_COL_DEFAULTS.slice(9)]
+import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../components/vendor-picker"
 
 /**
- * Receiving — operator uploads a supplier invoice PDF, AI extracts the
- * line items, operator picks attribute dropdowns per row + uploads a
- * COA per row, then Save triggers product upserts in Medusa.
+ * Receiving for every category (Phase 4c). One spreadsheet, built from
+ * the Flower receiving page, whose columns come from the category's
+ * settings in MBS Settings → Categories: strain type, best for,
+ * effects, the main cannabinoid and its "also record" ones, COA, UPC,
+ * the receiving unit and a sell price for "price typed on each row"
+ * categories. Invoice upload is offered when the category has it on;
+ * otherwise rows are typed in.
  *
- * Flow:
- *   1. Upload view: dropzone → POST /admin/receiving/extract → spinner
- *   2. Review view: editable supplier/invoice header + spreadsheet
- *      table with one row per strain. Operator fills tier/type/best-for/
- *      effects/COA per row.
- *   3. Save (Slice 2C, stub here): POSTs the reviewed payload to
- *      /admin/receiving/save which creates the products + variants.
+ * Saves through /admin/receiving/save. Replaced the Flower and
+ * Pre-Rolls pages (4e); their old addresses redirect here.
  *
- * Drafts live in React state only — no DB persistence between extract
- * and save (decision: in-memory; faster to ship, refresh = re-extract).
+ * Opened at /app/receiving?key=<profile key>.
  */
 
-/* ---------- Inline icon (sidebar) ---------- */
 const TruckIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 3h15v13H1z" />
-    <path d="M16 8h4l3 3v5h-7V8z" />
-    <circle cx="5.5" cy="18.5" r="2.5" />
-    <circle cx="18.5" cy="18.5" r="2.5" />
+    <path d="M1 3h15v13H1z" /><path d="M16 8h4l3 3v5h-7V8z" />
+    <circle cx="5.5" cy="18.5" r="2.5" /><circle cx="18.5" cy="18.5" r="2.5" />
   </svg>
 )
 
-/* ---------- Brand-spec dropdown enums (5 tiers, 3 types, 3 best-for, 9 effects) ----------
- * Tiers are a fixed brand list of 5 — keys match the `flower_tier_prices`
- * settings shape. Type/best-for/effects are imported lists from the
- * mbs-attributes module (single source of truth there). Mirrored here as
- * string literals to avoid coupling the admin bundle to a server module. */
-/* Tier options used to be hardcoded; now fetched live from
- * GET /admin/receiving/profile/flower so adding a new Flower
- * subcategory in Medusa admin auto-appears in the receiving
- * dropdown — no code change required. Bootstrap defaults shipped
- * here cover the standard 5 tiers + any in-flight render before
- * the fetch completes. TierKey widened to string (was a union)
- * since dynamic categories produce arbitrary keys. */
-const DEFAULT_TIER_OPTIONS: Array<{ key: string; label: string }> = [
-  { key: "classic", label: "Classic" },
-  { key: "exotic",  label: "Exotic"  },
-  { key: "super",   label: "Super"   },
-  { key: "snow",    label: "Snow"    },
-  { key: "rapper",  label: "Rapper"  },
-]
-type TierKey = string
+/* ---------- Category settings, as /admin/receiving/profile/:key returns them ---------- */
+type Unit = { singular: string; plural: string }
+type Variant = { sizeKey: string; label: string }
+type Profile = {
+  key: string
+  displayName: string
+  archived?: boolean
+  subcategories: Array<{ key: string; label: string; variants?: Variant[] }>
+  variants: Variant[]
+  fields: { strainType: boolean; bestFor: boolean; effects: boolean; cannabinoids: boolean; coaRequired: boolean; upc: boolean }
+  pricingModel: "tier" | "flat"
+  tierPricesSettingKey?: string
+  inputUnitLabel: Unit
+  primaryCannabinoid?: string
+  otherCannabinoids?: Array<{ cannabinoid: string; required: boolean }>
+  invoiceUpload?: boolean
+}
+type ProfileListItem = Pick<Profile, "key" | "displayName" | "archived" | "primaryCannabinoid">
 
 const STRAIN_TYPE_OPTIONS = ["Indica", "Sativa", "Hybrid"] as const
 type StrainType = typeof STRAIN_TYPE_OPTIONS[number]
-
 const BEST_FOR_OPTIONS = [
-  { key: "day",     label: "Day"     },
+  { key: "day", label: "Day" },
   { key: "evening", label: "Evening" },
-  { key: "night",   label: "Night"   },
+  { key: "night", label: "Night" },
 ] as const
 type BestFor = typeof BEST_FOR_OPTIONS[number]["key"]
-
 const EFFECT_OPTIONS = [
   "Chill", "Energy", "Relief", "Sleep", "Focus",
   "Grounded", "Creative", "Social", "Calm",
 ] as const
-type Effect = typeof EFFECT_OPTIONS[number]
+const MAX_EFFECTS = 2
 
-/* ---------- Types matching server-side ai-extraction.ts ---------- */
-type ExtractedLineItem = {
-  strainName: string
-  quantityLb: number
-  unitPricePerLb: number
-  strainType: StrainType | null
-}
-type ExtractedSupplier = {
-  name: string
-  phone: string | null
-  email: string | null
-  address: string | null
-  qboVendorId?: string | null
-}
-type ExtractedInvoice = {
-  supplier: ExtractedSupplier
+/* Sativa→day, Hybrid→evening, Indica→night, as the old Flower page did. */
+const TYPE_TO_BEST_FOR: Record<StrainType, BestFor> = { Sativa: "day", Hybrid: "evening", Indica: "night" }
+
+/* ---------- Invoice (matches server-side ai-extraction.ts) ---------- */
+type Supplier = SupplierFields
+type Invoice = {
+  supplier: Supplier
   invoiceNumber: string
   invoiceDate: string
-  lineItems: ExtractedLineItem[]
+  /* Quantities and prices are in the category's receiving unit; the
+   * reader keeps the lb names. */
+  lineItems: Array<{ strainName: string; quantityLb: number; unitPricePerLb: number; strainType: StrainType | null }>
   shippingTotal: number
   subtotal: number | null
   total: number
   notes: string | null
 }
-
-/* Near-match returned by /admin/receiving/check-duplicates. Surfaces
- * existing products whose names are within typo-distance of this row's
- * strainName, so the operator can pick "use existing" instead of
- * accidentally creating a duplicate. */
-type NearMatch = {
-  handle: string
-  title: string
-  tier: TierKey
-  distance: number
-}
-
-/* Strain-vs-catalog classification returned by /check-duplicates
- * (new shape). One of three states per row:
- *   - restock: exact strain match at SAME tier → safe restock
- *   - tierConflict: exact strain match at DIFFERENT tier → operator is
- *       about to create a second product with the same strain name in
- *       a different tier (often unintended). Save blocks unless the
- *       operator explicitly confirms (`confirmedTierConflict`).
- *   - near: typo-distance matches (existing fuzzy warning)
- */
-type StrainClassification = {
-  restock: { productId: string; handle: string; title: string; tier: TierKey } | null
-  tierConflict: { productId: string; handle: string; title: string; tier: TierKey } | null
-  near: NearMatch[]
-}
-
-/* Per-row review state — extends the extracted line item with the
- * operator's dropdown picks + COA upload state. */
-type ReviewRow = {
-  /* extracted (editable) */
-  strainName: string
-  quantityLb: number
-  unitPricePerLb: number
-  /* operator picks — null until selected, blocks Save */
-  tier: TierKey | null
-  strainType: StrainType | null
-  bestFor: BestFor | null
-  effects: Effect[]
-  coa: CoaState
-  /* Compliance values typed from the COA. Stored as strings since
-   * Medusa's model.number is integer-only — the mbs-attributes
-   * model uses text() for decimal-friendly storage. Operator can
-   * type manually OR auto-extract from the uploaded COA via AI. */
-  thcaPercent: string
-  /* The other cannabinoids' % by name ("D9" → "0.05" or "ND"), one
-   * column each from the category's settings. D9 is printed on CBD/CBG
-   * labels. */
-  otherPercents: Record<string, string>
-  totalCannabinoidsPercent: string
-  /* Lab Sample/Test/Batch ID extracted from the COA. Printed on the
-   * wholesale label so buyers can verify the COA. Free-form text. */
-  batchId: string
-  /* Free-form AI commentary from the COA extractor — usually null,
-   * but flags lab format quirks like "decarbed Total THC reported
-   * instead of raw cannabinoid sum". Surfaced as a ⚠ tooltip in the
-   * THCa cell so the operator can review. */
-  coaNotes: string | null
-  /* Existing products that look like typo-twins of this row's strain
-   * name. Populated after extract by the check-duplicates endpoint.
-   * Operator can click "Use existing" to swap strainName + tier so
-   * the save handler hits the restock path instead of creating a
-   * duplicate product. */
-  nearMatches: NearMatch[]
-  /* Real-time strain-vs-catalog classification — re-fetched whenever
-   * strainName or tier changes. Drives the inline restock / tier-
-   * conflict banners + pre-save gate. */
-  classification: StrainClassification | null
-  /* Operator has acknowledged the tier conflict and wants to proceed
-   * with creating a NEW product anyway. Clears the pre-save block. */
-  confirmedTierConflict: boolean
-}
-
-type TierPriceMap = Record<TierKey, { qp: number; half: number; lb: number }>
-
-/* Shape we serialize into draft.payload — matches what review state
- * needs to be rehydrated. Rows are fully JSON-safe now (CoaState is
- * a discriminated union of plain objects). */
-type DraftPayload = {
-  invoice: ExtractedInvoice
-  fileName: string
-  tokens: { in: number; out: number }
-  rows: ReviewRow[]
-}
-
-/* ---------- Helpers ---------- */
-const fmtMoney = (n: number) => `$${n.toFixed(2)}`
-const fmtMoneyWhole = (n: number) => `$${Math.round(n).toLocaleString()}`
-
-/** Spread the invoice's shipping cost across line items by lb-share.
- * Returns shipping $ per lb. Per spec §3.4 landed cost calculation. */
-function shippingPerLb(invoice: ExtractedInvoice): number {
-  const totalLb = invoice.lineItems.reduce((s, li) => s + (li.quantityLb || 0), 0)
-  if (totalLb <= 0) return 0
-  return invoice.shippingTotal / totalLb
-}
-
-/* Industry-canonical mapping: sativa-dominant strains skew uplifting/
- * daytime, indica skew sedating/nighttime, hybrids land in the
- * evening middle. Operator can override per row. */
-const TYPE_TO_BEST_FOR: Record<StrainType, BestFor> = {
-  Sativa: "day",
-  Hybrid: "evening",
-  Indica: "night",
-}
-
-function makeRows(invoice: ExtractedInvoice): ReviewRow[] {
-  return invoice.lineItems.map((li) => {
-    const strainType = li.strainType ?? null
-    const bestFor = strainType ? TYPE_TO_BEST_FOR[strainType] : null
-    return {
-      strainName: li.strainName,
-      quantityLb: li.quantityLb,
-      unitPricePerLb: li.unitPricePerLb,
-      tier: null,
-      strainType,
-      bestFor,
-      effects: [],
-      coa: { state: "idle" },
-      thcaPercent: "",
-      otherPercents: {},
-      totalCannabinoidsPercent: "",
-      batchId: "",
-      coaNotes: null,
-      nearMatches: [],
-      classification: null,
-      confirmedTierConflict: false,
-    }
-  })
-}
-
-/** Empty row used when the operator chooses "Enter manually" — same
- *  shape as `addBlankRow` inside ReviewView so seeded + appended
- *  manual rows behave identically. */
-const blankReviewRow = (): ReviewRow => ({
-  strainName: "",
-  quantityLb: 0,
-  unitPricePerLb: 0,
-  tier: null,
-  strainType: null,
-  bestFor: null,
-  effects: [],
-  coa: { state: "idle" },
-  thcaPercent: "",
-  otherPercents: {},
-  totalCannabinoidsPercent: "",
-  batchId: "",
-  coaNotes: null,
-  nearMatches: [],
-  classification: null,
-  confirmedTierConflict: false,
-})
-
-/** Stub invoice used for the manual-entry path. Operator fills the
- *  supplier + invoice fields by hand in ReviewView; per-row COA
- *  extract automation is unchanged. invoiceDate defaults to today
- *  (YYYY-MM-DD) so the operator usually accepts the default. */
-const blankManualInvoice = (): ExtractedInvoice => ({
+const blankInvoice = (): Invoice => ({
   supplier: { name: "", phone: null, email: null, address: null },
   invoiceNumber: "",
   invoiceDate: new Date().toISOString().slice(0, 10),
@@ -303,524 +92,694 @@ const blankManualInvoice = (): ExtractedInvoice => ({
   notes: null,
 })
 
+type NearMatch = { handle: string; title: string; tier: string; distance: number }
+type Classification = {
+  restock: { productId: string; handle: string; title: string; tier: string } | null
+  tierConflict: { productId: string; handle: string; title: string; tier: string } | null
+  near: NearMatch[]
+}
+
+/* One receiving row. Fields a category doesn't ask for stay empty and
+ * aren't sent. */
+type Row = {
+  strainName: string
+  quantity: number
+  unitPrice: number
+  /* Only for categories priced per row ("flat"). */
+  sellPrice: number
+  subcategory: string | null
+  strainType: StrainType | null
+  bestFor: BestFor | null
+  effects: string[]
+  coa: CoaState
+  mainPercent: string
+  otherPercents: Record<string, string>
+  totalCannabinoidsPercent: string
+  batchId: string
+  upc: string
+  coaNotes: string | null
+  nearMatches: NearMatch[]
+  classification: Classification | null
+  confirmedTierConflict: boolean
+}
+const blankRow = (subcategory: string | null = null): Row => ({
+  strainName: "",
+  quantity: 0,
+  unitPrice: 0,
+  sellPrice: 0,
+  subcategory,
+  strainType: null,
+  bestFor: null,
+  effects: [],
+  coa: { state: "idle" },
+  mainPercent: "",
+  otherPercents: {},
+  totalCannabinoidsPercent: "",
+  batchId: "",
+  upc: "",
+  coaNotes: null,
+  nearMatches: [],
+  classification: null,
+  confirmedTierConflict: false,
+})
+
+/* ---------- Drafts ----------
+ * This page's drafts are kind "cat:<key>". Drafts the Flower and
+ * Pre-Rolls pages saved (kind "<key>") are listed too and converted on
+ * resume; updating one moves it to this page. */
+type Draft = { v: 2; invoice: Invoice; fileName: string; tokens: { in: number; out: number }; fromInvoice: boolean; rows: Row[] }
+const draftKind = (key: string) => `cat:${key}`
+
+function fromOldDraft(payload: any): Draft {
+  if (payload?.v === 2) return payload as Draft
+  const oldOthers = (r: any) => r.otherPercents ?? Object.fromEntries(
+    [["D9", r.d9Percent], ["THC-A", r.thcaPercent]].filter(([, v]) => v),
+  )
+  const oldCoa = (c: any): CoaState => c?.state === "ready" ? c : { state: "idle" }
+  /* Pre-Rolls page: header fields at the top, rows in boxes. */
+  if (payload?.supplier && !payload?.invoice) {
+    return {
+      v: 2,
+      invoice: {
+        ...blankInvoice(),
+        supplier: {
+          name: payload.supplier.name ?? "",
+          phone: payload.supplier.phone || null,
+          email: payload.supplier.email || null,
+          address: payload.supplier.address || null,
+          qboVendorId: payload.supplier.qboVendorId ?? null,
+        },
+        invoiceNumber: payload.invoiceNumber ?? "",
+        invoiceDate: payload.invoiceDate ?? blankInvoice().invoiceDate,
+        shippingTotal: payload.shippingTotal ?? 0,
+      },
+      fileName: "Manual Entry",
+      tokens: { in: 0, out: 0 },
+      fromInvoice: false,
+      rows: (payload.rows ?? []).map((r: any): Row => ({
+        ...blankRow(r.subcategory || null),
+        strainName: r.strainName ?? "",
+        quantity: r.quantityBoxes ?? 0,
+        unitPrice: r.costPerBox ?? 0,
+        sellPrice: r.sellPricePerBox ?? 0,
+        strainType: r.strainType || null,
+        bestFor: r.bestFor || null,
+        effects: r.effects ?? [],
+        coa: oldCoa(r.coa),
+        mainPercent: r.mainPercent ?? r.cbdPercent ?? "",
+        otherPercents: oldOthers(r),
+        totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
+        batchId: r.batchId ?? "",
+        upc: r.upc ?? "",
+      })),
+    }
+  }
+  /* Flower page: the invoice plus rows in lb. */
+  return {
+    v: 2,
+    invoice: payload?.invoice ?? blankInvoice(),
+    fileName: payload?.fileName ?? "Draft",
+    tokens: payload?.tokens ?? { in: 0, out: 0 },
+    fromInvoice: (payload?.tokens?.in ?? 0) > 0,
+    rows: (payload?.rows ?? []).map((r: any): Row => ({
+      ...blankRow(r.tier ?? null),
+      strainName: r.strainName ?? "",
+      quantity: r.quantityLb ?? 0,
+      unitPrice: r.unitPricePerLb ?? 0,
+      strainType: r.strainType ?? null,
+      bestFor: r.bestFor ?? null,
+      effects: r.effects ?? [],
+      coa: r.coa ?? { state: "idle" },
+      mainPercent: r.thcaPercent ?? "",
+      otherPercents: oldOthers(r),
+      totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
+      batchId: r.batchId ?? "",
+      coaNotes: r.coaNotes ?? null,
+      confirmedTierConflict: !!r.confirmedTierConflict,
+    })),
+  }
+}
+
+/* ---------- Helpers ---------- */
+const fmtMoney = (n: number) => `$${n.toFixed(2)}`
+const fmtMoneyWhole = (n: number) => `$${Math.round(n).toLocaleString()}`
+
+/* ---- Preview save: what /admin/receiving/save would do (preview: true) ---- */
+
+type PreviewResult = {
+  strainName: string
+  tierLabel?: string
+  action: "would-create" | "would-restock" | "failed" | "already-saved" | "not-saved"
+  productHandle?: string
+  baseSku?: string
+  poolUnitLabel?: string
+  landedPerQp: number
+  error?: string
+  preview?: {
+    stockBefore: number | null
+    stockAfter: number
+    landedBefore: number | null
+    variants?: Array<{ label: string; sku: string; price: number | null }>
+    attributeChanges?: Array<{ field: string; from: unknown; to: unknown }>
+  }
+}
+
+/* Stored attribute name → the column it comes from on this page. The
+ * cannabinoid ones derive from the cannabinoid list (cbdPercent →
+ * cbd_percent). */
+const ATTRIBUTE_LABELS: Record<string, string> = {
+  strain_type: "Type",
+  best_for: "Best For",
+  effects: "Effects",
+  total_cannabinoids_percent: "Cann %",
+  coa_url: "COA",
+  batch_id: "Batch ID",
+  ...Object.fromEntries(CANNABINOIDS.map((c) => {
+    const f = cannabinoidField(c)
+    return [f.rowField.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`), f.label]
+  })),
+}
+const showValue = (v: unknown) =>
+  v == null || v === "" ? "—" : Array.isArray(v) ? (v.length ? v.join(", ") : "—") : String(v)
+
+function PreviewPanel({ results, stale, unitLabel, onClose }: {
+  results: PreviewResult[]
+  stale: boolean
+  unitLabel: string
+  onClose: () => void
+}) {
+  const count = (a: PreviewResult["action"]) => results.filter((r) => r.action === a).length
+  const failed = count("failed")
+  const border = failed > 0 ? "#B91C1C" : "#0A0A0A"
+  const cell = { padding: "6px 8px", borderTop: "1px solid #E5E1D6", verticalAlign: "top" as const, fontSize: 13 }
+  return (
+    <div style={{ border: `1.5px solid ${border}`, background: "#fff", padding: 16 }}>
+      <div className="flex justify-between items-start gap-4">
+        <div>
+          <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em", color: border }}>
+            Preview · nothing saved
+          </Text>
+          <Text size="small">
+            {count("would-create")} new · {count("would-restock")} restock
+            {count("already-saved") > 0 && <> · {count("already-saved")} already saved on this invoice</>}
+            {failed > 0 && <> · <span style={{ color: "#B91C1C" }}>{failed} would fail, so Save would save nothing</span></>}
+          </Text>
+          {stale && (
+            <Text size="small" style={{ color: "#C98A00" }}>Out of date: the receiving changed since this preview. Preview again.</Text>
+          )}
+        </div>
+        <Button variant="transparent" size="small" onClick={onClose}>Close</Button>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 12, opacity: stale ? 0.5 : 1 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr style={{ textAlign: "left", fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              <th style={{ padding: "6px 8px" }}>Row</th>
+              <th style={{ padding: "6px 8px" }}>Would</th>
+              <th style={{ padding: "6px 8px" }}>Product</th>
+              <th style={{ padding: "6px 8px" }}>Stock</th>
+              <th style={{ padding: "6px 8px" }}>Landed / unit</th>
+              <th style={{ padding: "6px 8px" }}>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((r, i) => {
+              const p = r.preview
+              const pool = r.poolUnitLabel ?? unitLabel
+              return (
+                <tr key={i}>
+                  <td style={cell}>{i + 1}. {r.strainName}{r.tierLabel ? <span className="text-ui-fg-muted"> · {r.tierLabel}</span> : null}</td>
+                  <td style={{ ...cell, whiteSpace: "nowrap" }}>
+                    {r.action === "would-create" && <Badge color="green" size="2xsmall">New product</Badge>}
+                    {r.action === "would-restock" && <Badge color="blue" size="2xsmall">Restock</Badge>}
+                    {r.action === "already-saved" && <Badge color="grey" size="2xsmall">Already saved</Badge>}
+                    {r.action === "not-saved" && <Badge color="grey" size="2xsmall">OK</Badge>}
+                    {r.action === "failed" && <Badge color="red" size="2xsmall">Would fail</Badge>}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", fontSize: 12 }}>
+                    {r.productHandle ?? "—"}{r.baseSku && <div className="text-ui-fg-muted">{r.baseSku}</div>}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {p ? <>{p.stockBefore ?? 0} → {p.stockAfter} {pool}</> : "—"}
+                  </td>
+                  <td style={{ ...cell, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {p ? <>{p.landedBefore != null ? `${fmtMoney(p.landedBefore)} → ` : ""}{fmtMoney(r.landedPerQp)} / {pool}</> : "—"}
+                  </td>
+                  <td style={cell}>
+                    {r.action === "failed" && <span style={{ color: "#B91C1C" }}>{r.error}</span>}
+                    {r.action === "already-saved" && <span className="text-ui-fg-muted">This invoice already saved it; Save skips it.</span>}
+                    {p?.variants && (
+                      <span style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {p.variants.map((v) => `${v.label} ${v.sku} ${v.price != null ? fmtMoney(v.price) : "no price"}`).join(" · ")}
+                      </span>
+                    )}
+                    {p?.attributeChanges && (p.attributeChanges.length === 0
+                      ? <span className="text-ui-fg-muted">No detail changes</span>
+                      : p.attributeChanges.map((c) => (
+                        <div key={c.field}>
+                          {ATTRIBUTE_LABELS[c.field] ?? c.field}: {c.field === "coa_url"
+                            ? (c.from ? "replaced with this COA" : "added")
+                            : <>{showValue(c.from)} → {showValue(c.to)}</>}
+                        </div>
+                      )))}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+type TierPrices = Record<string, Record<string, number>>
+
+const readKeyFromUrl = () => {
+  try { return new URLSearchParams(window.location.search).get("key") } catch { return null }
+}
+const writeKeyToUrl = (key: string) => {
+  try {
+    const u = new URL(window.location.href)
+    u.searchParams.set("key", key)
+    window.history.replaceState(null, "", u.toString())
+  } catch { /* the page still works without it */ }
+}
+
 /* =========================================================
- * Upload view
+ * Page shell: category picker, then upload / review
  * ========================================================= */
-const UploadView: React.FC<{
-  onExtracted: (invoice: ExtractedInvoice, fileName: string, tokens: { in: number; out: number }) => void
-  onResumeDraft: (draft: DraftRow) => void
-  onManualEntry: () => void
-  /* Cannabinoid-scoped draft kind — scopes the resumable-drafts list
-   * so THC-A / CBD / CBG operators don't see each other's in-progress
-   * work when they switch branches. */
-  draftKind: string
-  /* Category being received: the invoice reader reads quantities and
-   * prices in its receiving unit. */
-  profileKey: string
-}> = ({ onExtracted, onResumeDraft, onManualEntry, draftKind, profileKey }) => {
+const CategoryReceivingPage = () => {
+  const [list, setList] = useState<ProfileListItem[] | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(() => readKeyFromUrl())
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [tierPrices, setTierPrices] = useState<TierPrices | null>(null)
+  const [draft, setDraft] = useState<(Draft & { draftId: string | null }) | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/admin/mbs/category-profiles", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const items = ((j?.profiles ?? []) as ProfileListItem[]).filter((p) => !p.archived)
+        setList(items)
+        setSelectedKey((cur) => (cur && items.some((p) => p.key === cur) ? cur : items[0]?.key ?? null))
+      })
+      .catch((e) => { if (!cancelled) setListError(e?.message ?? "Couldn't load categories") })
+    return () => { cancelled = true }
+  }, [])
+
+  /* The selected category's settings, with its live Medusa sub-categories. */
+  useEffect(() => {
+    let cancelled = false
+    setProfile(null)
+    setProfileError(null)
+    setTierPrices(null)
+    if (!selectedKey) return
+    writeKeyToUrl(selectedKey)
+    fetch(`/admin/receiving/profile/${encodeURIComponent(selectedKey)}`, { credentials: "include" })
+      .then(async (r) => {
+        const j = await r.json()
+        if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`)
+        if (!cancelled) setProfile(j.profile as Profile)
+        const settingKey = (j.profile as Profile).pricingModel === "tier" ? (j.profile as Profile).tierPricesSettingKey : undefined
+        if (!settingKey) return
+        const s = await fetch("/admin/mbs/settings", { credentials: "include" }).then((x) => x.json())
+        const row = (s.settings ?? []).find((x: any) => x.key === settingKey)
+        if (!cancelled && row?.value) setTierPrices(row.value as TierPrices)
+      })
+      .catch((e) => { if (!cancelled) setProfileError(e?.message ?? "Couldn't load the category") })
+    return () => { cancelled = true }
+  }, [selectedKey])
+
+  const changeCategory = (next: string) => {
+    if (next === selectedKey) return
+    if (draft && !confirm("Switching category clears the current receiving. Save a draft first if you need it. Continue?")) return
+    setDraft(null)
+    setSelectedKey(next)
+  }
+
+  const label = (p: ProfileListItem) => p.primaryCannabinoid ? `${p.displayName} · ${p.primaryCannabinoid}` : p.displayName
+
+  return (
+    <Container className="flex flex-col gap-6 p-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex flex-col">
+          <Heading level="h1">Receiving</Heading>
+          <Text size="small" className="text-ui-fg-subtle">
+            Columns come from each category's settings in MBS Settings → Categories.
+          </Text>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Label className="text-ui-fg-subtle">Category</Label>
+          {(list ?? []).map((p) => (
+            <Button key={p.key} size="small" variant={selectedKey === p.key ? "primary" : "secondary"} onClick={() => changeCategory(p.key)}>
+              {label(p)}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {listError || profileError ? (
+        <Text style={{ color: "#B91C1C" }}>Couldn't load {listError ? "categories" : "this category"}: {listError ?? profileError}. Reload the page.</Text>
+      ) : !profile ? (
+        <Text className="text-ui-fg-subtle">{list && list.length === 0 ? "No categories are set up yet." : "Loading…"}</Text>
+      ) : draft ? (
+        <ReviewView
+          key={`${profile.key}:${draft.draftId ?? "new"}`}
+          profile={profile}
+          tierPrices={tierPrices}
+          initial={draft}
+          onRestart={() => setDraft(null)}
+        />
+      ) : (
+        <StartView
+          profile={profile}
+          onStart={(d, draftId) => setDraft({ ...d, draftId })}
+        />
+      )}
+    </Container>
+  )
+}
+
+/* =========================================================
+ * Start: resume a draft, upload an invoice, or type rows in
+ * ========================================================= */
+const StartView: React.FC<{
+  profile: Profile
+  onStart: (d: Draft, draftId: string | null) => void
+}> = ({ profile, onStart }) => {
+  const [drafts, setDrafts] = useState<Array<DraftRow & { old: boolean }>>([])
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const onlySub = profile.subcategories.length === 1 ? profile.subcategories[0].key : null
 
-  /* Resumable drafts list — fetched on mount, refreshed when a draft
-   * is deleted from this view. */
-  const [drafts, setDrafts] = useState<DraftRow[]>([])
-  const [draftsLoading, setDraftsLoading] = useState(true)
   const loadDrafts = useCallback(async () => {
-    setDraftsLoading(true)
-    try {
-      const res = await fetch(`/admin/receiving/drafts?kind=${encodeURIComponent(draftKind)}`, { credentials: "include" })
-      if (!res.ok) throw new Error()
-      const json = await res.json()
-      setDrafts(json.drafts ?? [])
-    } catch { /* silent — drafts are optional */ }
-    finally { setDraftsLoading(false) }
-  }, [draftKind])
+    const get = (kind: string) => fetch(`/admin/receiving/drafts?kind=${encodeURIComponent(kind)}`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : { drafts: [] })).then((j) => (j.drafts ?? []) as DraftRow[]).catch(() => [] as DraftRow[])
+    const [mine, old] = await Promise.all([get(draftKind(profile.key)), get(profile.key)])
+    setDrafts([...mine.map((d) => ({ ...d, old: false })), ...old.map((d) => ({ ...d, old: true }))])
+  }, [profile.key])
   useEffect(() => { loadDrafts() }, [loadDrafts])
 
-  const deleteDraft = useCallback(async (id: string) => {
+  const discard = async (id: string) => {
     if (!confirm("Discard this draft? Cannot be undone.")) return
-    const res = await fetch(`/admin/receiving/drafts/${id}`, {
-      method: "DELETE", credentials: "include",
-    })
-    if (res.ok) {
-      toast.success("Draft discarded")
-      loadDrafts()
-    } else {
-      toast.error("Failed to discard draft")
-    }
-  }, [loadDrafts])
+    const res = await fetch(`/admin/receiving/drafts/${id}`, { method: "DELETE", credentials: "include" })
+    if (res.ok) { toast.success("Draft discarded"); loadDrafts() } else toast.error("Failed to discard draft")
+  }
 
-  const handleFile = useCallback((f: File | null) => {
+  const pick = (f: File | null) => {
     setError(null)
     if (!f) { setFile(null); return }
-    if (f.type !== "application/pdf") {
-      setError(`Expected a PDF — got ${f.type || "unknown type"}`)
-      return
-    }
-    if (f.size > 15 * 1024 * 1024) {
-      setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB) — max 15 MB`)
-      return
-    }
+    if (f.type !== "application/pdf") { setError(`Expected a PDF — got ${f.type || "unknown type"}`); return }
+    if (f.size > 15 * 1024 * 1024) { setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB) — max 15 MB`); return }
     setFile(f)
-  }, [])
+  }
 
-  const submit = useCallback(async () => {
+  const extract = async () => {
     if (!file) return
     setBusy(true)
     setError(null)
     try {
       const fd = new FormData()
       fd.append("invoice", file)
-      fd.append("profileKey", profileKey)
-      const res = await fetch("/admin/receiving/extract", {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      })
+      fd.append("profileKey", profile.key)
+      const res = await fetch("/admin/receiving/extract", { method: "POST", credentials: "include", body: fd })
       const json = await res.json()
-      if (!res.ok || !json.ok) {
-        throw new Error(json?.error ?? `Extract failed (${res.status})`)
-      }
-      toast.success("Invoice extracted", {
-        description: `${json.data.lineItems.length} line items · ${json.tokensIn + json.tokensOut} tokens`,
-      })
-      onExtracted(json.data, json.fileName, { in: json.tokensIn, out: json.tokensOut })
+      if (!res.ok || !json.ok) throw new Error(json?.error ?? `Extract failed (${res.status})`)
+      const invoice = json.data as Invoice
+      toast.success("Invoice extracted", { description: `${invoice.lineItems.length} line items · ${json.tokensIn + json.tokensOut} tokens` })
+      onStart({
+        v: 2,
+        invoice,
+        fileName: json.fileName,
+        tokens: { in: json.tokensIn, out: json.tokensOut },
+        fromInvoice: true,
+        rows: invoice.lineItems.map((li) => ({
+          ...blankRow(onlySub),
+          strainName: li.strainName,
+          quantity: li.quantityLb,
+          unitPrice: li.unitPricePerLb,
+          strainType: profile.fields.strainType ? li.strainType ?? null : null,
+          bestFor: profile.fields.strainType && li.strainType ? TYPE_TO_BEST_FOR[li.strainType] : null,
+        })),
+      }, null)
     } catch (e: any) {
       setError(e?.message ?? "Network error")
     } finally {
       setBusy(false)
     }
-  }, [file, onExtracted, profileKey])
+  }
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Resume drafts — only renders when drafts exist */}
-      {!draftsLoading && drafts.length > 0 && (
+      {drafts.length > 0 && (
         <div className="flex flex-col gap-3">
           <Heading level="h2">Resume Drafts</Heading>
-          <div className="flex flex-col gap-2">
-            {drafts.map((d) => (
-              <DraftCard key={d.id} draft={d} onResume={() => onResumeDraft(d)} onDiscard={() => deleteDraft(d.id)} />
-            ))}
-          </div>
+          {drafts.map((d) => (
+            <div key={d.id} className="flex flex-col gap-1">
+              <DraftCard draft={d} onResume={() => onStart(fromOldDraft(d.payload), d.id)} onDiscard={() => discard(d.id)} />
+              {d.old && (
+                <Text size="xsmall" className="text-ui-fg-muted">
+                  Saved on the old {profile.key === "pre-roll" ? "Pre-Rolls" : "Receiving"} page. Updating it here moves it to this page.
+                </Text>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
-      <Heading level="h2">{drafts.length > 0 ? "Or Upload a New Invoice" : "Upload Supplier Invoice"}</Heading>
-      <Text className="text-ui-fg-subtle">
-        Drop a supplier invoice PDF below. The AI will extract supplier info, invoice metadata,
-        and per-strain line items. You'll review + add attributes (tier, type, effects) before
-        creating products.
-      </Text>
-
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault()
-          setDragOver(false)
-          handleFile(e.dataTransfer.files?.[0] ?? null)
-        }}
-        onClick={() => inputRef.current?.click()}
-        style={{
-          border: dragOver ? "2px solid #0A0A0A" : "2px dashed #C9C3B2",
-          background: dragOver ? "rgba(10,10,10,0.04)" : "#FAFAF7",
-          padding: "48px 24px",
-          textAlign: "center",
-          cursor: "pointer",
-          transition: "all 120ms ease",
-        }}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/pdf"
-          style={{ display: "none" }}
-          onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
-        />
-        {file ? (
-          <div className="flex flex-col gap-1">
-            <Text size="large" weight="plus">{file.name}</Text>
+      {profile.invoiceUpload ? (
+        <>
+          <Heading level="h2">{drafts.length > 0 ? "Or Upload a New Invoice" : "Upload Supplier Invoice"}</Heading>
+          <Text className="text-ui-fg-subtle">
+            Drop a supplier invoice PDF. The AI reads the supplier, the invoice details and one row per product, with
+            quantities and costs in {profile.inputUnitLabel.plural}. You review and fill in the rest before saving.
+          </Text>
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); pick(e.dataTransfer.files?.[0] ?? null) }}
+            onClick={() => inputRef.current?.click()}
+            style={{
+              border: dragOver ? "2px solid #0A0A0A" : "2px dashed #C9C3B2",
+              background: dragOver ? "rgba(10,10,10,0.04)" : "#FAFAF7",
+              padding: "48px 24px", textAlign: "center", cursor: "pointer", transition: "all 120ms ease",
+            }}
+          >
+            <input ref={inputRef} type="file" accept="application/pdf" style={{ display: "none" }}
+              onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+            <Text size="large" weight="plus">{file ? file.name : "Drop a PDF here"}</Text>
             <Text size="small" className="text-ui-fg-subtle">
-              {(file.size / 1024).toFixed(0)} KB · click or drop to replace
+              {file ? `${(file.size / 1024).toFixed(0)} KB · click or drop to replace` : "or click to browse · max 15 MB"}
             </Text>
           </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <Text size="large" weight="plus">Drop a PDF here</Text>
-            <Text size="small" className="text-ui-fg-subtle">or click to browse · max 15 MB</Text>
-          </div>
-        )}
-      </div>
-
-      {error && (
-        <div style={{ border: "1.5px solid #B91C1C", padding: "12px 16px", background: "#fff" }}>
-          <Text size="small" weight="plus" style={{ color: "#B91C1C" }}>{error}</Text>
-        </div>
+          {error && (
+            <div style={{ border: "1.5px solid #B91C1C", padding: "12px 16px", background: "#fff" }}>
+              <Text size="small" weight="plus" style={{ color: "#B91C1C" }}>{error}</Text>
+            </div>
+          )}
+        </>
+      ) : (
+        <Text className="text-ui-fg-subtle">
+          {profile.displayName} is typed in row by row. To read supplier invoices for it, turn on "Receive by invoice
+          upload" in MBS Settings → Categories.
+        </Text>
       )}
 
       <div className="flex justify-between items-center">
-        {/* Manual-entry escape hatch — no PDF to upload (one-off SKU,
-         *  sample, in-house product). Skips invoice extract; jumps
-         *  straight to the review grid with a blank row. Per-row COA
-         *  AI extract still runs whenever the operator drops a COA. */}
-        <Button variant="secondary" disabled={busy} onClick={onManualEntry}>
-          Skip — Enter Manually
+        <Button variant={profile.invoiceUpload ? "secondary" : "primary"} disabled={busy}
+          onClick={() => onStart({ v: 2, invoice: blankInvoice(), fileName: "Manual Entry", tokens: { in: 0, out: 0 }, fromInvoice: false, rows: [blankRow(onlySub)] }, null)}>
+          {profile.invoiceUpload ? "Skip — Enter Manually" : "Start Receiving"}
         </Button>
-        <Button
-          variant="primary"
-          disabled={!file || busy}
-          onClick={submit}
-        >
-          {busy ? "Extracting…" : "Extract Invoice"}
-        </Button>
+        {profile.invoiceUpload && (
+          <Button variant="primary" disabled={!file || busy} onClick={extract}>{busy ? "Extracting…" : "Extract Invoice"}</Button>
+        )}
       </div>
     </div>
   )
 }
 
 /* =========================================================
- * Review view (header + spreadsheet)
+ * Review: header + spreadsheet
  * ========================================================= */
+
+/* A spreadsheet column. Which ones show comes from the category. */
+type Col = { id: string; header: React.ReactNode; width: number; align?: "left" | "right"; cell: (row: Row, i: number) => React.ReactNode }
+
 const ReviewView: React.FC<{
-  invoice: ExtractedInvoice
-  fileName: string
-  tokens: { in: number; out: number }
-  tierPrices: TierPriceMap | null
-  /* Tier options sourced live from the profile endpoint at page level —
-   * lets new Medusa categories under "Flower" auto-appear in dropdowns. */
-  tierOptions: Array<{ key: string; label: string }>
-  /* The category's main cannabinoid (MBS Settings → Categories). Drives
-   * the % column label, which attribute the % saves to, and what the
-   * COA reader looks for. */
-  primaryCannabinoid: string | null
-  /* Cannabinoids recorded next to the main one, a column each. */
-  otherCannabinoids: OtherCannabinoid[] | null
-  /* The category's receiving unit, for the quantity and cost headers. */
-  inputUnit: { singular: string; plural: string }
-  /* Receiving profile key sent to /admin/receiving/save so the
-   * server picks the right FLOWER_*_PROFILE (subcategories, tier
-   * prices, category parent). */
-  profileKey: string
-  /* Draft summary.kind so resumable drafts are scoped per-cannabinoid. */
-  draftKind: string
-  /* When resuming, the draft's persisted rows replace the freshly-extracted
-   * defaults. coaFile is always null for restored rows (operator re-attaches). */
-  initialRows?: ReviewRow[]
-  /* If set, Save Draft updates this draft. Otherwise, first save creates one. */
-  initialDraftId?: string | null
+  profile: Profile
+  tierPrices: TierPrices | null
+  initial: Draft & { draftId: string | null }
   onRestart: () => void
-}> = ({ invoice: initialInvoice, fileName, tokens, tierPrices, tierOptions, primaryCannabinoid, otherCannabinoids, inputUnit, profileKey, draftKind, initialRows, initialDraftId, onRestart }) => {
-  /* Column label + save-payload field name for the main cannabinoid %.
-   * Each cannabinoid has its own product attribute; receiving-save
-   * writes whichever field is sent. */
-  const { label: cannabinoidPctLabel, rowField: cannabinoidPctFieldName } = cannabinoidField(primaryCannabinoid)
-  /* Resizable spreadsheet columns — drag column edges to resize.
-   * Widths persist per browser via localStorage. */
-  const otherCols = useMemo(() => otherCannabinoidColumns(primaryCannabinoid, otherCannabinoids), [primaryCannabinoid, otherCannabinoids])
-  /* Widths are stored per column count; one other cannabinoid keeps the
-   * key widths were saved under before these were settings. */
-  const { widths: colWidths, startResize: startColResize, totalWidth: colsTotal, reset: resetCols } = useColumnWidths(
-    otherCols.length === 1 ? FLOWER_COLS_KEY : `${FLOWER_COLS_KEY}.others-${otherCols.length}`,
-    flowerColDefaults(otherCols.length),
+}> = ({ profile, tierPrices, initial, onRestart }) => {
+  const f = profile.fields
+  const unit = profile.inputUnitLabel
+  const main = cannabinoidField(profile.primaryCannabinoid)
+  const otherCols = useMemo(
+    () => (f.cannabinoids ? otherCannabinoidColumns(profile.primaryCannabinoid, profile.otherCannabinoids) : []),
+    [f.cannabinoids, profile.primaryCannabinoid, profile.otherCannabinoids],
   )
-  /* Index of the first column after the other cannabinoids. */
-  const afterOthers = 8 + otherCols.length
-  const [invoice, setInvoice] = useState<ExtractedInvoice>(initialInvoice)
-  const [rows, setRows] = useState<ReviewRow[]>(() => initialRows ?? makeRows(initialInvoice))
+  const flat = profile.pricingModel === "flat"
+  const showBatch = f.cannabinoids || f.coaRequired
+  const subOptions = profile.subcategories.map((s) => ({ key: s.key, label: s.label }))
+  const onlySub = subOptions.length === 1 ? subOptions[0].key : null
+
+  const [invoice, setInvoice] = useState<Invoice>(initial.invoice)
+  const [rows, setRows] = useState<Row[]>(initial.rows.length ? initial.rows : [blankRow(onlySub)])
+  const [draftId, setDraftId] = useState<string | null>(initial.draftId)
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(initial.draftId ? new Date() : null)
   const [saving, setSaving] = useState(false)
   const [savingDraft, setSavingDraft] = useState(false)
-  const [draftId, setDraftId] = useState<string | null>(initialDraftId ?? null)
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(initialDraftId ? new Date() : null)
-  /* Selected row indices for bulk-fill. Set instead of array for
-   * cheap has/add/delete. Bulk dropdowns appear when size > 0. */
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  /* Indices currently being AI-parsed (THCa/Cann from COA). Drives
-   * the spinner state on per-row buttons + bulk progress count. */
   const [coaParsing, setCoaParsing] = useState<Set<number>>(new Set())
-  /* Per-row outcomes from the most recent Save click. Drives the
-   * green/red status pill in each row. Cleared on next Save attempt
-   * or when operator edits any row (so stale "✓ created" doesn't
-   * mislead them after they've changed something). */
   const [saveResults, setSaveResults] = useState<SaveRowResult[] | null>(null)
-
-  /* Full-success state — when ALL rows save cleanly we replace the
-   * review form with a success card so the operator can't accidentally
-   * re-click Save (which would hit the restock path on every row and
-   * pile up a duplicate failed receiving in history). The card carries
-   * the Push to QuickBooks button + links into the new receiving and
-   * the receiving history detail. */
-  const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null)
-  const [savedSummary, setSavedSummary] = useState<{ created: number; restocked: number } | null>(null)
-  const [savedPushedBillId, setSavedPushedBillId] = useState<string | null>(null)
+  const [preview, setPreview] = useState<{ key: string; results: PreviewResult[] } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [saved, setSaved] = useState<{ historyId: string; created: number; restocked: number } | null>(null)
+  const [pushedBillId, setPushedBillId] = useState<string | null>(null)
   const [pushingToQbo, setPushingToQbo] = useState(false)
 
-  const shipPerLb = useMemo(() => shippingPerLb(invoice), [invoice])
+  /* ---- Totals and shipping spread (by quantity share, as the old Flower page did) ---- */
+  const totalQty = rows.reduce((s, r) => s + (r.quantity || 0), 0)
+  const shipPerUnit = totalQty > 0 ? (invoice.shippingTotal || 0) / totalQty : 0
+  const computedSubtotal = rows.reduce((s, r) => s + (r.quantity || 0) * (r.unitPrice || 0), 0)
+  const computedTotal = computedSubtotal + (invoice.shippingTotal || 0)
+  const subtotalDiverges = initial.fromInvoice && invoice.subtotal != null && Math.abs(invoice.subtotal - computedSubtotal) > 0.01
+  const totalDiverges = initial.fromInvoice && Math.abs((invoice.total || 0) - computedTotal) > 0.01
 
-  /* Check existing catalog for typo-twins of every strain on first
-   * mount. Annotates rows with `nearMatches` so the operator sees a
-   * ⚠ warning + "Use existing" button on rows that look like an
-   * AI typo of an already-stocked strain. Single round trip. */
+  /* ---- Duplicate / restock checks (same endpoint and flow the old Flower page used) ---- */
   useEffect(() => {
-    let cancelled = false
     const names = rows.map((r) => r.strainName).filter(Boolean)
     if (names.length === 0) return
+    let cancelled = false
     fetch("/admin/receiving/check-duplicates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ strainNames: names, profileKey }),
+      method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+      body: JSON.stringify({ strainNames: names, profileKey: profile.key }),
     })
       .then((r) => r.json())
       .then((j) => {
-        if (cancelled) return
         const matches: Record<string, NearMatch[]> = j.matches ?? {}
-        if (Object.keys(matches).length === 0) return
-        setRows((cur) => cur.map((r) => ({
-          ...r,
-          nearMatches: matches[r.strainName] ?? [],
-        })))
+        if (cancelled || Object.keys(matches).length === 0) return
+        setRows((cur) => cur.map((r) => ({ ...r, nearMatches: matches[r.strainName] ?? [] })))
       })
-      .catch(() => { /* silent — duplicate-check is a hint, not load-bearing */ })
+      .catch(() => { /* a hint, not load-bearing */ })
     return () => { cancelled = true }
-    /* Run once on mount; if operator manually adds a row later they'll
-     * see warnings only after a manual "Re-check duplicates" action
-     * (out of scope for v0 — typing drift is rare enough not to bother). */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /* ─── Real-time strain/tier classification ───────────────────────
-   *
-   * Debounced — re-runs whenever any row's strainName or tier changes.
-   * Annotates each row with `classification` (restock / tierConflict /
-   * near). Drives the inline banner under each row + the pre-save gate.
-   *
-   * Keyed by the JSON of all (strain, tier) pairs so identical sequences
-   * skip the round-trip, but any change re-fires. */
   const classificationKey = useMemo(
-    () => JSON.stringify(rows.map((r) => ({ s: r.strainName ?? "", t: r.tier ?? null }))),
+    () => JSON.stringify(rows.map((r) => ({ s: r.strainName ?? "", t: r.subcategory ?? null }))),
     [rows],
   )
   useEffect(() => {
     const parsed = JSON.parse(classificationKey) as Array<{ s: string; t: string | null }>
     if (parsed.every((p) => !p.s)) return
+    let cancelled = false
     const t = setTimeout(() => {
-      let cancelled = false
       fetch("/admin/receiving/check-duplicates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ profileKey, rows: parsed.map((p) => ({ strainName: p.s, tier: p.t })) }),
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ profileKey: profile.key, rows: parsed.map((p) => ({ strainName: p.s, tier: p.t })) }),
       })
         .then((r) => r.json())
         .then((j) => {
           if (cancelled) return
-          const out = (j.matches ?? []) as Array<StrainClassification & { strainName: string; tier: string | null }>
+          const out = (j.matches ?? []) as Classification[]
           setRows((cur) => cur.map((row, i) => {
             const c = out[i]
             if (!c) return row
-            /* If the classification didn't move us out of a tier_conflict,
-             * keep the operator's prior acknowledgement. Otherwise clear
-             * it so a new conflict requires fresh confirmation. */
-            const stillConflict = !!c.tierConflict
             return {
               ...row,
               classification: { restock: c.restock, tierConflict: c.tierConflict, near: c.near },
-              confirmedTierConflict: stillConflict ? row.confirmedTierConflict : false,
+              confirmedTierConflict: c.tierConflict ? row.confirmedTierConflict : false,
             }
           }))
         })
         .catch(() => { /* silent */ })
-      return () => { cancelled = true }
     }, 300)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classificationKey])
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [classificationKey, profile.key])
 
-  /* Rows whose tier conflicts with an existing product and aren't yet
-   * acknowledged. Save is blocked while this list is non-empty. */
-  const unconfirmedConflicts = rows
-    .map((r, i) => ({ row: r, idx: i }))
-    .filter(({ row }) => row.classification?.tierConflict && !row.confirmedTierConflict)
+  const unconfirmedConflicts = rows.filter((r) => r.classification?.tierConflict && !r.confirmedTierConflict).length
 
-  /* Live-computed totals from current rows. Differs from the AI-extracted
-   * `invoice.subtotal` / `invoice.total` if the operator added/removed/
-   * edited rows. Render both so divergence is visible. */
-  const computedSubtotal = useMemo(
-    () => rows.reduce((s, r) => s + (r.quantityLb || 0) * (r.unitPricePerLb || 0), 0),
-    [rows],
-  )
-  const computedTotal = useMemo(
-    () => computedSubtotal + (invoice.shippingTotal || 0),
-    [computedSubtotal, invoice.shippingTotal],
-  )
-  /* Threshold for "differs" warning. >$0.01 catches real edits without
-   * flagging floating-point noise. */
-  const subtotalDiverges = invoice.subtotal != null && Math.abs(invoice.subtotal - computedSubtotal) > 0.01
-  const totalDiverges = Math.abs((invoice.total || 0) - computedTotal) > 0.01
-
-  /* keep shipping spread accurate if operator edits qty inline */
-  useEffect(() => {
-    setInvoice((cur) => ({
-      ...cur,
-      lineItems: rows.map((r) => ({
-        strainName: r.strainName,
-        quantityLb: r.quantityLb,
-        unitPricePerLb: r.unitPricePerLb,
-        strainType: r.strainType,
-      })),
-    }))
-  }, [rows])
-
-  /* Per-row completeness — every field the operator owns must be
-   * filled (or auto-filled by AI). Drives both the row tint
-   * (orange = missing, green = complete) and the Save-button gate.
-   *
-   * Required: strainName, qty, tier, type, bestFor, main %, each required
-   * other cannabinoid %, cann %, COA file uploaded. Effects are intentionally optional (the brand
-   * card shows max 2; zero is allowed at receiving). */
-  const isRowComplete = useCallback((r: ReviewRow): boolean => {
-    return !!(
-      r.strainName.trim() &&
-      r.quantityLb > 0 &&
-      r.tier &&
-      r.strainType &&
-      r.bestFor &&
-      r.thcaPercent.trim() &&
-      otherCols.every((o) => !o.required || (r.otherPercents[o.cannabinoid] ?? "").trim()) &&
-      r.totalCannabinoidsPercent.trim() &&
-      r.coa.state === "ready"
-    )
-  }, [otherCols])
+  /* ---- Completeness: what this category asks for ---- */
   const vendors = useQboVendors()
-  const vendorOk = supplierReady(invoice.supplier, vendors)
-  const allValid = vendorOk && rows.length > 0 && rows.every(isRowComplete)
+  const headerComplete = !!(supplierReady(invoice.supplier, vendors) && invoice.invoiceNumber.trim() && invoice.invoiceDate)
+  const isRowComplete = useCallback((r: Row): boolean => !!(
+    r.strainName.trim() &&
+    r.quantity > 0 &&
+    r.subcategory &&
+    (!flat || r.sellPrice > 0) &&
+    (!f.strainType || r.strainType) &&
+    (!f.bestFor || r.bestFor) &&
+    (!f.cannabinoids || (
+      r.mainPercent.trim() &&
+      r.totalCannabinoidsPercent.trim() &&
+      otherCols.every((o) => !o.required || (r.otherPercents[o.cannabinoid] ?? "").trim())
+    )) &&
+    (f.coaRequired ? r.coa.state === "ready" : r.coa.state !== "uploading")
+  ), [flat, f.strainType, f.bestFor, f.cannabinoids, f.coaRequired, otherCols])
+  const allValid = headerComplete && rows.length > 0 && rows.every(isRowComplete)
 
-  const updateRow = useCallback((idx: number, patch: Partial<ReviewRow>) => {
-    setRows((cur) => cur.map((r, i) => {
-      if (i !== idx) return r
-      /* Auto-derive bestFor whenever strainType is set/changed —
-       * Sativa→day, Hybrid→evening, Indica→night per TYPE_TO_BEST_FOR.
-       * Overwrites any prior bestFor (the user's "always re-derive"
-       * call). Operator can still tweak bestFor after AS LONG AS
-       * strainType doesn't change again. */
-      const next = { ...r, ...patch }
-      if (patch.strainType !== undefined && patch.strainType !== r.strainType) {
-        next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType] : null
-      }
-      return next
-    }))
-    /* Stale results would mislead the operator after they edit. Clear
-     * them on any row change. */
+  /* ---- Row edits ---- */
+  const withBestFor = (r: Row, patch: Partial<Row>): Row => {
+    const next = { ...r, ...patch }
+    if (f.bestFor && patch.strainType !== undefined && patch.strainType !== r.strainType) {
+      next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType] : null
+    }
+    return next
+  }
+  const updateRow = useCallback((idx: number, patch: Partial<Row>) => {
+    setRows((cur) => cur.map((r, i) => (i === idx ? withBestFor(r, patch) : r)))
     setSaveResults(null)
-  }, [])
-
-  /* "Use existing" click handler — swaps the row's strainName + tier
-   * to match a near-match suggestion so the save handler hits the
-   * restock path. Also clears nearMatches since the typo is resolved. */
-  const useExistingMatch = useCallback((idx: number, m: NearMatch) => {
-    setRows((cur) => cur.map((r, i) => i === idx ? {
-      ...r,
-      strainName: m.title,
-      tier: m.tier,
-      nearMatches: [],
-      classification: null,
-      confirmedTierConflict: false,
-    } : r))
-    /* The strain name / tier just changed — kick a fresh classification
-     * via the debounced check below. */
-    setSaveResults(null)
-  }, [])
-
-  /* ---- Row add / delete ----
-   * Add appends a blank row at the bottom (orange tint until filled).
-   * Delete removes selected indices and clears the selection set. Both
-   * also clear stale save-result pills since the row indices shift. */
-  const addBlankRow = useCallback(() => {
-    setRows((cur) => [...cur, {
-      strainName: "",
-      quantityLb: 0,
-      unitPricePerLb: 0,
-      tier: null,
-      strainType: null,
-      bestFor: null,
-      effects: [],
-      coa: { state: "idle" },
-      thcaPercent: "",
-      otherPercents: {},
-      totalCannabinoidsPercent: "",
-      batchId: "",
-      coaNotes: null,
-      nearMatches: [],
-      classification: null,
-      confirmedTierConflict: false,
-    } as ReviewRow])
-    setSaveResults(null)
-  }, [])
-
-  const deleteSelectedRows = useCallback(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.bestFor])
+  const bulkApply = (patch: Partial<Row>) => {
     if (selected.size === 0) return
-    if (!confirm(`Delete ${selected.size} row(s)?`)) return
+    setRows((cur) => cur.map((r, i) => (selected.has(i) ? withBestFor(r, patch) : r)))
+    setSelected(new Set())
+  }
+  const useExistingMatch = (idx: number, m: NearMatch) => {
+    setRows((cur) => cur.map((r, i) => i === idx
+      ? { ...r, strainName: m.title, subcategory: m.tier, nearMatches: [], classification: null, confirmedTierConflict: false }
+      : r))
+    setSaveResults(null)
+  }
+  const addRow = () => { setRows((cur) => [...cur, blankRow(onlySub)]); setSaveResults(null) }
+  const deleteSelected = () => {
+    if (selected.size === 0 || !confirm(`Delete ${selected.size} row(s)?`)) return
     setRows((cur) => cur.filter((_, i) => !selected.has(i)))
     setSelected(new Set())
     setSaveResults(null)
-  }, [selected])
+  }
+  const toggleRow = (idx: number) => setSelected((cur) => {
+    const next = new Set(cur)
+    next.has(idx) ? next.delete(idx) : next.add(idx)
+    return next
+  })
+  const toggleAll = () => setSelected((cur) => (cur.size === rows.length ? new Set() : new Set(rows.map((_, i) => i))))
+  const toggleEffect = (idx: number, e: string) => setRows((cur) => cur.map((r, i) => {
+    if (i !== idx) return r
+    if (r.effects.includes(e)) return { ...r, effects: r.effects.filter((x) => x !== e) }
+    return r.effects.length >= MAX_EFFECTS ? r : { ...r, effects: [...r.effects, e] }
+  }))
 
-  /* ---- Selection helpers ---- */
-  const toggleRow = useCallback((idx: number) => {
-    setSelected((cur) => {
-      const next = new Set(cur)
-      next.has(idx) ? next.delete(idx) : next.add(idx)
-      return next
-    })
-  }, [])
-  const toggleAll = useCallback(() => {
-    setSelected((cur) => cur.size === rows.length ? new Set() : new Set(rows.map((_, i) => i)))
-  }, [rows.length])
-  const clearSelection = useCallback(() => setSelected(new Set()), [])
-
-  /* Apply a partial patch to every selected row at once. Used by the
-   * bulk toolbar dropdowns. After applying, selection is cleared so
-   * the toolbar disappears (operator's signal that the bulk op landed). */
-  const bulkApply = useCallback((patch: Partial<ReviewRow>) => {
-    if (selected.size === 0) return
-    setRows((cur) => cur.map((r, i) => {
-      if (!selected.has(i)) return r
-      /* Mirror updateRow's auto-derive: when bulk Type is applied,
-       * bestFor follows for every selected row. */
-      const next = { ...r, ...patch }
-      if (patch.strainType !== undefined && patch.strainType !== r.strainType) {
-        next.bestFor = patch.strainType ? TYPE_TO_BEST_FOR[patch.strainType] : null
-      }
-      return next
-    }))
-    setSelected(new Set())
-  }, [selected])
-
-  /* AI extraction of THCa/Cann% from one row's already-uploaded COA.
-   * No-op if the row has no COA ready. Updates the spinner Set so the
-   * UI shows feedback. Returns a result tuple so the bulk caller can
-   * report counts. */
+  /* ---- COA reader: main %, the other cannabinoids, Cann %, batch ---- */
   const parseCoaForRow = useCallback(async (idx: number): Promise<"ok" | "skipped" | "error"> => {
     const row = rows[idx]
     if (!row || row.coa.state !== "ready") return "skipped"
-    setCoaParsing((cur) => { const next = new Set(cur); next.add(idx); return next })
+    setCoaParsing((cur) => new Set(cur).add(idx))
     try {
       const res = await fetch("/admin/receiving/coa-parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({
-          coaUrl: (row.coa as any).url,
-          /* Tell the extractor which cannabinoid to target. Without this,
-           * the AI defaults to "prefer THCa" — which on a hemp CBD COA
-           * returns the trace THCa row (<0.3%) and stamps it into
-           * cbd_percent. See ai-coa-extraction.ts. */
-          primary: primaryCannabinoid ?? undefined,
-          /* The category's other cannabinoids, read from the same COA. */
+          coaUrl: row.coa.url,
+          primary: profile.primaryCannabinoid ?? undefined,
           others: otherCols.map((o) => o.cannabinoid),
         }),
       })
@@ -828,10 +787,7 @@ const ReviewView: React.FC<{
       if (!res.ok || !json.ok) throw new Error(json?.error ?? `Parse failed (${res.status})`)
       setRows((cur) => cur.map((r, i) => i === idx ? {
         ...r,
-        thcaPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.thcaPercent,
-        /* D9 comes back on every COA (it shows when D9 is a column); the
-         * rest come back under `others` when asked for. A value the
-         * reader didn't find keeps what's typed. */
+        mainPercent: json.thcaPercent != null ? String(json.thcaPercent) : r.mainPercent,
         otherPercents: {
           ...r.otherPercents,
           ...(json.d9Percent != null ? { D9: String(json.d9Percent) } : {}),
@@ -848,162 +804,135 @@ const ReviewView: React.FC<{
     } finally {
       setCoaParsing((cur) => { const next = new Set(cur); next.delete(idx); return next })
     }
-  }, [rows, primaryCannabinoid, otherCols])
+  }, [rows, profile.primaryCannabinoid, otherCols])
 
-  /* Bulk: run extraction on every row that has a COA but lacks both
-   * percentages. Bounded concurrency keeps Anthropic happy + the
-   * browser network panel readable. Promise-pool pattern. */
-  const parseAllCoas = useCallback(async () => {
-    const targets = rows
-      .map((r, i) => ({ r, i }))
-      .filter(({ r }) => r.coa.state === "ready" && (!r.thcaPercent.trim() || otherCols.some((o) => !(r.otherPercents[o.cannabinoid] ?? "").trim()) || !r.totalCannabinoidsPercent.trim()))
+  const parseAllCoas = async () => {
+    const targets = rows.map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.coa.state === "ready" && (
+        !r.mainPercent.trim() || !r.totalCannabinoidsPercent.trim() ||
+        otherCols.some((o) => !(r.otherPercents[o.cannabinoid] ?? "").trim())))
       .map(({ i }) => i)
     if (targets.length === 0) {
       toast.info("Nothing to extract", { description: "Every row with a COA already has its percentages filled." })
       return
     }
-    const CONCURRENCY = 6
-    let parsed = 0
-    let failed = 0
-    let cursor = 0
+    let parsed = 0, failed = 0, cursor = 0
     const worker = async () => {
       while (cursor < targets.length) {
-        const myIdx = targets[cursor++]
-        const result = await parseCoaForRow(myIdx)
-        if (result === "ok") parsed += 1
-        else if (result === "error") failed += 1
+        const result = await parseCoaForRow(targets[cursor++])
+        if (result === "ok") parsed++
+        else if (result === "error") failed++
       }
     }
     const t0 = Date.now()
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker))
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-    toast.success(`Auto-fill complete`, {
-      description: `${parsed} parsed · ${failed} failed · ${elapsed}s`,
-    })
-  }, [rows, parseCoaForRow, otherCols])
+    await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker))
+    toast.success("Auto-fill complete", { description: `${parsed} parsed · ${failed} failed · ${((Date.now() - t0) / 1000).toFixed(1)}s` })
+  }
 
-  /* Brand spec caps card display at 2 effects, so we enforce the cap
-   * here too. Clicking a third selection is a no-op; deselect first. */
-  const MAX_EFFECTS = 2
-  const toggleEffect = useCallback((idx: number, effect: Effect) => {
-    setRows((cur) => cur.map((r, i) => {
-      if (i !== idx) return r
-      const has = r.effects.includes(effect)
-      if (has) return { ...r, effects: r.effects.filter((e) => e !== effect) }
-      if (r.effects.length >= MAX_EFFECTS) return r
-      return { ...r, effects: [...r.effects, effect] }
-    }))
-  }, [])
-
-  /* Save (or update) the draft. Rows are fully JSON-safe (COA state
-   * is { state, url?, originalName? }) so they round-trip cleanly. */
-  const onSaveDraft = useCallback(async () => {
+  /* ---- Draft ---- */
+  const onSaveDraft = async () => {
     setSavingDraft(true)
     try {
-      const payload: DraftPayload = {
-        invoice,
-        fileName,
-        tokens,
-        rows,
-      }
-      const summary: DraftSummary & { kind: string } = {
-        fileName,
+      const payload: Draft = { v: 2, invoice, fileName: initial.fileName, tokens: initial.tokens, fromInvoice: initial.fromInvoice, rows }
+      const summary = {
+        kind: draftKind(profile.key),
+        fileName: initial.fileName,
         supplierName: invoice.supplier.name,
         invoiceNumber: invoice.invoiceNumber,
         lineItemCount: rows.length,
-        completeRows: rows.filter((r) => isRowComplete(r)).length,
-        /* Stamp cannabinoid kind so /admin/receiving/drafts?kind=… scopes
-         * each operator to their branch's in-progress work. */
-        kind: draftKind,
+        completeRows: rows.filter(isRowComplete).length,
       }
-      const url = draftId ? `/admin/receiving/drafts/${draftId}` : "/admin/receiving/drafts"
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+      const res = await fetch(draftId ? `/admin/receiving/drafts/${draftId}` : "/admin/receiving/drafts", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ payload, summary }),
       })
       const json = await res.json()
       if (!res.ok || !json.ok) throw new Error(json?.message ?? `Save failed (${res.status})`)
       if (!draftId) setDraftId(json.draft.id)
       setLastSavedAt(new Date())
-      toast.success(draftId ? "Draft updated" : "Draft saved", {
-        description: "You can close this tab and resume later.",
-      })
+      toast.success(draftId ? "Draft updated" : "Draft saved", { description: "You can close this tab and resume later." })
     } catch (e: any) {
       toast.error("Couldn't save draft", { description: e?.message ?? "Network error" })
     } finally {
       setSavingDraft(false)
     }
-  }, [draftId, invoice, fileName, tokens, rows, draftKind])
+  }
 
-  const onSave = useCallback(async () => {
-    if (!allValid) return
+  /* ---- Save: the same /admin/receiving/save as the other pages ---- */
+  const buildPayload = () => ({
+    profileKey: profile.key,
+    supplier: invoice.supplier,
+    invoiceNumber: invoice.invoiceNumber,
+    invoiceDate: invoice.invoiceDate,
+    shippingTotal: invoice.shippingTotal,
+    /* The supplier's printed total when read from an invoice; typed-in
+     * receivings use the rows' total, as the Pre-Rolls page did. */
+    total: initial.fromInvoice ? invoice.total : computedTotal,
+    computedSubtotal,
+    computedTotal,
+    draftId: draftId ?? undefined,
+    rows: rows.map((r) => ({
+      strainName: r.strainName.trim(),
+      quantity: r.quantity,
+      unitPrice: r.unitPrice,
+      ...(flat ? { sellPrice: r.sellPrice } : {}),
+      tier: r.subcategory,
+      strainType: f.strainType ? r.strainType : null,
+      bestFor: f.bestFor ? r.bestFor : null,
+      effects: f.effects ? r.effects : [],
+      coaUrl: r.coa.state === "ready" ? r.coa.url : null,
+      coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
+      ...(f.cannabinoids ? {
+        [main.rowField]: r.mainPercent.trim() || null,
+        ...Object.fromEntries(otherCols.map((o) => [o.rowField, (r.otherPercents[o.cannabinoid] ?? "").trim() || null])),
+        totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
+      } : {}),
+      ...(showBatch ? { batchId: r.batchId.trim() || null } : {}),
+      ...(f.upc ? { upc: r.upc.trim() || null } : {}),
+    })),
+  })
+  /* What the last preview was of: any change after it makes it stale. */
+  const payloadKey = JSON.stringify(buildPayload())
+
+  /* Same request with preview: true. The route runs every check and
+   * says what each row would do; nothing is written. */
+  const onPreview = async () => {
+    if (!allValid || previewing) return
+    setPreviewing(true)
+    try {
+      const res = await fetch("/admin/receiving/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...buildPayload(), preview: true }),
+      })
+      const json = await res.json()
+      if (!json?.summary) throw new Error(json?.error ?? `Preview failed (${res.status})`)
+      setPreview({ key: payloadKey, results: json.results ?? [] })
+    } catch (e: any) {
+      toast.error("Preview failed", { description: e?.message ?? "Network error" })
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const onSave = async () => {
+    if (!allValid || saving) return
     setSaving(true)
     setSaveResults(null)
     try {
-      const payload = {
-        profileKey,
-        supplier: invoice.supplier,
-        invoiceNumber: invoice.invoiceNumber,
-        invoiceDate: invoice.invoiceDate,
-        shippingTotal: invoice.shippingTotal,
-        total: invoice.total,
-        computedSubtotal,
-        computedTotal,
-        draftId: draftId ?? undefined,
-        rows: rows.map((r) => {
-          const pct = r.thcaPercent.trim() || null
-          return {
-            strainName: r.strainName.trim(),
-            /* Serialize to the backend's canonical SaveRow shape (Slice R3
-             * of receiving generalization, 2026-05-14). Flower ReviewRow
-             * stores values as `quantityLb`/`unitPricePerLb` locally;
-             * backend treats them as input-unit-quantity / input-unit-price
-             * which works the same for lb (flower) and box (pre-roll). */
-            quantity: r.quantityLb,
-            unitPrice: r.unitPricePerLb,
-            tier: r.tier,
-            strainType: r.strainType,
-            bestFor: r.bestFor,
-            effects: r.effects,
-            coaUrl: r.coa.state === "ready" ? r.coa.url : null,
-            coaOriginalName: r.coa.state === "ready" ? r.coa.originalName : null,
-            /* Route the primary cannabinoid % to the branch-specific field
-             * so CBD/CBG rows populate cbd_percent / cbg_percent instead
-             * of overloading thca_percent. Server writes whichever field
-             * name is present; adapter reads with fallback so legacy
-             * records keep displaying. */
-            [cannabinoidPctFieldName]: pct,
-            ...Object.fromEntries(otherCols.map((o) => [o.rowField, (r.otherPercents[o.cannabinoid] ?? "").trim() || null])),
-            totalCannabinoidsPercent: r.totalCannabinoidsPercent.trim() || null,
-            batchId: r.batchId.trim() || null,
-          }
-        }),
-      }
-      /* Idempotency key — fresh UUID per Save click. Survives the
-       * full request lifecycle (success or failure) so a retry from
-       * the same click replays the cached server response instead of
-       * re-running the save. Re-generated on the next click (any
-       * subsequent Save attempt is a new logical operation). */
+      const payload = buildPayload()
       const idempotencyKey = (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function")
         ? (crypto as any).randomUUID()
         : `rcv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       const res = await fetch("/admin/receiving/save", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": idempotencyKey,
-        },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
         credentials: "include",
         body: JSON.stringify(payload),
       })
       const json = await res.json()
-      if (!res.ok && !json?.summary) {
-        /* Hard server error before per-row processing started — no
-         * results to show. */
-        throw new Error(json?.error ?? `Save failed (${res.status})`)
-      }
+      if (!res.ok && !json?.summary) throw new Error(json?.error ?? `Save failed (${res.status})`)
       setSaveResults(json.results ?? [])
       const s = json.summary as { created: number; restocked: number; failed: number; alreadySaved?: number }
       const skipped = s.alreadySaved ? ` · ${s.alreadySaved} already saved, skipped` : ""
@@ -1012,17 +941,9 @@ const ReviewView: React.FC<{
           description: "No stock or products were changed. Fix the rows marked failed and save again.",
         })
       } else if (s.failed === 0) {
-        toast.success("Receiving saved", {
-          description: `${s.created} created · ${s.restocked} restocked${skipped}`,
-        })
-        /* Clear the draft id since the draft was deleted server-side. */
+        toast.success("Receiving saved", { description: `${s.created} created · ${s.restocked} restocked${skipped}` })
         setDraftId(null)
-        /* Flip into success view — locks out the Save button so
-         * operator can't double-save. */
-        if (json.historyId) {
-          setSavedHistoryId(json.historyId)
-          setSavedSummary({ created: s.created, restocked: s.restocked })
-        }
+        if (json.historyId) setSaved({ historyId: json.historyId, created: s.created, restocked: s.restocked })
       } else {
         toast.warning(`${s.failed} of ${s.failed + s.created + s.restocked + (s.alreadySaved ?? 0)} rows failed`, {
           description: "The other rows are saved. Fix the failed rows and save again: rows already saved are skipped.",
@@ -1033,24 +954,20 @@ const ReviewView: React.FC<{
     } finally {
       setSaving(false)
     }
-  }, [allValid, invoice, rows, draftId, computedSubtotal, computedTotal, profileKey, cannabinoidPctFieldName, otherCols])
+  }
 
-  const onPushSavedToQbo = async () => {
-    if (!savedHistoryId) return
+  const onPushToQbo = async () => {
+    if (!saved) return
     setPushingToQbo(true)
     try {
       const res = await fetch("/admin/qbo/push-bill", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ historyId: savedHistoryId }),
+        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ historyId: saved.historyId }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error ?? `Push failed (${res.status})`)
-      setSavedPushedBillId(json.billId)
-      toast.success("Pushed to QuickBooks", {
-        description: `Bill ${json.billId} · ${json.lines} line(s)`,
-      })
+      setPushedBillId(json.billId)
+      toast.success("Pushed to QuickBooks", { description: `Bill ${json.billId} · ${json.lines} line(s)` })
     } catch (e: any) {
       toast.error("Push failed", { description: e?.message ?? "Network error" })
     } finally {
@@ -1058,47 +975,187 @@ const ReviewView: React.FC<{
     }
   }
 
-  /* ---- success card — replaces the form after a full-success save ---- */
-  if (savedHistoryId && savedSummary) {
-    return (
-      <div className="flex flex-col gap-6">
-        <div style={{ border: "1.5px solid var(--tier-exotic, #549402)", background: "#fff", padding: 24 }}>
-          <Heading level="h2" style={{ color: "var(--tier-exotic, #549402)" }}>
-            ✓ Receiving Saved
-          </Heading>
-          <Text size="base" className="text-ui-fg-subtle" style={{ marginTop: 4 }}>
-            {invoice.invoiceNumber} · {savedSummary.created} created · {savedSummary.restocked} restocked
-          </Text>
-          <div className="flex gap-2 mt-4 flex-wrap items-center">
-            {savedPushedBillId ? (
-              <Badge color="purple">✓ Pushed to QBO · Bill {savedPushedBillId}</Badge>
-            ) : (
-              <Button variant="primary" isLoading={pushingToQbo} onClick={onPushSavedToQbo}>
-                Push to QuickBooks
-              </Button>
+  /* ---- The category's columns ---- */
+  const variantsFor = (sub: string | null) =>
+    profile.subcategories.find((s) => s.key === sub)?.variants ?? profile.variants
+  const select = (value: string | null, options: Array<{ key: string; label: string }>, onPick: (v: string) => void) => (
+    <Select value={value ?? ""} onValueChange={onPick}>
+      <Select.Trigger><Select.Value placeholder="—" /></Select.Trigger>
+      <Select.Content>
+        {options.map((o) => <Select.Item key={o.key} value={o.key}>{o.label}</Select.Item>)}
+      </Select.Content>
+    </Select>
+  )
+  const pctInput = (value: string, onChange: (v: string) => void, opts: { allowsNd?: boolean; placeholder?: string } = {}) => (
+    <Input type={opts.allowsNd ? "text" : "number"} step="0.01" placeholder={opts.allowsNd ? "0.05 or ND" : opts.placeholder ?? "—"}
+      value={value} onChange={(e) => onChange(e.target.value)} style={{ textAlign: "right" }} />
+  )
+
+  const cols: Col[] = [
+    {
+      id: "select", width: 30,
+      header: <CheckBox checked={selected.size === rows.length && rows.length > 0} indeterminate={selected.size > 0 && selected.size < rows.length} onChange={toggleAll} />,
+      cell: (_r, i) => <CheckBox checked={selected.has(i)} onChange={() => toggleRow(i)} />,
+    },
+    {
+      id: "name", width: 200, header: f.strainType ? "Strain" : "Product",
+      cell: (row, i) => (
+        <>
+          <Input value={row.strainName} onChange={(e) => updateRow(i, { strainName: e.target.value })} />
+          <RowNotices row={row}
+            onConfirmConflict={(v) => updateRow(i, { confirmedTierConflict: v })}
+            onSwitchToExisting={(sub) => updateRow(i, { subcategory: sub, confirmedTierConflict: false })}
+            onUseMatch={(m) => useExistingMatch(i, m)} />
+          {saveResults?.[i] && <SaveStatusPill result={saveResults[i]} />}
+        </>
+      ),
+    },
+    {
+      id: "qty", width: 80, header: `Qty (${unit.singular})`,
+      cell: (row, i) => <Input type="number" step="0.01" value={row.quantity} onChange={(e) => updateRow(i, { quantity: Number(e.target.value) || 0 })} />,
+    },
+    {
+      id: "cost", width: 100, header: `Cost / ${unit.singular}`,
+      cell: (row, i) => <Input type="number" step="0.01" value={row.unitPrice} onChange={(e) => updateRow(i, { unitPrice: Number(e.target.value) || 0 })} />,
+    },
+    ...(flat ? [{
+      id: "sell", width: 100, header: "Sell price",
+      cell: (row: Row, i: number) => <Input type="number" step="0.01" value={row.sellPrice || ""} onChange={(e) => updateRow(i, { sellPrice: Number(e.target.value) || 0 })} />,
+    }] : []),
+    {
+      id: "sub", width: 120, header: "Sub-category",
+      cell: (row, i) => select(row.subcategory, subOptions, (v) => updateRow(i, { subcategory: v })),
+    },
+    ...(f.strainType ? [{
+      id: "type", width: 110, header: "Type",
+      cell: (row: Row, i: number) => select(row.strainType, STRAIN_TYPE_OPTIONS.map((o) => ({ key: o, label: o })), (v) => updateRow(i, { strainType: v as StrainType })),
+    }] : []),
+    ...(f.bestFor ? [{
+      id: "bestFor", width: 100, header: "Best For",
+      cell: (row: Row, i: number) => select(row.bestFor, [...BEST_FOR_OPTIONS], (v) => updateRow(i, { bestFor: v as BestFor })),
+    }] : []),
+    ...(f.cannabinoids ? [
+      {
+        id: "main", width: 130, align: "right" as const, header: main.label,
+        cell: (row: Row, i: number) => (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+              {pctInput(row.mainPercent, (v) => updateRow(i, { mainPercent: v }), { allowsNd: main.allowsNd })}
+              <CoaAiButton canParse={row.coa.state === "ready"} parsing={coaParsing.has(i)} onClick={() => parseCoaForRow(i)} />
+            </div>
+            {row.coaNotes && (
+              <span title={row.coaNotes} style={{ display: "inline-block", marginTop: 2, color: "#C98A00", fontSize: 11, cursor: "help" }}>⚠ AI note</span>
             )}
-            <Button asChild variant="secondary">
-              <a href={`/app/receiving/history/${savedHistoryId}`}>View in History</a>
-            </Button>
-            <Button asChild variant="secondary">
-              <a href="/app/products">Open Products</a>
-            </Button>
-            <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>
+          </>
+        ),
+      },
+      ...otherCols.map((o) => ({
+        id: `other:${o.cannabinoid}`, width: 100, align: "right" as const, header: o.label,
+        cell: (row: Row, i: number) => pctInput(row.otherPercents[o.cannabinoid] ?? "",
+          (v) => updateRow(i, { otherPercents: { ...row.otherPercents, [o.cannabinoid]: v } }),
+          { allowsNd: o.allowsNd, placeholder: o.required ? "—" : "optional" }),
+      })),
+      {
+        id: "cann", width: 100, align: "right" as const, header: "Cann %",
+        cell: (row: Row, i: number) => pctInput(row.totalCannabinoidsPercent, (v) => updateRow(i, { totalCannabinoidsPercent: v })),
+      },
+    ] : []),
+    ...(showBatch ? [{
+      id: "batch", width: 130, header: "Batch ID",
+      cell: (row: Row, i: number) => <Input type="text" placeholder="—" value={row.batchId} onChange={(e) => updateRow(i, { batchId: e.target.value })} />,
+    }] : []),
+    ...(f.effects ? [{
+      id: "effects", width: 220, header: "Effects",
+      cell: (row: Row, i: number) => (
+        <>
+          <div className="flex flex-wrap gap-1">
+            {EFFECT_OPTIONS.map((e) => {
+              const on = row.effects.includes(e)
+              const disabled = !on && row.effects.length >= MAX_EFFECTS
+              return (
+                <button key={e} type="button" disabled={disabled} onClick={() => toggleEffect(i, e)}
+                  title={disabled ? "Max 2 effects per product" : undefined}
+                  style={{
+                    border: "1px solid #0A0A0A", background: on ? "#0A0A0A" : "transparent", color: on ? "#FAFAF7" : "#0A0A0A",
+                    opacity: disabled ? 0.3 : 1, fontSize: 11, padding: "2px 6px", fontFamily: "monospace",
+                    textTransform: "uppercase", cursor: disabled ? "not-allowed" : "pointer",
+                  }}>
+                  {e}
+                </button>
+              )
+            })}
           </div>
+          <Text size="xsmall" className="text-ui-fg-muted" style={{ marginTop: 4 }}>{row.effects.length}/{MAX_EFFECTS} selected</Text>
+        </>
+      ),
+    }] : []),
+    ...(f.upc ? [{
+      id: "upc", width: 140, header: "UPC",
+      cell: (row: Row, i: number) => <Input type="text" placeholder="optional" value={row.upc} onChange={(e) => updateRow(i, { upc: e.target.value })} />,
+    }] : []),
+    {
+      id: "coa", width: 140, header: f.coaRequired ? "COA" : "COA (optional)",
+      cell: (row, i) => <CoaUpload coa={row.coa} onChange={(c) => updateRow(i, { coa: c })} />,
+    },
+    {
+      id: "landed", width: 100, align: "right", header: `Landed / ${unit.singular}`,
+      cell: (row) => <span style={{ fontFamily: "monospace", whiteSpace: "nowrap" }}>{fmtMoney((row.unitPrice || 0) + shipPerUnit)}</span>,
+    },
+    ...(!flat ? [{
+      id: "prices", width: 260, align: "right" as const, header: "Default prices",
+      cell: (row: Row) => {
+        if (!row.subcategory) return <span className="text-ui-fg-muted">— pick sub-category —</span>
+        const tp = tierPrices?.[row.subcategory]
+        if (!tierPrices) return <span style={{ color: "#C98A00" }}>— price table not set up —</span>
+        if (!tp) return <span style={{ color: "#C98A00" }}>— no prices for {row.subcategory} —</span>
+        return (
+          <span style={{ fontFamily: "monospace", whiteSpace: "nowrap" }}>
+            {variantsFor(row.subcategory).filter((v) => tp[v.sizeKey] != null).map((v) => `${v.label} ${fmtMoneyWhole(tp[v.sizeKey])}`).join(" · ")}
+          </span>
+        )
+      },
+    }] : []),
+  ]
+
+  /* Widths per category, since each has its own columns. */
+  const { widths, startResize, totalWidth, reset } = useColumnWidths(
+    `mbs:receiving:category:${profile.key}:${cols.map((c) => c.id).join(",")}`,
+    cols.map((c) => c.width),
+  )
+
+  if (saved) {
+    return (
+      <div style={{ border: "1.5px solid var(--tier-exotic, #549402)", background: "#fff", padding: 24 }}>
+        <Heading level="h2" style={{ color: "var(--tier-exotic, #549402)" }}>✓ Receiving Saved</Heading>
+        <Text size="base" className="text-ui-fg-subtle" style={{ marginTop: 4 }}>
+          {invoice.invoiceNumber} · {saved.created} created · {saved.restocked} restocked
+        </Text>
+        <div className="flex gap-2 mt-4 flex-wrap items-center">
+          {pushedBillId ? (
+            <Badge color="purple">✓ Pushed to QBO · Bill {pushedBillId}</Badge>
+          ) : (
+            <Button variant="primary" isLoading={pushingToQbo} onClick={onPushToQbo}>Push to QuickBooks</Button>
+          )}
+          <Button asChild variant="secondary"><a href={`/app/receiving/history/${saved.historyId}`}>View in History</a></Button>
+          <Button asChild variant="secondary"><a href="/app/products">Open Products</a></Button>
+          <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>
         </div>
       </div>
     )
   }
 
-  /* ---- header card ---- */
+  const saveLabel = saving ? "Saving…" : unconfirmedConflicts > 0
+    ? `Resolve ${unconfirmedConflicts} Conflict${unconfirmedConflicts === 1 ? "" : "s"} First`
+    : `Save ${rows.length} Product${rows.length === 1 ? "" : "s"}`
+  const incomplete = rows.filter((r) => !isRowComplete(r)).length
+
   return (
     <div className="flex flex-col gap-6">
-      {/* Top bar */}
       <div className="flex justify-between items-center gap-4 flex-wrap">
         <div className="flex flex-col">
-          <Heading level="h2">Review Invoice</Heading>
+          <Heading level="h2">Review · {profile.displayName}</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            {fileName} · {tokens.in + tokens.out} tokens
+            {initial.fileName}{initial.fromInvoice && <> · {initial.tokens.in + initial.tokens.out} tokens</>}
             {lastSavedAt && <> · draft saved {formatRelativeTime(lastSavedAt)}</>}
           </Text>
         </div>
@@ -1107,35 +1164,30 @@ const ReviewView: React.FC<{
           <Button variant="secondary" disabled={savingDraft} onClick={onSaveDraft}>
             {savingDraft ? "Saving…" : draftId ? "Update Draft" : "Save Draft"}
           </Button>
-          <Button
-            variant="primary"
-            disabled={!allValid || saving || unconfirmedConflicts.length > 0}
-            onClick={onSave}
-            title={unconfirmedConflicts.length > 0
-              ? `${unconfirmedConflicts.length} row(s) have tier conflicts. Confirm or change the tier on each before saving.`
-              : undefined}
-          >
-            {saving ? "Saving…" : unconfirmedConflicts.length > 0
-              ? `Resolve ${unconfirmedConflicts.length} Conflict${unconfirmedConflicts.length === 1 ? "" : "s"} First`
-              : `Save ${rows.length} Products`}
+          <Button variant="secondary" disabled={!allValid || previewing} onClick={onPreview}>
+            {previewing ? "Previewing…" : "Preview Save"}
           </Button>
+          <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0} onClick={onSave}>{saveLabel}</Button>
         </div>
       </div>
 
+      {preview && (
+        <PreviewPanel results={preview.results} stale={preview.key !== payloadKey}
+          unitLabel={unit.singular} onClose={() => setPreview(null)} />
+      )}
+
       {invoice.notes && (
         <div style={{ border: "1.5px solid #C98A00", padding: "10px 14px", background: "#fff" }}>
-          <Text size="small" weight="plus" style={{ color: "#C98A00", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-            AI Notes
-          </Text>
+          <Text size="small" weight="plus" style={{ color: "#C98A00", textTransform: "uppercase", letterSpacing: "0.1em" }}>AI Notes</Text>
           <Text size="small">{invoice.notes}</Text>
         </div>
       )}
 
-      {/* Supplier + invoice meta */}
+      {/* Supplier + invoice */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="flex flex-col gap-3" style={{ border: "1.5px solid #E5E1D6", padding: 16 }}>
           <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}>Supplier</Text>
-          <Field label="Name">
+          <Field label="Name (required)">
             <VendorPicker supplier={invoice.supplier} list={vendors}
               onChange={(supplier) => setInvoice((c) => ({ ...c, supplier }))} />
           </Field>
@@ -1155,648 +1207,202 @@ const ReviewView: React.FC<{
         <div className="flex flex-col gap-3" style={{ border: "1.5px solid #E5E1D6", padding: 16 }}>
           <Text size="small" weight="plus" style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}>Invoice</Text>
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Invoice #">
+            <Field label="Invoice # (required)">
               <Input value={invoice.invoiceNumber} onChange={(e) => setInvoice((c) => ({ ...c, invoiceNumber: e.target.value }))} />
             </Field>
-            <Field label="Date (YYYY-MM-DD)">
-              <Input value={invoice.invoiceDate} onChange={(e) => setInvoice((c) => ({ ...c, invoiceDate: e.target.value }))} />
+            <Field label="Date (required)">
+              <Input type="date" value={invoice.invoiceDate} onChange={(e) => setInvoice((c) => ({ ...c, invoiceDate: e.target.value }))} />
             </Field>
           </div>
-          {/* Shipping is a single editable field — feeds the per-lb spread */}
-          <Field label="Shipping (operator-editable)">
+          <Field label="Shipping">
             <Input type="number" step="0.01" value={invoice.shippingTotal}
               onChange={(e) => setInvoice((c) => ({ ...c, shippingTotal: Number(e.target.value) || 0 }))} />
           </Field>
-
-          {/* Two columns: AI-extracted (from invoice PDF) vs LIVE-computed
-            * (current rows + shipping). Divergence highlighted in amber so
-            * the operator notices when their edits break parity with the
-            * supplier's printed bill. */}
           <div className="grid grid-cols-2 gap-2" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 10 }}>
-            <Field label="From invoice (AI-extracted)">
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
-                  <span className="text-ui-fg-subtle">Subtotal</span>
-                  <span>{fmtMoneyWhole(invoice.subtotal ?? 0)}</span>
+            {initial.fromInvoice && (
+              <Field label="From invoice (AI-extracted)">
+                <div className="flex flex-col gap-1" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                  <div className="flex justify-between"><span className="text-ui-fg-subtle">Subtotal</span><span>{fmtMoneyWhole(invoice.subtotal ?? 0)}</span></div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-ui-fg-subtle">Total</span>
+                    <Input type="number" step="0.01" value={invoice.total} style={{ width: 120, textAlign: "right" }}
+                      onChange={(e) => setInvoice((c) => ({ ...c, total: Number(e.target.value) || 0 }))} />
+                  </div>
                 </div>
-                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
-                  <span className="text-ui-fg-subtle">Total</span>
-                  <Input type="number" step="0.01" value={invoice.total}
-                    onChange={(e) => setInvoice((c) => ({ ...c, total: Number(e.target.value) || 0 }))}
-                    style={{ width: 120, textAlign: "right" }} />
-                </div>
-              </div>
-            </Field>
+              </Field>
+            )}
             <Field label="Computed from rows">
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+              <div className="flex flex-col gap-1" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                <div className="flex justify-between">
                   <span className="text-ui-fg-subtle">Σ qty × cost</span>
-                  <span style={{ color: subtotalDiverges ? "#C98A00" : "#0A0A0A", fontWeight: subtotalDiverges ? 600 : 400 }}>
-                    {fmtMoney(computedSubtotal)}
-                  </span>
+                  <span style={{ color: subtotalDiverges ? "#C98A00" : "#0A0A0A", fontWeight: subtotalDiverges ? 600 : 400 }}>{fmtMoney(computedSubtotal)}</span>
                 </div>
-                <div className="flex justify-between" style={{ fontFamily: "monospace", fontSize: 13 }}>
+                <div className="flex justify-between">
                   <span className="text-ui-fg-subtle">+ shipping</span>
-                  <span style={{ color: totalDiverges ? "#C98A00" : "#549402", fontWeight: 600 }}>
-                    {fmtMoney(computedTotal)}
-                  </span>
+                  <span style={{ color: totalDiverges ? "#C98A00" : "#549402", fontWeight: 600 }}>{fmtMoney(computedTotal)}</span>
                 </div>
               </div>
             </Field>
           </div>
-
           {(subtotalDiverges || totalDiverges) && (
             <div style={{ background: "rgba(201,138,0,0.1)", border: "1px solid #C98A00", padding: "6px 10px" }}>
               <Text size="xsmall" style={{ color: "#C98A00", fontFamily: "monospace" }}>
                 ⚠ Computed differs from invoice by ${Math.abs(computedTotal - (invoice.total || 0)).toFixed(2)}.
-                Inventory will be saved at the computed amount; QBO Bill (Slice 2D) uses the invoice total.
+                Inventory is saved at the computed amount; the QuickBooks bill uses the invoice total.
               </Text>
             </div>
           )}
-
           <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 8 }}>
             <Text size="small" className="text-ui-fg-subtle">Shipping spread</Text>
-            <Text size="small" weight="plus" style={{ fontFamily: "monospace" }}>
-              {fmtMoney(shipPerLb)} / lb
-            </Text>
+            <Text size="small" weight="plus" style={{ fontFamily: "monospace" }}>{fmtMoney(shipPerUnit)} / {unit.singular}</Text>
           </div>
         </div>
       </div>
 
-      {/* Bulk AI auto-fill from COAs — one click parses every row's COA */}
-      <div className="flex justify-end items-center gap-2" style={{ marginTop: -4 }}>
-        <Text size="xsmall" className="text-ui-fg-muted" style={{ fontFamily: "monospace" }}>
-          {coaParsing.size > 0 ? `parsing ${coaParsing.size}…` : `~$0.011 / row`}
-        </Text>
-        <Button
-          variant="secondary"
-          size="small"
-          disabled={coaParsing.size > 0}
-          onClick={parseAllCoas}
-          title="Calls Claude Sonnet on each uploaded COA to extract THCa% + Total Cannabinoids%"
-        >
-          AI: Auto-fill THCa / Cann from COAs
-        </Button>
-      </div>
+      {f.cannabinoids && (
+        <div className="flex justify-end items-center gap-2" style={{ marginTop: -4 }}>
+          <Text size="xsmall" className="text-ui-fg-muted" style={{ fontFamily: "monospace" }}>
+            {coaParsing.size > 0 ? `parsing ${coaParsing.size}…` : "~$0.011 / row"}
+          </Text>
+          <Button variant="secondary" size="small" disabled={coaParsing.size > 0} onClick={parseAllCoas}>
+            AI: Auto-fill {[main.label, ...otherCols.map((o) => o.label), "Cann %"].join(" / ")} from COAs
+          </Button>
+        </div>
+      )}
 
-      {/* Bulk COA drop zone — multi-file upload, auto-matched by strain name */}
       <BulkCoaDropzone
         rows={rows}
-        onApply={(stagedMap) => {
-          /* Mark every staged row as uploading so the UI flips
-           * immediately, even before the network round-trip. */
-          setRows((cur) => cur.map((r, i) => {
-            const staged = stagedMap.get(i)
-            return staged
-              ? { ...r, coa: { state: "uploading", originalName: staged.file.name } }
-              : r
-          }))
-        }}
-        onResultPerFile={(rowIdx, result) => {
-          setRows((cur) => cur.map((r, i) => {
-            if (i !== rowIdx) return r
-            if ("error" in result) {
-              return { ...r, coa: { state: "error", originalName: result.originalName, error: result.error } }
-            }
-            return {
-              ...r,
-              coa: { state: "ready", url: result.url, originalName: result.originalName, mimeType: result.mimeType },
-            }
-          }))
-        }}
+        onApply={(staged) => setRows((cur) => cur.map((r, i) => {
+          const s = staged.get(i)
+          return s ? { ...r, coa: { state: "uploading", originalName: s.file.name } } : r
+        }))}
+        onResultPerFile={(idx, result) => setRows((cur) => cur.map((r, i) => {
+          if (i !== idx) return r
+          return "error" in result
+            ? { ...r, coa: { state: "error", originalName: result.originalName, error: result.error } }
+            : { ...r, coa: { state: "ready", url: result.url, originalName: result.originalName, mimeType: result.mimeType } }
+        }))}
       />
 
-      {/* Bulk-fill toolbar — appears when 1+ rows are selected */}
       {selected.size > 0 && (
-        <div style={{
-          background: "#0A0A0A", color: "#FAFAF7", padding: "10px 14px",
-          display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap",
-          position: "sticky", top: 0, zIndex: 20,
-        }}>
+        <div style={{ background: "#0A0A0A", color: "#FAFAF7", padding: "10px 14px", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20 }}>
           <Text size="small" weight="plus" style={{ color: "#FAFAF7", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em" }}>
             {selected.size} selected
           </Text>
           <span style={{ color: "#888", fontSize: 12 }}>Apply to selected:</span>
-          <BulkSelect placeholder="Tier" options={tierOptions.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ tier: v as TierKey })} />
-          <BulkSelect placeholder="Type" options={STRAIN_TYPE_OPTIONS.map((o) => ({ value: o, label: o }))} onPick={(v) => bulkApply({ strainType: v as StrainType })} />
-          <BulkSelect placeholder="Best For" options={BEST_FOR_OPTIONS.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ bestFor: v as BestFor })} />
+          <BulkSelect placeholder="Sub-category" options={subOptions.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ subcategory: v })} />
+          {f.strainType && <BulkSelect placeholder="Type" options={STRAIN_TYPE_OPTIONS.map((o) => ({ value: o, label: o }))} onPick={(v) => bulkApply({ strainType: v as StrainType })} />}
+          {f.bestFor && <BulkSelect placeholder="Best For" options={BEST_FOR_OPTIONS.map((o) => ({ value: o.key, label: o.label }))} onPick={(v) => bulkApply({ bestFor: v as BestFor })} />}
           <span style={{ flex: 1 }} />
-          <button type="button" onClick={deleteSelectedRows}
+          <button type="button" onClick={deleteSelected}
             style={{ background: "transparent", border: "1px solid #B91C1C", color: "#B91C1C", padding: "4px 12px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.05em", cursor: "pointer" }}>
             Delete {selected.size}
           </button>
-          <button type="button" onClick={clearSelection}
+          <button type="button" onClick={() => setSelected(new Set())}
             style={{ background: "transparent", border: "1px solid #FAFAF7", color: "#FAFAF7", padding: "4px 12px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}>
             Clear
           </button>
         </div>
       )}
 
-      {/* Spreadsheet — drag column edges to resize; double-click "Reset
-       *  Columns" below to restore defaults. Widths persist via
-       *  localStorage. */}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
-        <button
-          type="button"
-          onClick={resetCols}
-          title="Reset all column widths to defaults"
-          style={{ background: "transparent", border: "1px solid #E5E1D6", padding: "4px 10px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer" }}
-        >
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -18 }}>
+        <button type="button" onClick={reset} title="Reset all column widths to defaults"
+          style={{ background: "transparent", border: "1px solid #E5E1D6", padding: "4px 10px", fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer" }}>
           Reset Columns
         </button>
       </div>
       <div style={{ border: "1.5px solid #E5E1D6", overflowX: "auto" }}>
-        <table style={{ tableLayout: "fixed", width: colsTotal, borderCollapse: "collapse", fontSize: 13 }}>
-          <colgroup>
-            {colWidths.map((w, ci) => <col key={ci} style={{ width: w }} />)}
-          </colgroup>
+        <table style={{ tableLayout: "fixed", width: totalWidth, borderCollapse: "collapse", fontSize: 13 }}>
+          <colgroup>{widths.map((w, ci) => <col key={ci} style={{ width: w }} />)}</colgroup>
           <thead>
             <tr style={{ background: "#F3F1EA", borderBottom: "1.5px solid #0A0A0A" }}>
-              <Th onResize={startColResize(0)}><CheckBox checked={selected.size === rows.length && rows.length > 0} indeterminate={selected.size > 0 && selected.size < rows.length} onChange={toggleAll} /></Th>
-              <Th onResize={startColResize(1)}>Strain</Th>
-              <Th onResize={startColResize(2)}>Qty ({inputUnit.singular})</Th>
-              <Th onResize={startColResize(3)}>Cost / {inputUnit.singular}</Th>
-              <Th onResize={startColResize(4)}>Tier</Th>
-              <Th onResize={startColResize(5)}>Type</Th>
-              <Th onResize={startColResize(6)}>Best For</Th>
-              <Th onResize={startColResize(7)} align="right">{cannabinoidPctLabel}</Th>
-              {otherCols.map((o, k) => (
-                <Th key={o.cannabinoid} onResize={startColResize(8 + k)} align="right">{o.label}</Th>
-              ))}
-              <Th onResize={startColResize(afterOthers)} align="right">Cann %</Th>
-              <Th onResize={startColResize(afterOthers + 1)}>Batch ID</Th>
-              <Th onResize={startColResize(afterOthers + 2)}>Effects</Th>
-              <Th onResize={startColResize(afterOthers + 3)}>COA</Th>
-              <Th onResize={startColResize(afterOthers + 4)} align="right">Landed / {inputUnit.singular}</Th>
-              <Th onResize={startColResize(afterOthers + 5)} align="right">Suggested Sell (QP / Half / LB)</Th>
+              {cols.map((c, ci) => <Th key={c.id} align={c.align} onResize={startResize(ci)}>{c.header}</Th>)}
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => {
-              const landedPerLb = (row.unitPricePerLb || 0) + shipPerLb
-              const tp = row.tier && tierPrices ? tierPrices[row.tier] : null
-              const isComplete = isRowComplete(row)
-              const isSelected = selected.has(i)
-              /* Row tint priority: selection (red) > completeness
-               * (green = ready, orange = needs work). White is never
-               * shown — operator can always tell at a glance which
-               * rows still need attention. */
-              const rowBg = isSelected
-                ? "rgba(217,55,55,0.06)"
-                : isComplete
-                  ? "rgba(84,148,2,0.06)"     /* tier-exotic green */
-                  : "rgba(201,138,0,0.06)"    /* warning amber */
-              return (
-                <tr key={i} style={{
-                  borderBottom: "1px solid #E5E1D6",
-                  background: rowBg,
-                }}>
-                  <Td>
-                    <CheckBox checked={isSelected} onChange={() => toggleRow(i)} />
-                  </Td>
-                  <Td>
-                    <Input value={row.strainName}
-                      onChange={(e) => updateRow(i, { strainName: e.target.value })} />
-                    {/* Restock badge — same strain at same tier exists. */}
-                    {row.classification?.restock && (
-                      <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(84,148,2,0.08)", border: "1px solid #549402", fontSize: 11, fontFamily: "monospace", color: "#3d6c01" }}>
-                        ↻ Restock — <strong>{row.classification.restock.title}</strong> ({row.classification.restock.tier}) inventory will be incremented.
-                      </div>
-                    )}
-                    {/* Tier-conflict gate — same strain at a different tier. */}
-                    {row.classification?.tierConflict && (
-                      <div style={{ marginTop: 4, padding: "6px 8px", background: "rgba(217,55,55,0.08)", border: "1.5px solid #D93737", fontSize: 11, fontFamily: "monospace", color: "#7F1D1D" }}>
-                        <div style={{ marginBottom: 4 }}>
-                          ⚠ <strong>{row.classification.tierConflict.title}</strong> already exists in <strong>{row.classification.tierConflict.tier}</strong>.
-                          Receiving as <strong>{row.tier}</strong> creates a separate product.
-                        </div>
-                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "#0A0A0A" }}>
-                          <input
-                            type="checkbox"
-                            checked={row.confirmedTierConflict}
-                            onChange={(e) => updateRow(i, { confirmedTierConflict: e.target.checked })}
-                          />
-                          <span>Confirm — create as separate {row.tier} product</span>
-                        </label>
-                        {!row.confirmedTierConflict && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const tc = row.classification!.tierConflict!
-                              updateRow(i, { tier: tc.tier, confirmedTierConflict: false })
-                            }}
-                            style={{ marginTop: 4, background: "#0A0A0A", color: "#fff", border: "none", padding: "2px 8px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}
-                            title={`Switch tier to ${row.classification.tierConflict.tier} so this row restocks the existing product instead.`}
-                          >
-                            Or switch to {row.classification.tierConflict.tier} (restock)
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {/* Fuzzy near-matches — typo warnings. */}
-                    {row.nearMatches.length > 0 && (
-                      <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(201,138,0,0.08)", border: "1px solid #C98A00", fontSize: 11, fontFamily: "monospace" }}>
-                        <div style={{ color: "#C98A00", marginBottom: 2 }}>⚠ Possible duplicate of:</div>
-                        {row.nearMatches.map((m, j) => (
-                          <div key={j} style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center", padding: "1px 0" }}>
-                            <span title={`Levenshtein distance: ${m.distance}`}>
-                              {m.title} <span style={{ color: "#888" }}>({m.tier})</span>
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => useExistingMatch(i, m)}
-                              style={{ background: "#C98A00", color: "#fff", border: "none", padding: "1px 6px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}
-                              title="Replace this row's strain name + tier so save will restock the existing product instead of creating a duplicate"
-                            >
-                              Use
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {saveResults?.[i] && (
-                      <SaveStatusPill result={saveResults[i]} />
-                    )}
-                  </Td>
-                  <Td style={{ minWidth: 80 }}>
-                    <Input type="number" step="0.01" value={row.quantityLb}
-                      onChange={(e) => updateRow(i, { quantityLb: Number(e.target.value) || 0 })} />
-                  </Td>
-                  <Td style={{ minWidth: 100 }}>
-                    <Input type="number" step="0.01" value={row.unitPricePerLb}
-                      onChange={(e) => updateRow(i, { unitPricePerLb: Number(e.target.value) || 0 })} />
-                  </Td>
-                  <Td>
-                    <Select value={row.tier ?? ""} onValueChange={(v) => updateRow(i, { tier: v as TierKey })}>
-                      <Select.Trigger><Select.Value placeholder="—" /></Select.Trigger>
-                      <Select.Content>
-                        {tierOptions.map((o) => (
-                          <Select.Item key={o.key} value={o.key}>{o.label}</Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </Td>
-                  <Td>
-                    <Select value={row.strainType ?? ""} onValueChange={(v) => updateRow(i, { strainType: v as StrainType })}>
-                      <Select.Trigger><Select.Value placeholder="—" /></Select.Trigger>
-                      <Select.Content>
-                        {STRAIN_TYPE_OPTIONS.map((o) => (
-                          <Select.Item key={o} value={o}>{o}</Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </Td>
-                  <Td>
-                    <Select value={row.bestFor ?? ""} onValueChange={(v) => updateRow(i, { bestFor: v as BestFor })}>
-                      <Select.Trigger><Select.Value placeholder="—" /></Select.Trigger>
-                      <Select.Content>
-                        {BEST_FOR_OPTIONS.map((o) => (
-                          <Select.Item key={o.key} value={o.key}>{o.label}</Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </Td>
-                  <Td align="right" style={{ minWidth: 90 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
-                      <Input type="number" step="0.01" placeholder="—"
-                        value={row.thcaPercent}
-                        onChange={(e) => updateRow(i, { thcaPercent: e.target.value })}
-                        style={{ textAlign: "right" }} />
-                      <CoaAiButton
-                        canParse={row.coa.state === "ready"}
-                        parsing={coaParsing.has(i)}
-                        onClick={() => parseCoaForRow(i)}
-                      />
-                    </div>
-                    {row.coaNotes && (
-                      <span title={row.coaNotes}
-                        style={{ display: "inline-block", marginTop: 2, color: "#C98A00", fontSize: 11, cursor: "help" }}>
-                        ⚠ AI note
-                      </span>
-                    )}
-                  </Td>
-                  {otherCols.map((o) => (
-                    <Td key={o.cannabinoid} align="right" style={{ minWidth: 70 }}>
-                      {/* D9 takes text: labs print "ND" when none is detected. */}
-                      <Input type={o.allowsNd ? "text" : "number"} step="0.01" placeholder={o.allowsNd ? "0.05 or ND" : o.required ? "—" : "optional"}
-                        value={row.otherPercents[o.cannabinoid] ?? ""}
-                        onChange={(e) => updateRow(i, { otherPercents: { ...row.otherPercents, [o.cannabinoid]: e.target.value } })}
-                        style={{ textAlign: "right" }} />
-                    </Td>
-                  ))}
-                  <Td align="right" style={{ minWidth: 70 }}>
-                    <Input type="number" step="0.01" placeholder="—"
-                      value={row.totalCannabinoidsPercent}
-                      onChange={(e) => updateRow(i, { totalCannabinoidsPercent: e.target.value })}
-                      style={{ textAlign: "right" }} />
-                  </Td>
-                  <Td style={{ minWidth: 110, maxWidth: 140 }}>
-                    {/* AI extractor populates this from the COA; operator
-                      * can edit if the lab uses a non-standard label. */}
-                    <Input type="text" placeholder="—"
-                      value={row.batchId}
-                      onChange={(e) => updateRow(i, { batchId: e.target.value })} />
-                  </Td>
-                  <Td style={{ minWidth: 200, maxWidth: 260 }}>
-                    <div className="flex flex-wrap gap-1">
-                      {EFFECT_OPTIONS.map((e) => {
-                        const on = row.effects.includes(e)
-                        const disabled = !on && row.effects.length >= 2
-                        return (
-                          <button
-                            key={e}
-                            type="button"
-                            disabled={disabled}
-                            onClick={() => toggleEffect(i, e)}
-                            title={disabled ? "Max 2 effects per product" : undefined}
-                            style={{
-                              border: "1px solid #0A0A0A",
-                              background: on ? "#0A0A0A" : "transparent",
-                              color: on ? "#FAFAF7" : "#0A0A0A",
-                              opacity: disabled ? 0.3 : 1,
-                              fontSize: 11,
-                              padding: "2px 6px",
-                              fontFamily: "monospace",
-                              textTransform: "uppercase",
-                              cursor: disabled ? "not-allowed" : "pointer",
-                            }}
-                          >
-                            {e}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    <Text size="xsmall" className="text-ui-fg-muted" style={{ marginTop: 4 }}>
-                      {row.effects.length}/2 selected
-                    </Text>
-                  </Td>
-                  <Td>
-                    <CoaUpload
-                      coa={row.coa}
-                      onChange={(c) => updateRow(i, { coa: c })}
-                    />
-                  </Td>
-                  <Td align="right" style={{ fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                    {fmtMoney(landedPerLb)}
-                  </Td>
-                  <Td align="right" style={{ fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                    {tp
-                      ? `${fmtMoneyWhole(tp.qp)} / ${fmtMoneyWhole(tp.half)} / ${fmtMoneyWhole(tp.lb)}`
-                      : !row.tier
-                        ? <span className="text-ui-fg-muted">— pick tier —</span>
-                        : !tierPrices
-                          ? <span style={{ color: "#C98A00" }} title="Run pnpm seed:settings or set them in MBS Settings → Tier Prices">— tier prices not configured —</span>
-                          : <span style={{ color: "#C98A00" }}>— no price for {row.tier} —</span>}
-                  </Td>
-                </tr>
-              )
-            })}
+            {rows.map((row, i) => (
+              <tr key={i} style={{
+                borderBottom: "1px solid #E5E1D6",
+                background: selected.has(i) ? "rgba(217,55,55,0.06)" : isRowComplete(row) ? "rgba(84,148,2,0.06)" : "rgba(201,138,0,0.06)",
+              }}>
+                {cols.map((c) => <Td key={c.id} align={c.align}>{c.cell(row, i)}</Td>)}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
 
-      {/* Add-row affordance — below the table, above the footer */}
       <div className="flex justify-start">
-        <button type="button" onClick={addBlankRow}
+        <button type="button" onClick={addRow}
           style={{ background: "transparent", border: "1px dashed #C9C3B2", padding: "8px 16px", fontSize: 12, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em", cursor: "pointer", color: "#0A0A0A" }}>
           + Add Row
         </button>
       </div>
 
-      {/* Footer summary */}
       <div className="flex justify-between items-center" style={{ borderTop: "1px solid #E5E1D6", paddingTop: 12 }}>
-        <div className="flex gap-4">
+        <div className="flex gap-4 items-center">
           <Badge color={allValid ? "green" : "orange"}>
-            {allValid ? "Ready to save" : !vendorOk ? "Pick the supplier from QuickBooks" : `${rows.filter((r) => !isRowComplete(r)).length} rows incomplete`}
+            {allValid ? "Ready to save" : !headerComplete ? "Supplier (a QuickBooks vendor), invoice # and date needed" : `${incomplete} row${incomplete === 1 ? "" : "s"} incomplete`}
           </Badge>
           <Text size="small" className="text-ui-fg-subtle">
-            {rows.length} products · {rows.reduce((s, r) => s + r.quantityLb, 0).toFixed(2)} lb total
+            {rows.length} products · {totalQty.toFixed(2)} {totalQty === 1 ? unit.singular : unit.plural} total
           </Text>
         </div>
-        <Button variant="primary" disabled={!allValid || saving} onClick={onSave}>
-          {saving ? "Saving…" : `Save ${rows.length} Products`}
-        </Button>
+        <Button variant="primary" disabled={!allValid || saving || unconfirmedConflicts > 0} onClick={onSave}>{saveLabel}</Button>
       </div>
     </div>
   )
 }
 
-/* =========================================================
- * Page shell
- * ========================================================= */
-
-/* The categories offered here: every one set up in MBS Settings →
- * Categories with "Receive by invoice upload" on and not archived.
- * They share this form (tier ladder, the same fields); what differs is
- * the profile, its tier-price table, its main cannabinoid and its
- * drafts. THC-A has invoice upload off while its receiving is paused;
- * turning it back on there brings its button back. */
-type ReceivingCategory = {
-  profileKey: string
-  label: string
-  primaryCannabinoid: string | null
-  otherCannabinoids: OtherCannabinoid[] | null
-  settingsKey: string | null
-  draftKind: string
-  /* What quantities and costs are entered in (lb for flower). */
-  inputUnit: { singular: string; plural: string }
-}
-
-const ReceivingPage = () => {
-  const [categories, setCategories] = useState<ReceivingCategory[] | null>(null)
-  const [categoriesError, setCategoriesError] = useState<string | null>(null)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    fetch("/admin/mbs/category-profiles", { credentials: "include" })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return
-        const list: ReceivingCategory[] = ((j?.profiles ?? []) as any[])
-          .filter((p) => p.invoiceUpload && !p.archived)
-          .map((p) => ({
-            profileKey: p.key,
-            label: p.primaryCannabinoid ?? p.displayName,
-            primaryCannabinoid: p.primaryCannabinoid ?? null,
-            otherCannabinoids: p.otherCannabinoids ?? null,
-            settingsKey: p.tierPricesSettingKey ?? null,
-            draftKind: p.key,
-            inputUnit: p.inputUnitLabel ?? { singular: "lb", plural: "lbs" },
-          }))
-        setCategories(list)
-        setSelectedKey((cur) => cur ?? list[0]?.profileKey ?? null)
-      })
-      .catch((e) => { if (!cancelled) setCategoriesError(e?.message ?? "Couldn't load categories") })
-    return () => { cancelled = true }
-  }, [])
-  const cbdCfg = useMemo(
-    () => categories?.find((c) => c.profileKey === selectedKey) ?? null,
-    [categories, selectedKey],
-  )
-
-  const [extracted, setExtracted] = useState<{
-    invoice: ExtractedInvoice
-    fileName: string
-    tokens: { in: number; out: number }
-    /* When resumed from a draft, these are non-null. The review view
-     * uses them to skip the makeRows() defaults and to know which
-     * draft id to update on subsequent saves. */
-    initialRows?: ReviewRow[]
-    draftId?: string | null
-  } | null>(null)
-  const [tierPrices, setTierPrices] = useState<TierPriceMap | null>(null)
-  /* Dynamic tier options — pulled from /admin/receiving/profile/<key>
-   * which merges the receiving profile's subcategories with live Medusa
-   * categories under the intermediate node. Adding a new tier category
-   * in Medusa admin shows up here on next page load — no code edit. */
-  const [tierOptions, setTierOptions] = useState<Array<{ key: string; label: string }>>(DEFAULT_TIER_OPTIONS)
-
-  /* Fetch tier prices whenever the category changes so the review
-   * table's suggested-sell column pulls from its own price table.
-   * Falls back to null silently — admin can still review + save. */
-  useEffect(() => {
-    let cancelled = false
-    setTierPrices(null)
-    if (!cbdCfg?.settingsKey) return
-    fetch("/admin/mbs/settings", { credentials: "include" })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return
-        const row = (j.settings ?? []).find((s: any) => s.key === cbdCfg.settingsKey)
-        if (row?.value) setTierPrices(row.value as TierPriceMap)
-      })
-      .catch(() => { /* ignore — tier prices are optional UI */ })
-    return () => { cancelled = true }
-  }, [cbdCfg?.settingsKey])
-
-  /* Dynamic tier dropdown options — merged profile + live Medusa
-   * categories. Re-fetches when the category changes so CBD/CBG land
-   * with their own tier children (cbd-classic, cbg-exotic, …).
-   * Falls back to DEFAULT_TIER_OPTIONS if the fetch fails so the page
-   * still works offline / mid-deploy. */
-  useEffect(() => {
-    let cancelled = false
-    setTierOptions(DEFAULT_TIER_OPTIONS)
-    if (!cbdCfg) return
-    fetch(`/admin/receiving/profile/${cbdCfg.profileKey}`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return
-        const subs = (j?.profile?.subcategories ?? []) as Array<{ key: string; label: string }>
-        if (subs.length > 0) setTierOptions(subs.map((s) => ({ key: s.key, label: s.label })))
-      })
-      .catch(() => { /* defaults already set */ })
-    return () => { cancelled = true }
-  }, [cbdCfg?.profileKey])
-
-  /* Guard against silent data loss — switching category mid-work
-   * would swap the profile out from under an in-progress review.
-   * Confirm before clearing extracted state (skip if operator hasn't
-   * started reviewing anything). */
-  const changeCategory = useCallback((next: string) => {
-    if (next === selectedKey) return
-    if (extracted) {
-      const ok = confirm(
-        "Switching category will clear the current review. Save your draft first if you need to keep it. Continue?",
-      )
-      if (!ok) return
-      setExtracted(null)
-    }
-    setSelectedKey(next)
-  }, [selectedKey, extracted])
-
+/* Restock / sub-category conflict / possible-duplicate notices under a
+ * row's name, as the old Flower page did. */
+const RowNotices: React.FC<{
+  row: Row
+  onConfirmConflict: (v: boolean) => void
+  onSwitchToExisting: (sub: string) => void
+  onUseMatch: (m: NearMatch) => void
+}> = ({ row, onConfirmConflict, onSwitchToExisting, onUseMatch }) => {
+  const c = row.classification
   return (
-    <Container className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex flex-col">
-          <Heading level="h1">Receiving</Heading>
-          {/* Phase 4c: the page that takes every category, run alongside this one. */}
-          <a href="/app/receiving/category" style={{ fontSize: 12, fontFamily: "monospace", color: "#4A4A45" }}>
-            New: receive any category →
-          </a>
+    <>
+      {c?.restock && (
+        <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(84,148,2,0.08)", border: "1px solid #549402", fontSize: 11, fontFamily: "monospace", color: "#3d6c01" }}>
+          ↻ Restock — <strong>{c.restock.title}</strong> ({c.restock.tier}) inventory will be incremented.
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Label className="text-ui-fg-subtle">Cannabinoid</Label>
-          {(categories ?? []).map((opt) => (
-            <Button
-              key={opt.profileKey}
-              size="small"
-              variant={selectedKey === opt.profileKey ? "primary" : "secondary"}
-              onClick={() => changeCategory(opt.profileKey)}
-            >
-              {opt.label}
-            </Button>
+      )}
+      {c?.tierConflict && (
+        <div style={{ marginTop: 4, padding: "6px 8px", background: "rgba(217,55,55,0.08)", border: "1.5px solid #D93737", fontSize: 11, fontFamily: "monospace", color: "#7F1D1D" }}>
+          <div style={{ marginBottom: 4 }}>
+            ⚠ <strong>{c.tierConflict.title}</strong> already exists in <strong>{c.tierConflict.tier}</strong>.
+            Receiving as <strong>{row.subcategory}</strong> creates a separate product.
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: "#0A0A0A" }}>
+            <input type="checkbox" checked={row.confirmedTierConflict} onChange={(e) => onConfirmConflict(e.target.checked)} />
+            <span>Confirm — create as separate {row.subcategory} product</span>
+          </label>
+          {!row.confirmedTierConflict && (
+            <button type="button" onClick={() => onSwitchToExisting(c.tierConflict!.tier)}
+              style={{ marginTop: 4, background: "#0A0A0A", color: "#fff", border: "none", padding: "2px 8px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}>
+              Or switch to {c.tierConflict.tier} (restock)
+            </button>
+          )}
+        </div>
+      )}
+      {row.nearMatches.length > 0 && (
+        <div style={{ marginTop: 4, padding: "4px 6px", background: "rgba(201,138,0,0.08)", border: "1px solid #C98A00", fontSize: 11, fontFamily: "monospace" }}>
+          <div style={{ color: "#C98A00", marginBottom: 2 }}>⚠ Possible duplicate of:</div>
+          {row.nearMatches.map((m, j) => (
+            <div key={j} style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center", padding: "1px 0" }}>
+              <span title={`Levenshtein distance: ${m.distance}`}>{m.title} <span style={{ color: "#888" }}>({m.tier})</span></span>
+              <button type="button" onClick={() => onUseMatch(m)}
+                style={{ background: "#C98A00", color: "#fff", border: "none", padding: "1px 6px", fontSize: 10, fontFamily: "monospace", textTransform: "uppercase", cursor: "pointer" }}>
+                Use
+              </button>
+            </div>
           ))}
         </div>
-      </div>
-      {!cbdCfg ? (
-        <Text className="text-ui-fg-subtle">
-          {categoriesError
-            ? `Couldn't load categories: ${categoriesError}. Reload the page.`
-            : categories
-              ? "No category is set up for invoice upload. Turn on \"Receive by invoice upload\" for one in MBS Settings → Categories."
-              : "Loading categories…"}
-        </Text>
-      ) : extracted ? (
-        <ReviewView
-          invoice={extracted.invoice}
-          fileName={extracted.fileName}
-          tokens={extracted.tokens}
-          tierPrices={tierPrices}
-          tierOptions={tierOptions}
-          primaryCannabinoid={cbdCfg.primaryCannabinoid}
-          otherCannabinoids={cbdCfg.otherCannabinoids}
-          inputUnit={cbdCfg.inputUnit}
-          profileKey={cbdCfg.profileKey}
-          draftKind={cbdCfg.draftKind}
-          initialRows={extracted.initialRows}
-          initialDraftId={extracted.draftId ?? null}
-          onRestart={() => setExtracted(null)}
-        />
-      ) : (
-        <UploadView
-          draftKind={cbdCfg.draftKind}
-          profileKey={cbdCfg.profileKey}
-          onExtracted={(invoice, fileName, tokens) =>
-            setExtracted({ invoice, fileName, tokens })
-          }
-          onManualEntry={() =>
-            setExtracted({
-              invoice: blankManualInvoice(),
-              fileName: "Manual Entry",
-              tokens: { in: 0, out: 0 },
-              initialRows: [blankReviewRow()],
-            })
-          }
-          onResumeDraft={(d) => {
-            const p = d.payload as DraftPayload
-            /* COA URLs persist in drafts now (uploaded immediately on
-             * pick), so resumed rows pass through unchanged. Old
-             * drafts created before this change may have rows with no
-             * `coa` field — default those to idle. */
-            const restoredRows: ReviewRow[] = p.rows.map((r) => ({
-              ...r,
-              coa: r.coa ?? { state: "idle" },
-              thcaPercent: r.thcaPercent ?? "",
-              /* Drafts saved before other cannabinoids were settings hold d9Percent. */
-              otherPercents: r.otherPercents ?? ((r as any).d9Percent ? { D9: (r as any).d9Percent } : {}),
-              totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
-              batchId: r.batchId ?? "",
-              coaNotes: r.coaNotes ?? null,
-              nearMatches: r.nearMatches ?? [],
-            }))
-            setExtracted({
-              invoice: p.invoice,
-              fileName: p.fileName,
-              tokens: p.tokens,
-              initialRows: restoredRows,
-              draftId: d.id,
-            })
-            toast.info("Draft resumed")
-          }}
-        />
       )}
-    </Container>
+    </>
   )
 }
 
@@ -1805,4 +1411,4 @@ export const config = defineRouteConfig({
   icon: TruckIcon,
 })
 
-export default ReceivingPage
+export default CategoryReceivingPage
