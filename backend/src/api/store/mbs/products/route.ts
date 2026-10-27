@@ -1,6 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules, QueryContext } from "@medusajs/framework/utils"
-import { loadCategoryTree } from "../../../../lib/category-tree"
+import { loadCategoryTree, productPath } from "../../../../lib/category-tree"
 
 /**
  * Custom Store route that returns products with the linked `product_attributes`
@@ -19,7 +19,10 @@ import { loadCategoryTree } from "../../../../lib/category-tree"
  *
  * Each product carries `top_category` { id, handle, name }: the
  * top-level category above its assignments, read from the full tree, so
- * the storefront needs no list of parent categories.
+ * the storefront needs no list of parent categories. It also carries
+ * `category_path`: its deepest category's levels from the top down
+ * (inactive levels included), each with its behaviour metadata, so
+ * product behaviour comes from category settings.
  *
  * Customer-group pricing (Distro, Owner Stores) — when called with a
  * customer Bearer token, the route resolves the customer's group
@@ -141,6 +144,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   for (const p of products as any[]) {
     const top = (p.categories ?? []).map((c: any) => tree.rootOf(c.id)).find(Boolean) ?? null
     p.top_category = top ? { id: top.id, handle: top.handle, name: top.name } : null
+    p.category_path = productPath(tree, (p.categories ?? []).map((c: any) => c.id))
   }
 
   res.json({ products, count: products.length })

@@ -8,9 +8,12 @@ import { useEffect, useState } from "react"
  *
  * Edits the category.metadata keys the storefront reads for this
  * category (mbs-storefront src/lib/categories.ts): its tile (image,
- * colour, order, small lines), its intro copy, and whether its
- * children get a home-page section. A new category is set up here,
- * with no code change.
+ * colour, order, small lines), its intro copy, whether its children
+ * get a home-page section, and how the products under it behave. A new
+ * category is set up here, with no code change.
+ *
+ * Product settings apply to every category below this one; the nearest
+ * level that sets a key wins (Flower → CBD → Classic).
  *
  * Medusa replaces a category's metadata wholesale on update, so the
  * save re-reads the current metadata and changes only these keys;
@@ -29,6 +32,15 @@ const ACCENTS: { value: string; label: string }[] = [
   { value: "accent-copper", label: "Copper" },
 ]
 const NONE = "__none"
+
+/* Product cannabinoid. The storefront picks the % field, filter and
+ * label rows from it. */
+const CANNABINOIDS: { value: string; label: string }[] = [
+  { value: "cbd", label: "CBD" },
+  { value: "cbg", label: "CBG" },
+  { value: "thc-a", label: "THC-A" },
+  { value: "thc-p", label: "THC-P" },
+]
 
 type Field = { key: string; label: string; hint?: string; kind: "text" | "number" | "textarea" }
 
@@ -50,28 +62,42 @@ const HOME_FIELDS: Field[] = [
   { key: "homeShopAllHref", label: "Shop All link", hint: "Adds a Shop All tile linking here, e.g. /products?cannabinoid=cbd", kind: "text" },
 ]
 
-const ALL_KEYS = [...TILE_FIELDS, ...HOME_FIELDS].map((f) => f.key)
+const PRODUCT_FIELDS: Field[] = [
+  { key: "productMeta", label: "Product card line", hint: "Small line on each product card, e.g. Pre-Rolls · 30/box · 1.5g each. Blank: the top category's name.", kind: "text" },
+  { key: "filterLabel", label: "Filter name", hint: "Name of the subcategory filter on the shop page, e.g. Tier. Blank: Type.", kind: "text" },
+  { key: "seoTitle", label: "Page title", hint: "Browser/Google title of this category's page. Blank: built from the category names.", kind: "text" },
+]
+
+const ALL_KEYS = [...TILE_FIELDS, ...HOME_FIELDS, ...PRODUCT_FIELDS].map((f) => f.key)
 const NUMBER_KEYS = new Set([...TILE_FIELDS, ...HOME_FIELDS].filter((f) => f.kind === "number").map((f) => f.key))
 
-type Form = Record<string, string> & { accent: string }
+type Form = Record<string, string> & { accent: string; cannabinoid: string }
 
-function formFrom(meta: Record<string, unknown> | null | undefined): { form: Form; comingSoon: boolean } {
+/* labels is three-way: set true, set false (stops it inheriting), or unset. */
+type Labels = "inherit" | "yes" | "no"
+
+function formFrom(meta: Record<string, unknown> | null | undefined): { form: Form; comingSoon: boolean; labels: Labels } {
   const m = meta ?? {}
-  const form: Form = { accent: typeof m.accent === "string" && m.accent ? m.accent : NONE }
+  const form: Form = {
+    accent: typeof m.accent === "string" && m.accent ? m.accent : NONE,
+    cannabinoid: typeof m.cannabinoid === "string" && m.cannabinoid ? m.cannabinoid : NONE,
+  }
   for (const k of ALL_KEYS) form[k] = m[k] == null ? "" : String(m[k])
-  return { form, comingSoon: m.comingSoon === true }
+  return { form, comingSoon: m.comingSoon === true, labels: m.labels === true ? "yes" : m.labels === false ? "no" : "inherit" }
 }
 
 const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProductCategory>) => {
   const initial = formFrom(data.metadata as Record<string, unknown> | null)
   const [form, setForm] = useState<Form>(initial.form)
   const [comingSoon, setComingSoon] = useState(initial.comingSoon)
+  const [labels, setLabels] = useState<Labels>(initial.labels)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     const next = formFrom(data.metadata as Record<string, unknown> | null)
     setForm(next.form)
     setComingSoon(next.comingSoon)
+    setLabels(next.labels)
   }, [data.id])
 
   const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }))
@@ -96,6 +122,10 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
       else metadata.accent = form.accent
       if (comingSoon) metadata.comingSoon = true
       else delete metadata.comingSoon
+      if (form.cannabinoid === NONE) delete metadata.cannabinoid
+      else metadata.cannabinoid = form.cannabinoid
+      if (labels === "inherit") delete metadata.labels
+      else metadata.labels = labels === "yes"
 
       const res = await fetch(`/admin/product-categories/${data.id}`, {
         method: "POST",
@@ -161,6 +191,38 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
       <div className="flex flex-col gap-4 px-6 py-4">
         <Text size="small" weight="plus">Home page section</Text>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{HOME_FIELDS.map(renderField)}</div>
+      </div>
+      <div className="flex flex-col gap-4 px-6 py-4">
+        <div>
+          <Text size="small" weight="plus">Products in this category</Text>
+          <Text size="xsmall" className="text-ui-fg-subtle">Applies to every category below this one too. A lower category's setting wins.</Text>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <Label size="small">Cannabinoid</Label>
+            <Select value={form.cannabinoid} onValueChange={(v) => set("cannabinoid", v)}>
+              <Select.Trigger><Select.Value /></Select.Trigger>
+              <Select.Content>
+                <Select.Item value={NONE}>Same as the category above</Select.Item>
+                {CANNABINOIDS.map((c) => <Select.Item key={c.value} value={c.value}>{c.label}</Select.Item>)}
+              </Select.Content>
+            </Select>
+            <Text size="xsmall" className="text-ui-fg-subtle">Picks the % shown on products, the cannabinoid filter and the label figures.</Text>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label size="small">Shelf labels</Label>
+            <Select value={labels} onValueChange={(v) => setLabels(v as Labels)}>
+              <Select.Trigger><Select.Value /></Select.Trigger>
+              <Select.Content>
+                <Select.Item value="inherit">Same as the category above</Select.Item>
+                <Select.Item value="yes">Products can print labels</Select.Item>
+                <Select.Item value="no">No labels</Select.Item>
+              </Select.Content>
+            </Select>
+            <Text size="xsmall" className="text-ui-fg-subtle">Only buyers with labels switched on see the print buttons.</Text>
+          </div>
+          {PRODUCT_FIELDS.map(renderField)}
+        </div>
       </div>
     </Container>
   )
