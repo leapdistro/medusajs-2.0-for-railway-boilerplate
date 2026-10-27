@@ -1122,6 +1122,21 @@ export type QboInvoice = {
 }
 
 /** Read any QBO entity by type + id (Payment, CreditMemo, …). */
+/** Every row of a QBQL select, fetched 1000 at a time. `where` is
+ *  everything after the entity name ("where TxnDate >= '2026-10-01'"). */
+export async function queryAll(qbo: QboService, conn: QboConnectionRow, entity: string, where: string): Promise<any[]> {
+  const out: any[] = []
+  for (let start = 1; start < 100_000; start += 1000) {
+    const fresh = await ensureFreshAccessToken(qbo, conn)
+    const sql = `select * from ${entity} ${where} startposition ${start} maxresults 1000`
+    const json = await qboFetch(fresh, `/query?minorversion=73&query=${encodeURIComponent(sql)}`)
+    const rows = (json?.QueryResponse?.[entity] ?? []) as any[]
+    out.push(...rows)
+    if (rows.length < 1000) break
+  }
+  return out
+}
+
 export async function readEntity(qbo: QboService, conn: QboConnectionRow, entity: string, id: string): Promise<any> {
   const fresh = await ensureFreshAccessToken(qbo, conn)
   const json = await qboFetch(fresh, `/${entity.toLowerCase()}/${encodeURIComponent(id)}?minorversion=73`)
