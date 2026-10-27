@@ -25,8 +25,13 @@ import {
  * recomputing the summary. Before confirming, the edit is previewed and
  * its shipping total must equal `amount`, else it's cancelled.
  *
- * preview: true runs the edit up to the preview, cancels it, and returns
- * the shipping and order totals it would produce. Nothing changes.
+ * preview: true returns the shipping and order totals the change would
+ * produce, worked out from the order as it stands. It opens no order
+ * edit: a shipping method only exists as a real row, and Medusa's
+ * cancelBeginOrderEditWorkflow (2.13) deletes SHIPPING_ADD methods by
+ * ACTION id, so a cancelled edit leaves its method on the order's next
+ * version (order 424 got a stray $65 that way). For the same reason any
+ * cancel here also soft-deletes the methods the edit created.
  * Medusa's admin has no control
  * for this, but its order-edit API does: begin → add a shipping method
  * at a custom amount → request → confirm. The framework recomputes the
@@ -83,8 +88,29 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(400).json({ ok: false, message: `No shipping option ${body.shipping_option_id}` })
   }
 
-  const before = { shipping: Number(order.shipping_total ?? 0), total: Number(order.total ?? 0) }
-  let after = before
+  const num = (v: any) => Number(v?.numeric ?? v ?? 0)
+  const before = { shipping: num(order.shipping_total), total: num(order.total) }
+  const round = (n: number) => Math.round(n * 100) / 100
+  const expected = mode === "set" ? amount : round(before.shipping + amount)
+  let after = { shipping: expected, total: round(before.total - before.shipping + expected) }
+
+  if (preview) {
+    return res.json({ ok: true, preview: true, mode, amount, before, after })
+  }
+
+  /* Shipping methods this edit created — soft-deleted if the edit is
+   * cancelled (see the note on Medusa's cancel above). */
+  const createdMethodIds = async (changeId: string): Promise<string[]> => {
+    const { data: changes } = await query.graph({
+      entity: "order_change",
+      fields: ["id", "actions.action", "actions.reference_id"],
+      filters: { id: changeId },
+    })
+    return (((changes as any[])[0]?.actions ?? []) as any[])
+      .filter((a) => a.action === ChangeActionType.SHIPPING_ADD && a.reference_id)
+      .map((a) => a.reference_id)
+  }
+  let changeId: string | null = null
 
   /* Framework path. Any failure between begin and confirm rolls the
    * edit back so a retry doesn't collide with a stale order change. */
@@ -94,6 +120,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       input: { order_id: orderId, created_by: actorId } as any,
     })
     begun = true
+    changeId = (change as any).id
 
     if (mode === "set") {
       const current = (order.shipping_methods ?? []) as Array<{ id: string; amount: unknown }>
@@ -125,20 +152,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const projected: any = await orderService.previewOrderChange(orderId)
     const projectedShipping = ((projected?.shipping_methods ?? []) as any[])
       .reduce((sum, m) => sum + Number(m?.amount ?? 0), 0)
-    after = {
-      shipping: Math.round(projectedShipping * 100) / 100,
-      total: Number(projected?.summary?.current_order_total ?? projected?.total ?? NaN),
+    const projectedTotal = num(projected?.summary?.current_order_total ?? projected?.total)
+    if (Math.abs(round(projectedShipping) - expected) > 0.005) {
+      throw new Error(`The edit would leave shipping at ${round(projectedShipping).toFixed(2)}, not ${expected.toFixed(2)}; nothing was changed.`)
     }
-    const expected = mode === "set" ? amount : Math.round((before.shipping + amount) * 100) / 100
-    if (Math.abs(after.shipping - expected) > 0.005) {
-      throw new Error(`The edit would leave shipping at ${after.shipping.toFixed(2)}, not ${expected.toFixed(2)}; nothing was changed.`)
-    }
-
-    if (preview) {
-      await cancelBeginOrderEditWorkflow(req.scope).run({ input: { order_id: orderId } as any })
-      begun = false
-      return res.json({ ok: true, preview: true, mode, amount, before, after })
-    }
+    after = { shipping: round(projectedShipping), total: projectedTotal }
 
     await requestOrderEditRequestWorkflow(req.scope).run({
       input: { order_id: orderId, requested_by: actorId } as any,
@@ -150,7 +168,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   } catch (e: any) {
     if (begun) {
       try {
+        const created = changeId ? await createdMethodIds(changeId) : []
         await cancelBeginOrderEditWorkflow(req.scope).run({ input: { order_id: orderId } as any })
+        if (created.length > 0) await orderService.softDeleteOrderShippingMethods(created)
       } catch (cancelErr: any) {
         logger.warn(`[order-shipping-charge] rollback failed for order ${orderId}: ${cancelErr?.message}`)
       }
