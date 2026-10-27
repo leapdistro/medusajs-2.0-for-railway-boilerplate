@@ -1,80 +1,52 @@
+import { loadCategoryTree, type TreeCategory } from "./category-tree"
+
 /**
- * Product-line retire / reactivate — shared branch registry + reason codes.
+ * Product-line retire / reactivate — line registry + reason codes.
  *
- * A "product line" here = one cannabinoid branch under Flower. Each branch
- * carries its own Medusa category subtree, and retiring it is a routine
- * ops action (state rule change, litigation stay, seasonal pause). The
- * retire flow deactivates categories, bulk-unpublishes products, and
- * writes an audit entry so future ops can see who did what and when.
- *
- * Only Flower branches today. Pre-Rolls, hashholes, or future categories
- * can be added by extending the BRANCHES map — the retire/reactivate
- * endpoints are branch-generic.
- *
- * WHY the branches are hardcoded here rather than derived from Medusa:
- * category HANDLES aren't semantically-typed on the Medusa side (they're
- * globally-unique strings), so a code-side registry gives us a stable
- * enum for API validation + admin UI labeling. Adding a new branch means
- * editing this file — infrequent enough to be worth the explicit step.
+ * A "product line" is any category directly under a top-level category
+ * (Flower → CBD, Flower → CBG, Pre-Rolls → CBD, …), read live from
+ * Medusa, so a category added in admin is a line with no code change.
+ * Retiring a line deactivates it and every category below it, drafts
+ * its published products, and writes an audit entry; reactivate
+ * reverses exactly that.
  */
 
-/** Cannabinoid branch keys — matches the storefront's FlowerType union
- *  so /store/mbs/tier-prices, adapter, PDP labels, etc. all speak the
- *  same vocabulary. Add here when a new branch launches; do NOT rename
- *  without a coordinated storefront + audit-log migration. */
-export type BranchKey = "thc-a" | "thc-p" | "cbd" | "cbg"
-
-export type BranchDef = {
-  key: BranchKey
+export type ProductLine = {
+  /** The line category's handle — the key in API calls and the audit log. */
+  key: string
+  /** "CBD Flower": the line's name, then its top-level category's. */
   displayName: string
-  /** Handle of the intermediate category under Flower. THC-A / CBD / CBG
-   *  own their tier ladders under this handle; THC-P is a leaf so its
-   *  intermediate handle IS its final handle ("thc-p"). */
-  intermediateHandle: string
-  /** Handles of the tier children (5 for tier-ladder branches, empty
-   *  for leaf branches like THC-P). Used by buildContext to identify
-   *  every category id involved in a retire/reactivate cycle. */
-  tierHandles: string[]
+  /** The line category and every category below it. */
+  categories: TreeCategory[]
+  handles: string[]
+  /** The line category itself (its is_active drives the "unknown" state). */
+  line: TreeCategory
 }
 
-export const BRANCHES: Record<BranchKey, BranchDef> = {
-  "thc-a": {
-    key: "thc-a",
-    displayName: "THC-A Flower",
-    intermediateHandle: "flower-thc-a",
-    /* Bare tier handles predate the CBD/CBG split — THC-A tier children
-     * still carry the original single-word slugs (globally-unique;
-     * CBD/CBG had to prefix theirs). */
-    tierHandles: ["classic", "exotic", "super", "snowcaps", "rapper"],
-  },
-  "thc-p": {
-    key: "thc-p",
-    displayName: "THC-P Flower",
-    intermediateHandle: "thc-p",
-    /* Leaf branch — case-pack, no tier ladder. */
-    tierHandles: [],
-  },
-  cbd: {
-    key: "cbd",
-    displayName: "CBD Flower",
-    intermediateHandle: "flower-cbd",
-    /* Branch-prefixed tier handles (post-2026-08 rollout — bare tier
-     * slugs were already claimed by THC-A). */
-    tierHandles: ["cbd-classic", "cbd-exotic", "cbd-super", "cbd-snowcaps", "cbd-rapper"],
-  },
-  cbg: {
-    key: "cbg",
-    displayName: "CBG Flower",
-    intermediateHandle: "flower-cbg",
-    tierHandles: ["cbg-classic", "cbg-exotic", "cbg-super", "cbg-snowcaps", "cbg-rapper"],
-  },
-}
-
-/** Every handle involved in a branch's retire/reactivate — intermediate
- *  + tier children — as one flat list. */
-export function allHandlesForBranch(branch: BranchKey): string[] {
-  const def = BRANCHES[branch]
-  return [def.intermediateHandle, ...def.tierHandles]
+export async function loadProductLines(query: any): Promise<ProductLine[]> {
+  const tree = await loadCategoryTree(query)
+  const all = [...tree.byId.values()]
+  const childrenOf = (id: string) => all.filter((c) => c.parent_category_id === id)
+  const lines: ProductLine[] = []
+  for (const top of all.filter((c) => !c.parent_category_id)) {
+    for (const line of childrenOf(top.id).sort((a, b) => a.name.localeCompare(b.name))) {
+      const categories: TreeCategory[] = []
+      const stack = [line]
+      while (stack.length > 0) {
+        const c = stack.pop()!
+        categories.push(c)
+        stack.push(...childrenOf(c.id))
+      }
+      lines.push({
+        key: line.handle,
+        displayName: `${line.name} ${top.name}`,
+        categories,
+        handles: categories.map((c) => c.handle),
+        line,
+      })
+    }
+  }
+  return lines
 }
 
 /** Reason codes for the retire modal. Kept hardcoded (not editable via
@@ -106,10 +78,12 @@ export type ProductLineAuditEntry = {
   timestamp: string             // ISO8601
   actor: string                 // admin user id / email / "unknown_admin"
   action: AuditAction
-  branch: BranchKey
+  /** The line's key (its category handle). */
+  branch: string
   reason: ReasonCode
   notes?: string
-  /** Category ids that were toggled active/inactive during this action.
+  /** Category ids this action switched active/inactive (retire records
+   *  only those it turned off, so reactivate leaves already-off ones off).
    *  Used by reactivate to reverse a matching retire precisely — if a
    *  new tier category was added after retire and reactivate is run
    *  later, that new cat won't accidentally get activated. */

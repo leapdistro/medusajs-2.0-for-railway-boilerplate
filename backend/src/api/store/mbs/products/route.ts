@@ -22,7 +22,8 @@ import { loadCategoryTree, productPath } from "../../../../lib/category-tree"
  * the storefront needs no list of parent categories. It also carries
  * `category_path`: its deepest category's levels from the top down
  * (inactive levels included), each with its behaviour metadata, so
- * product behaviour comes from category settings.
+ * product behaviour comes from category settings, and `custom_fields`:
+ * its values for the extra fields those categories define.
  *
  * Customer-group pricing (Distro, Owner Stores) — when called with a
  * customer Bearer token, the route resolves the customer's group
@@ -101,6 +102,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     entity: "product",
     fields: [
       "id", "title", "handle", "thumbnail", "status", "created_at",
+      /* Read for custom_fields only — stripped before the response. */
+      "metadata",
       "images.*",
       "options.*", "options.values.*",
       "variants.id", "variants.title", "variants.sku", "variants.weight",
@@ -145,6 +148,10 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     const top = (p.categories ?? []).map((c: any) => tree.rootOf(c.id)).find(Boolean) ?? null
     p.top_category = top ? { id: top.id, handle: top.handle, name: top.name } : null
     p.category_path = productPath(tree, (p.categories ?? []).map((c: any) => c.id))
+    /* Values of the category-defined product fields (admin "Category
+     * fields"); the rest of product metadata stays private. */
+    p.custom_fields = p.metadata?.custom_fields ?? {}
+    delete p.metadata
   }
 
   res.json({ products, count: products.length })

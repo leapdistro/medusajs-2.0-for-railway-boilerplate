@@ -73,6 +73,21 @@ const NUMBER_KEYS = new Set([...TILE_FIELDS, ...HOME_FIELDS].filter((f) => f.kin
 
 type Form = Record<string, string> & { accent: string; cannabinoid: string }
 
+/* Extra product fields this category adds (e.g. "mg per piece" for
+ * edibles). Products below the category fill them in on their own page
+ * ("Category fields"); the storefront lists filled ones as specs. The key
+ * is fixed when a field is added, so renaming the label keeps values. */
+type ProductField = { key: string; label: string; unit?: string; /** added since the last save: key follows the name */ fresh?: boolean }
+
+function readFields(v: unknown): ProductField[] {
+  if (!Array.isArray(v)) return []
+  return v
+    .filter((f) => f && typeof f.key === "string" && typeof f.label === "string")
+    .map((f) => ({ key: f.key, label: f.label, ...(typeof f.unit === "string" && f.unit ? { unit: f.unit } : {}) }))
+}
+
+const slug = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")
+
 /* labels is three-way: set true, set false (stops it inheriting), or unset. */
 type Labels = "inherit" | "yes" | "no"
 
@@ -91,6 +106,7 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
   const [form, setForm] = useState<Form>(initial.form)
   const [comingSoon, setComingSoon] = useState(initial.comingSoon)
   const [labels, setLabels] = useState<Labels>(initial.labels)
+  const [fields, setFields] = useState<ProductField[]>(readFields((data.metadata as any)?.productFields))
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -98,14 +114,19 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
     setForm(next.form)
     setComingSoon(next.comingSoon)
     setLabels(next.labels)
+    setFields(readFields((data.metadata as any)?.productFields))
   }, [data.id])
 
   const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }))
 
+  const fieldKeys = fields.map((f) => f.key)
+  const badFields = fields.some((f) => !f.label.trim() || !f.key) || new Set(fieldKeys).size !== fieldKeys.length
   const bad = [...NUMBER_KEYS].filter((k) => form[k].trim() && !Number.isFinite(Number(form[k])))
+  const setField = (i: number, patch: Partial<ProductField>) =>
+    setFields((fs) => fs.map((f, j) => (j === i ? { ...f, ...patch } : f)))
 
   const save = async () => {
-    if (bad.length > 0) return
+    if (bad.length > 0 || badFields) return
     setSaving(true)
     try {
       /* Fresh read, so keys saved elsewhere since the page loaded survive. */
@@ -126,6 +147,9 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
       else metadata.cannabinoid = form.cannabinoid
       if (labels === "inherit") delete metadata.labels
       else metadata.labels = labels === "yes"
+      const cleanFields = fields.map((f) => ({ key: f.key, label: f.label.trim(), ...(f.unit?.trim() ? { unit: f.unit.trim() } : {}) }))
+      if (cleanFields.length > 0) metadata.productFields = cleanFields
+      else delete metadata.productFields
 
       const res = await fetch(`/admin/product-categories/${data.id}`, {
         method: "POST",
@@ -135,6 +159,7 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`)
+      setFields((fs) => fs.map(({ fresh: _fresh, ...f }) => f))
       toast.success("Storefront display saved", { description: "The site picks it up within a minute." })
     } catch (e: any) {
       toast.error("Couldn't save", { description: e?.message ?? "Network error" })
@@ -167,7 +192,7 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
           <Heading level="h2">Storefront display</Heading>
           <Text size="small" className="text-ui-fg-subtle">How this category looks on hempmbs.com.</Text>
         </div>
-        <Button size="small" variant="secondary" disabled={saving || bad.length > 0} onClick={save}>
+        <Button size="small" variant="secondary" disabled={saving || bad.length > 0 || badFields} onClick={save}>
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>
@@ -222,6 +247,24 @@ const CategoryStorefrontDisplayWidget = ({ data }: DetailWidgetProps<AdminProduc
             <Text size="xsmall" className="text-ui-fg-subtle">Only buyers with labels switched on see the print buttons.</Text>
           </div>
           {PRODUCT_FIELDS.map(renderField)}
+        </div>
+        <div className="flex flex-col gap-2">
+          <div>
+            <Label size="small">Extra product fields</Label>
+            <Text size="xsmall" className="text-ui-fg-subtle">Fields every product below this category gets on its page (e.g. "Per piece", unit "mg"). Filled ones show on the storefront as specs.</Text>
+          </div>
+          {fields.map((f, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input size="small" placeholder="Field name" value={f.label}
+                onChange={(e) => setField(i, f.fresh ? { label: e.target.value, key: slug(e.target.value) } : { label: e.target.value })} />
+              <Input size="small" placeholder="Unit (optional)" className="w-40" value={f.unit ?? ""} onChange={(e) => setField(i, { unit: e.target.value })} />
+              <Button size="small" variant="transparent" onClick={() => setFields((fs) => fs.filter((_, j) => j !== i))}>Remove</Button>
+            </div>
+          ))}
+          {badFields && <Text size="xsmall" style={{ color: "#B91C1C" }}>Each field needs a name, and names must differ.</Text>}
+          <div>
+            <Button size="small" variant="secondary" onClick={() => setFields((fs) => [...fs, { key: "", label: "", fresh: true }])}>Add field</Button>
+          </div>
         </div>
       </div>
     </Container>

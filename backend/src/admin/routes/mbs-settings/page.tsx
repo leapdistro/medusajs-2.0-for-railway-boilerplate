@@ -395,8 +395,11 @@ const TIER_LABELS: Record<TierKey, string> = {
  * below — no second place to keep in sync. Formats with barcode=false
  * (QP) are left out of the grid entirely.
  *
- * Branches are CBD + CBG only. THC-A + THC-P flower are retired, and a
- * retired branch's numbers would be dead data.
+ * One barcode table per tier ladder that prints labels: a category with
+ * children (Flower → CBD) whose category settings resolve labels on and
+ * a cannabinoid, keyed by that cannabinoid (what the storefront looks up).
+ * Read live from Medusa, so a new labelled line gets a table with no code
+ * change. Inactive lines are listed after the active ones.
  */
 type LabelFormat = {
   id: string
@@ -410,10 +413,35 @@ type LabelFormat = {
 }
 type LabelBarcodes = Record<string, Record<string, Record<string, string>>>
 
-const LABEL_BRANCHES = [
-  { key: "cbd", title: "CBD Flower" },
-  { key: "cbg", title: "CBG Flower" },
-] as const
+type LabelBranch = { key: string; title: string; active: boolean }
+type AdminCategory = { id: string; name: string; handle: string; parent_category_id: string | null; is_active: boolean; metadata: Record<string, unknown> | null }
+
+/** Tier ladders that print labels, from the category tree. A setting
+ *  comes from the nearest category that sets it, as on the storefront. */
+function labelBranchesFrom(cats: AdminCategory[]): LabelBranch[] {
+  const byId = new Map(cats.map((c) => [c.id, c]))
+  const chain = (c: AdminCategory) => {
+    const out: AdminCategory[] = []
+    for (let n: AdminCategory | undefined = c; n && out.length < 20; n = n.parent_category_id ? byId.get(n.parent_category_id) : undefined) out.push(n)
+    return out
+  }
+  const setting = (c: AdminCategory, key: string) => {
+    for (const n of chain(c)) {
+      const v = n.metadata?.[key]
+      if (v !== undefined && v !== null && v !== "") return v
+    }
+    return undefined
+  }
+  const out: LabelBranch[] = []
+  for (const c of cats) {
+    if (!c.parent_category_id || !cats.some((x) => x.parent_category_id === c.id)) continue
+    const cannabinoid = setting(c, "cannabinoid")
+    if (setting(c, "labels") !== true || typeof cannabinoid !== "string" || out.some((b) => b.key === cannabinoid)) continue
+    const top = chain(c).at(-1)!
+    out.push({ key: cannabinoid, title: `${c.name} ${top.name}`, active: chain(c).every((n) => n.is_active !== false) })
+  }
+  return out.sort((a, b) => Number(b.active) - Number(a.active) || a.title.localeCompare(b.title))
+}
 
 function readLabelFormats(row?: SettingRow): LabelFormat[] {
   const raw = Array.isArray(row?.value) ? row!.value : []
@@ -432,16 +460,19 @@ function readLabelFormats(row?: SettingRow): LabelFormat[] {
     .sort((a: LabelFormat, b: LabelFormat) => a.order - b.order)
 }
 
-function readLabelBarcodes(row?: SettingRow): LabelBarcodes {
+/** Saved numbers for every branch — including ones no longer shown — so a
+ *  save never drops a line's barcodes. */
+function readLabelBarcodes(row: SettingRow | undefined, branches: LabelBranch[]): LabelBarcodes {
   const raw = (row?.value ?? {}) as any
   const out: LabelBarcodes = {}
-  for (const b of LABEL_BRANCHES) {
-    out[b.key] = {}
+  const keys = new Set<string>([...Object.keys(raw ?? {}), ...branches.map((b) => b.key)])
+  for (const key of keys) {
+    out[key] = {}
     for (const tier of TIER_ORDER) {
-      const cell = raw?.[b.key]?.[tier] ?? {}
+      const cell = raw?.[key]?.[tier] ?? {}
       const tierMap: Record<string, string> = {}
       for (const [k, v] of Object.entries(cell)) tierMap[k] = String(v ?? "")
-      out[b.key][tier] = tierMap
+      out[key][tier] = tierMap
     }
   }
   return out
@@ -450,12 +481,20 @@ function readLabelBarcodes(row?: SettingRow): LabelBarcodes {
 const LabelsForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
   const [formats, setFormats] = useState<LabelFormat[]>([])
   const [barcodes, setBarcodes] = useState<LabelBarcodes>({})
+  const [branches, setBranches] = useState<LabelBranch[] | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    fetch("/admin/product-categories?limit=1000&fields=id,name,handle,parent_category_id,is_active,metadata", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => setBranches(labelBranchesFrom((j.product_categories ?? []) as AdminCategory[])))
+      .catch(() => setBranches([]))
+  }, [])
+
+  useEffect(() => {
     setFormats(readLabelFormats(rows["label_formats"]))
-    setBarcodes(readLabelBarcodes(rows["label_barcodes"]))
-  }, [rows])
+    setBarcodes(readLabelBarcodes(rows["label_barcodes"], branches ?? []))
+  }, [rows, branches])
 
   const setFormatField = (idx: number, field: keyof LabelFormat) => (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -586,9 +625,13 @@ const LabelsForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSav
           above.
         </Text>
 
-        {LABEL_BRANCHES.map((b) => (
+        {branches === null && <Text size="small" className="text-ui-fg-subtle">Loading categories…</Text>}
+        {branches?.length === 0 && (
+          <Text size="small" className="text-ui-fg-subtle">No tier ladder prints labels. Turn on Shelf labels and set a Cannabinoid on a category (Storefront display panel).</Text>
+        )}
+        {(branches ?? []).map((b) => (
           <div key={b.key} className="flex flex-col gap-2">
-            <Text size="small" weight="plus">{b.title}</Text>
+            <Text size="small" weight="plus">{b.title}{b.active ? "" : " (inactive)"}</Text>
             <div className="border">
               <div className="grid border-b bg-ui-bg-subtle" style={{ gridTemplateColumns: `120px repeat(${barcodeFormats.length}, minmax(0, 1fr))` }}>
                 <div className="px-3 py-2 font-mono text-xs uppercase tracking-wider text-ui-fg-subtle">Tier</div>

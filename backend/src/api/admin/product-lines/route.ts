@@ -3,17 +3,16 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../modules/mbs-settings"
 import {
   AUDIT_SETTING_KEY,
-  BRANCHES,
-  BranchKey,
   ProductLineAuditEntry,
-  allHandlesForBranch,
+  loadProductLines,
 } from "../../../lib/product-lines"
 
 /**
  * GET /admin/product-lines
  *
- * Powers the /app/product-lines admin dashboard. Returns per-branch
- * state (active/retired), category counts, product counts (published
+ * Powers the /app/product-lines admin dashboard. Lines are the
+ * categories directly under each top-level category (lib/product-lines).
+ * Returns per-line state (active/retired), category counts, product counts (published
  * vs draft), and the last audit entry so the operator can see who
  * retired or reactivated each branch and when.
  *
@@ -26,13 +25,6 @@ import {
  * logged, prompting an alert rather than silent state drift.
  */
 
-type CategoryRow = {
-  id: string
-  handle?: string | null
-  is_active?: boolean | null
-  parent_category_id?: string | null
-}
-
 type ProductRow = {
   id: string
   status?: string | null
@@ -43,16 +35,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
 
-  /* One graph read for every category — dwarfed by the product read
-   * below, so no point paginating. */
-  const { data: allCats } = await query.graph({
-    entity: "product_category",
-    fields: ["id", "handle", "is_active", "parent_category_id"],
-  })
-  const catByHandle = new Map<string, CategoryRow>()
-  for (const c of (allCats as CategoryRow[])) {
-    if (c.handle) catByHandle.set(c.handle, c)
-  }
+  const lines = await loadProductLines(query)
 
   /* Pull every product with category handles + status. Same in-memory
    * pass strategy as /tier-prices/apply — production catalogs run in
@@ -64,13 +47,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   const auditLog = ((await settings.getSetting(AUDIT_SETTING_KEY, [])) ?? []) as ProductLineAuditEntry[]
 
-  const branches = (Object.keys(BRANCHES) as BranchKey[]).map((key) => {
-    const def = BRANCHES[key]
-    const handles = allHandlesForBranch(key)
-    const cats = handles
-      .map((h) => catByHandle.get(h))
-      .filter((c): c is CategoryRow => !!c)
-    const intermediate = catByHandle.get(def.intermediateHandle) ?? null
+  const branches = lines.map((def) => {
+    const key = def.key
+    const handles = def.handles
+    const cats = def.categories
+    const intermediate = def.line
 
     const inBranchProducts = (allProducts as ProductRow[]).filter((p) =>
       (p.categories ?? []).some((c) => c.handle && handles.includes(c.handle)),
@@ -90,14 +71,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         ? "retired"
         : lastEntry?.action === "reactivate"
           ? "active"
-          : /* No audit history — infer from category state. Missing
-             * intermediate = branch was never seeded. Inactive
-             * intermediate WITHOUT an audit entry = state drift
-             * (operator deactivated in Medusa admin bypassing this
-             * flow — flag as "unknown" so ops can investigate). */
-            !intermediate
-              ? "unknown"
-              : intermediate.is_active === false
+          : /* No audit history — infer from category state. Inactive
+             * line WITHOUT an audit entry = state drift (operator
+             * deactivated in Medusa admin bypassing this flow — flag
+             * as "unknown" so ops can investigate). */
+            intermediate.is_active === false
                 ? "unknown"
                 : "active"
 

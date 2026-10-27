@@ -8,22 +8,20 @@ import { sendFeedNotification } from "../../../../lib/feed-notification"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 import {
   AUDIT_SETTING_KEY,
-  BRANCHES,
-  BranchKey,
   ProductLineAuditEntry,
   REASON_CODE_IDS,
   ReasonCode,
-  allHandlesForBranch,
+  loadProductLines,
 } from "../../../../lib/product-lines"
 
 /**
  * POST /admin/product-lines/retire
  * POST /admin/product-lines/reactivate
  *
- * Body: { branch: BranchKey, reason: ReasonCode, notes?: string }
+ * Body: { branch: <line key = line category handle>, reason: ReasonCode, notes?: string }
  *
  * RETIRE
- *   1. Look up every category in the branch (intermediate + tier children)
+ *   1. Look up every category in the line (the line + everything below it)
  *   2. Deactivate them (`is_active: false`)
  *   3. Find every currently-published product in that subtree
  *   4. Bulk update `status: "draft"` on those products
@@ -53,9 +51,6 @@ type CategoryRow = {
 type ProductRow = { id: string; status?: string | null; categories?: Array<{ handle?: string | null }> | null }
 type Body = { branch?: string; reason?: string; notes?: string }
 
-function isBranchKey(v: string): v is BranchKey {
-  return v === "thc-a" || v === "thc-p" || v === "cbd" || v === "cbg"
-}
 function isReasonCode(v: string): v is ReasonCode {
   return (REASON_CODE_IDS as readonly string[]).includes(v)
 }
@@ -94,10 +89,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const body = (req.body ?? {}) as Body
   const branchRaw = String(body.branch ?? "").trim().toLowerCase()
   const reasonRaw = String(body.reason ?? "").trim().toLowerCase()
-  if (!isBranchKey(branchRaw)) {
+  const lines = await loadProductLines(query)
+  const def = lines.find((l) => l.key === branchRaw)
+  if (!def) {
     return res.status(400).json({
       ok: false,
-      message: `Unknown branch "${branchRaw}" — must be one of ${Object.keys(BRANCHES).join(", ")}.`,
+      message: `Unknown product line "${branchRaw}" — must be one of ${lines.map((l) => l.key).join(", ")}.`,
     })
   }
   if (!isReasonCode(reasonRaw)) {
@@ -108,32 +105,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
   const notes = typeof body.notes === "string" ? body.notes.trim().slice(0, 500) : undefined
 
-  const branch = branchRaw
+  const branch = def.key
   const reason = reasonRaw
-  const def = BRANCHES[branch]
   const actor = resolveActor(req)
-  const handles = allHandlesForBranch(branch)
-
-  /* Pull every category we need + every product in the branch subtree.
-   * One graph read each; small enough at production scale. */
-  const { data: allCats } = await query.graph({
-    entity: "product_category",
-    fields: ["id", "handle", "is_active"],
-  })
-  const catsByHandle = new Map<string, CategoryRow>()
-  for (const c of (allCats as CategoryRow[])) {
-    if (c.handle) catsByHandle.set(c.handle, c)
-  }
-  const foundCats = handles
-    .map((h) => catsByHandle.get(h))
-    .filter((c): c is CategoryRow => !!c)
-
-  if (foundCats.length === 0) {
-    return res.status(404).json({
-      ok: false,
-      message: `None of the ${branch} branch categories (${handles.join(", ")}) exist. Seed them first.`,
-    })
-  }
+  const handles = def.handles
+  const foundCats: CategoryRow[] = def.categories
+  const allCats: CategoryRow[] = lines.flatMap((l) => l.categories)
 
   const auditLog = ((await settings.getSetting(AUDIT_SETTING_KEY, [])) ?? []) as ProductLineAuditEntry[]
 
@@ -185,7 +162,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         branch,
         reason,
         notes,
-        categoryIds: foundCats.map((c) => c.id),
+        /* Only the categories this retire switched off — reactivate
+         * turns these back on, so a category that was already off
+         * (e.g. a tier with no stock) stays off. */
+        categoryIds: toToggle.map((c) => c.id),
         productIds,
         categoriesToggled: toToggle.length,
         productsUpdated,

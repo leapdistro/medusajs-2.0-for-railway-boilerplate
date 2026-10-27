@@ -13,22 +13,22 @@ import {
 import { useCallback, useEffect, useState } from "react"
 
 /**
- * Product Lines — retire / reactivate a cannabinoid branch (or any future
- * product line) in one operator click. Reads /admin/product-lines for
- * per-branch state + audit history, posts to /admin/product-lines/retire
+ * Product Lines — retire / reactivate a product line (any category
+ * directly under a top-level category, e.g. Flower → CBD) in one
+ * operator click. Reads /admin/product-lines for per-line state + audit history, posts to /admin/product-lines/retire
  * or /reactivate to mutate state.
  *
  * State pill:
- *   active   → latest audit is reactivate (or no history + intermediate
+ *   active   → latest audit is reactivate (or no history + the line's
  *              category is active)
  *   retired  → latest audit is retire
- *   unknown  → intermediate category was deactivated outside this system
+ *   unknown  → the line's category was deactivated outside this system
  *              (state drift — flag it so operator can investigate)
  *
  * The retire action DOES three things atomically-ish:
- *   1. Deactivates the branch's categories in Medusa
+ *   1. Deactivates the line's categories in Medusa
  *   2. Bulk `status: draft` on every currently-published product in
- *      the branch subtree
+ *      the line's subtree
  *   3. Writes an audit entry with the productIds — reactivate uses
  *      that entry to re-publish precisely those products (nothing
  *      added since retire gets accidentally re-published)
@@ -195,7 +195,7 @@ const ProductLinesPage = () => {
       <div className="flex flex-col gap-1">
         <Heading level="h1">Product Lines</Heading>
         <Text size="small" className="text-ui-fg-subtle">
-          Retire or reactivate a cannabinoid branch when state rules change. Retire deactivates the branch's Medusa categories and drafts every published product in the subtree; reactivate reverses precisely what was retired. Every action is logged.
+          Retire or reactivate a product line when state rules change. Every category directly under a top-level category is a line. Retire deactivates the line's Medusa categories and drafts every published product in them; reactivate reverses precisely what was retired. Every action is logged.
         </Text>
       </div>
 
@@ -276,7 +276,7 @@ const ProductLinesPage = () => {
             <div className="border border-ui-border-warning p-3">
               <Text size="small" weight="plus">Heads up: state drift detected</Text>
               <Text size="small" className="text-ui-fg-subtle mt-1">
-                One or more branches show as <strong>Unknown</strong>. That usually means the intermediate category was deactivated in the standard Medusa admin (not via this dashboard). Run a Retire from here to synchronise state + capture an audit entry, or reactivate the category directly if the deactivation was accidental.
+                One or more lines show as <strong>Unknown</strong>. That usually means the line's category was deactivated in the standard Medusa admin (not via this dashboard). Run a Retire from here to synchronise state + capture an audit entry, or reactivate the category directly if the deactivation was accidental.
               </Text>
             </div>
           )}
