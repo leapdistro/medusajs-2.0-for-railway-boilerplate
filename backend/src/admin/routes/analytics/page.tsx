@@ -246,7 +246,7 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
         </Container>
         <Container className="flex flex-col gap-3 p-0">
           <Heading level="h2" className="px-6 pt-4">By pricing mode</Heading>
-          <Text size="xsmall" className="-mt-2 px-6 text-ui-fg-muted">Grouped by each buyer's pricing mode today.</Text>
+          <Text size="xsmall" className="-mt-2 px-6 text-ui-fg-muted">Grouped by the mode each order was placed at. Orders before Oct 28, 2026 use the buyer's mode today.</Text>
           <Table
             head={["Pricing mode", "Buyers", "Orders", "Avg order", "Revenue", "COGS", "Gross profit", "Margin"]}
             rows={r.pricing_modes.map((m) => [m.name, m.customers, m.orders, usd(m.average_order), usd(m.revenue), usd(m.cogs), usd(m.gross_profit), pct(m.margin_pct)])}

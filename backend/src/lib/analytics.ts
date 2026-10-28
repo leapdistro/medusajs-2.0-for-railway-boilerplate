@@ -16,8 +16,9 @@
  *   covers card payments, Net-terms payments and partial payments.
  *   Refunds come from Medusa.
  * Open balance — a snapshot as of now, not limited to the range.
- * Pricing mode — the buyer's mode NOW (customer.metadata.pricing_mode);
- *   the mode at order time isn't recorded.
+ * Pricing mode — the mode saved on the order at placement
+ *   (order.metadata.pricing_mode, from 2026-10-28); older orders fall
+ *   back to the buyer's mode now (customer.metadata.pricing_mode).
  */
 
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
@@ -307,7 +308,9 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     const first = o.customer_id ? firstOrderAt.get(o.customer_id) : undefined
     if (first != null && first >= fromTs.getTime() && first < toTs.getTime()) bc.first_order = true
     byCustomer.set(cid, bc)
-    const mode = (o.customer_id && modes.get(o.customer_id)) || modeLabel(null)
+    const mode = o.metadata?.pricing_mode
+      ? modeLabel(o.metadata.pricing_mode)
+      : (o.customer_id && modes.get(o.customer_id)) || modeLabel(null)
     const bm = byMode.get(mode) ?? { ...emptyMoney(), orders: 0, customers: new Set<string>() }
     for (const k of Object.keys(om) as (keyof Money)[]) bm[k] += om[k]
     bm.orders += 1; bm.customers.add(cid)

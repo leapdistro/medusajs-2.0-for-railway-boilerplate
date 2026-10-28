@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { sendOrderPlacedEmails } from "../../../../../../modules/email-notifications/lib/order-email-data"
+import { stampOrderPricingMode } from "../../../../../../lib/order-pricing-mode"
 
 /**
  * POST /store/mbs/orders/:id/send-confirmation
@@ -53,6 +54,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (orderEmail !== customerEmail) {
     logger.warn(`[send-confirmation] email mismatch for order ${orderId}: caller=${customerEmail} order=${orderEmail}`)
     return res.status(403).json({ ok: false, message: "Email does not match order" })
+  }
+
+  try {
+    await stampOrderPricingMode(req.scope, orderId)
+  } catch (e: any) {
+    logger.warn(`[send-confirmation] couldn't stamp pricing mode on ${orderId}: ${e?.message}`)
   }
 
   const result = await sendOrderPlacedEmails(req.scope, orderId)
