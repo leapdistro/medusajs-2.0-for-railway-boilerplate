@@ -5,12 +5,13 @@
  *   left out. Goods are counted the way the QBO invoice bills them
  *   (lib/billable-quantities: shipped minus returned once anything has
  *   shipped, else ordered), at the current (edited) price.
- * COGS — per line: billed qty × pool units per line (the variant's
- *   required_quantity: 1 × LB = 4 QP) × cost per pool unit. The cost is
- *   the landed cost of the last receiving of that inventory item saved
- *   before the order, else the item's current landed_per_qp. Lines with
- *   neither are listed as missing cost, and their revenue is left out
- *   of the margin so it isn't inflated.
+ * COGS — FIFO, like QuickBooks. Each receiving is a layer (qty in pool
+ *   units at its landed cost); every live order since the start uses up
+ *   the oldest layers first, billed qty × the variant's pool units
+ *   (required_quantity: 1 × LB = 4 QP). Units beyond what was received
+ *   are estimated at the last layer's cost and listed. Lines with no
+ *   cost at all are listed as missing, and their revenue is left out of
+ *   the margin so it isn't inflated.
  * Payments — QuickBooks Payments by payment date (TxnDate), which
  *   covers card payments, Net-terms payments and partial payments.
  *   Refunds come from Medusa.
@@ -85,8 +86,9 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
   const query: any = scope.resolve(ContainerRegistrationKeys.QUERY)
   const pg: any = scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 
-  /* ---- Orders placed in the range ---- */
-  const orders: any[] = []
+  /* ---- Every order up to the end of the range: FIFO needs the whole
+   * history to know which receiving layers are already used up. ---- */
+  const history: any[] = []
   for (let skip = 0; ; skip += 200) {
     const { data } = await query.graph({
       entity: "order",
@@ -98,17 +100,21 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
         "items.detail.quantity", "items.detail.unit_price",
         "items.detail.fulfilled_quantity", "items.detail.return_received_quantity",
       ],
-      filters: { created_at: { $gte: fromTs.toISOString(), $lt: toTs.toISOString() } },
+      filters: { created_at: { $lt: toTs.toISOString() } },
       pagination: { skip, take: 200, order: { created_at: "ASC" } },
     })
-    orders.push(...(data ?? []))
+    history.push(...(data ?? []))
     if ((data ?? []).length < 200) break
   }
-  const live = orders.filter((o) => o.status !== "canceled" && !o.canceled_at)
+  const isLive = (o: any) => o.status !== "canceled" && !o.canceled_at
+  history.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.display_id - b.display_id)
+  const orders = history.filter((o) => new Date(o.created_at).getTime() >= fromTs.getTime())
+  const live = orders.filter(isLive)
   const canceled = orders.length - live.length
+  const liveHistory = history.filter(isLive)
 
   /* ---- Cost basis ---- */
-  const variantIds = [...new Set(live.flatMap((o) => (o.items ?? []).map((i: any) => i.variant_id)).filter(Boolean))]
+  const variantIds = [...new Set(liveHistory.flatMap((o) => (o.items ?? []).map((i: any) => i.variant_id)).filter(Boolean))]
   const productIds = [...new Set(live.flatMap((o) => (o.items ?? []).map((i: any) => i.product_id)).filter(Boolean))]
 
   /* Link rows include soft-deleted variants (retired products still have
@@ -135,11 +141,13 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
       if (Number.isFinite(n) && n > 0) currentCost.set(r.id, n)
     }
   }
-  /* Every receiving's cost per inventory item, oldest first. */
-  const receivedCosts = new Map<string, Array<{ at: number; cost: number }>>()
+  /* FIFO layers: every receiving of an inventory item, oldest first —
+   * qty in pool units at that receiving's landed cost. Free stock is a
+   * $0 layer. */
+  const layers = new Map<string, Array<{ qty: number; cost: number }>>()
   if (invIds.length) {
     const { rows } = await pg.raw(
-      `select r.created_at, l->>'inventoryItemId' as inv, l->>'landedPerQp' as cost
+      `select l->>'inventoryItemId' as inv, l->>'qtyQps' as qty, l->>'landedPerQp' as cost
          from receiving_record r, jsonb_array_elements(r.line_results::jsonb) l
         where r.deleted_at is null
           and l->>'inventoryItemId' = any(?)
@@ -148,18 +156,48 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
       [invIds],
     )
     for (const r of rows) {
+      const qty = Number(r.qty)
       const cost = Number(r.cost)
-      if (!(cost > 0)) continue
-      const list = receivedCosts.get(r.inv) ?? []
-      list.push({ at: new Date(r.created_at).getTime(), cost })
-      receivedCosts.set(r.inv, list)
+      if (!(qty > 0) || !(cost >= 0)) continue
+      const list = layers.get(r.inv) ?? []
+      list.push({ qty, cost })
+      layers.set(r.inv, list)
     }
   }
-  const costAt = (invId: string, at: number): number | null => {
-    const list = receivedCosts.get(invId) ?? []
-    let found: number | null = null
-    for (const e of list) { if (e.at <= at) found = e.cost; else break }
-    return found ?? currentCost.get(invId) ?? null
+  /* Orders use up layers in order date order (sequence, not time: stock
+   * sold before its receiving was saved still came from that receiving).
+   * Units sold beyond everything received — stock from before receiving
+   * history, or added by hand — are costed at the last layer's cost
+   * (else the current landed cost) and reported as estimated. */
+  const lineCost = new Map<string, { cogs: number; estimatedUnits: number } | null>()
+  const lastCost = new Map<string, number>()
+  for (const o of liveHistory) {
+    const { lines } = billableLines(o.items, { canceled: false })
+    const byId = new Map(lines.map((l) => [l.id, l]))
+    for (const it of o.items ?? []) {
+      const l = byId.get(String(it.id))
+      if (!l || l.billed <= 0) continue
+      const link = it.variant_id ? links.get(it.variant_id) : undefined
+      if (!link) { lineCost.set(String(it.id), null); continue }
+      const queue = layers.get(link.inventoryItemId) ?? []
+      let need = l.billed * link.poolUnits
+      let cogs = 0
+      while (need > 1e-9 && queue.length) {
+        const layer = queue[0]
+        const take = Math.min(need, layer.qty)
+        cogs += take * layer.cost
+        layer.qty -= take
+        need -= take
+        lastCost.set(link.inventoryItemId, layer.cost)
+        if (layer.qty <= 1e-9) queue.shift()
+      }
+      if (need > 1e-9) {
+        const fallback = lastCost.get(link.inventoryItemId) ?? currentCost.get(link.inventoryItemId)
+        if (fallback == null) { lineCost.set(String(it.id), null); continue }
+        cogs += need * fallback
+      }
+      lineCost.set(String(it.id), { cogs, estimatedUnits: need > 1e-9 ? need : 0 })
+    }
   }
 
   /* ---- Product lines: top-level › next level ---- */
@@ -202,22 +240,30 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
   const byCustomer = new Map<string, Money & { orders: number; name: string; first_order: boolean }>()
   const byProduct = new Map<string, Money & { units: number; name: string; line: string }>()
   const missingCost = new Map<string, { product: string; sku: string | null; orders: Set<number>; revenue: number }>()
+  const estimatedCost = new Map<string, { product: string; sku: string | null; orders: Set<number>; pool_units: number }>()
   const orderRows: any[] = []
 
   for (const o of live) {
-    const at = new Date(o.created_at).getTime()
     const { lines } = billableLines(o.items, { canceled: false })
     const lineById = new Map(lines.map((l) => [l.id, l]))
     const om = emptyMoney()
     let uncosted = false
+    let estimated = false
     om.shipping = num(o.shipping_total)
     for (const it of o.items ?? []) {
       const l = lineById.get(String(it.id))
       if (!l || l.billed <= 0) continue
       const goods = l.unitPrice * l.billed
-      const link = it.variant_id ? links.get(it.variant_id) : undefined
-      const unitCost = link ? costAt(link.inventoryItemId, at) : null
-      const cogs = unitCost != null ? unitCost * link!.poolUnits * l.billed : 0
+      const lc = lineCost.get(String(it.id)) ?? null
+      const unitCost = lc ? lc.cogs : null
+      const cogs = lc ? lc.cogs : 0
+      if (lc && lc.estimatedUnits > 0) {
+        estimated = true
+        const key = it.variant_id ?? it.product_title ?? "?"
+        const e = estimatedCost.get(key) ?? { product: [it.product_title, it.variant_title].filter(Boolean).join(" · "), sku: it.variant_sku ?? null, orders: new Set<number>(), pool_units: 0 }
+        e.orders.add(o.display_id); e.pool_units += lc.estimatedUnits
+        estimatedCost.set(key, e)
+      }
       om.goods += goods
       if (unitCost != null) { om.cogs += cogs; om.costedGoods += goods }
       else {
@@ -257,7 +303,7 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     orderRows.push({
       display_id: o.display_id, id: o.id, date: localDate(new Date(o.created_at), tz),
       customer: bc.name, goods: round2(om.goods), shipping: round2(om.shipping), revenue: round2(om.revenue),
-      cogs: round2(om.cogs), ...marginOf(om), cost_complete: !uncosted,
+      cogs: round2(om.cogs), ...marginOf(om), cost_complete: !uncosted, cost_estimated: estimated,
       payment_status: o.metadata?.qbo_payment_status ?? null,
     })
   }
@@ -309,6 +355,9 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     missing_cost: [...missingCost.values()]
       .map((m) => ({ product: m.product, sku: m.sku, orders: [...m.orders].sort((a, b) => a - b), revenue: round2(m.revenue) }))
       .sort((a, b) => b.revenue - a.revenue),
+    estimated_cost: [...estimatedCost.values()]
+      .map((e) => ({ product: e.product, sku: e.sku, orders: [...e.orders].sort((a, b) => a - b), pool_units: round2(e.pool_units) }))
+      .sort((a, b) => b.pool_units - a.pool_units),
     refunds: { amount: round2(num(refundRows[0]?.amount)), count: Number(refundRows[0]?.n ?? 0) },
     payments: await qboPayments(scope, pg, fromDate, toDate),
     open_balance: await openBalance(pg),

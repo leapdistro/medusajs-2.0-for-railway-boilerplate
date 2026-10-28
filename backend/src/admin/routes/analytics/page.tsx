@@ -29,6 +29,7 @@ type Report = {
   top_customers: Array<MoneyRow & { name: string; orders: number; first_order: boolean }>
   customers: { signed_up: number; approved: number; pending_applications: number; buying: number; first_time_buyers: number; repeat_buyers: number }
   missing_cost: Array<{ product: string; sku: string | null; orders: number[]; revenue: number }>
+  estimated_cost: Array<{ product: string; sku: string | null; orders: number[]; pool_units: number }>
   refunds: { amount: number; count: number }
   payments: { error: string } | { total: number; count: number; on_portal_orders: number; other: number; by_date: Array<{ date: string; amount: number }> }
   open_balance: {
@@ -38,7 +39,7 @@ type Report = {
   }
   orders: Array<{
     display_id: number; id: string; date: string; customer: string; goods: number; shipping: number
-    revenue: number; cogs: number; gross_profit: number; margin_pct: number | null; cost_complete: boolean
+    revenue: number; cogs: number; gross_profit: number; margin_pct: number | null; cost_complete: boolean; cost_estimated: boolean
     payment_status: string | null
   }>
 }
@@ -194,11 +195,24 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
         </Container>
       )}
 
+      {r.estimated_cost.length > 0 && (
+        <Container>
+          <Text size="small" weight="plus">
+            {r.estimated_cost.reduce((s, e) => s + e.pool_units, 0)} units sold beyond what receiving history shows came in
+          </Text>
+          <Text size="small" className="text-ui-fg-subtle">
+            FIFO ran out of received stock for these, so they're costed at the last receiving's cost (stock added by hand, before receiving history, or returned and resold):{" "}
+            {r.estimated_cost.slice(0, 6).map((e) => `${e.product} ×${e.pool_units} (#${e.orders.join(", #")})`).join("; ")}
+            {r.estimated_cost.length > 6 ? "; …" : ""}
+          </Text>
+        </Container>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Revenue" value={usd(r.sales.revenue)} now={r.sales.revenue} before={prev?.sales.revenue}
           sub={`${usd(r.sales.goods)} goods · ${usd(r.sales.shipping)} shipping`} />
         <Kpi label="Cost of goods" value={usd(r.sales.cogs)} now={r.sales.cogs} before={prev?.sales.cogs} lowerIsBetter
-          sub="Landed cost of what was sold" />
+          sub="FIFO landed cost of what was sold" />
         <Kpi label="Gross profit" value={usd(r.sales.gross_profit)} now={r.sales.gross_profit} before={prev?.sales.gross_profit}
           sub={`${pct(r.sales.margin_pct)} margin on goods${prev ? ` (was ${pct(prev.sales.margin_pct)})` : ""}`} />
         <Kpi label="Orders" value={String(r.sales.orders)} now={r.sales.orders} before={prev?.sales.orders}
@@ -275,7 +289,9 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
           rows={[...r.orders].reverse().map((o) => [
             <a key="o" href={`/app/orders/${o.id}`} className="text-ui-fg-interactive hover:underline">#{o.display_id}</a>,
             fmtDay(o.date), o.customer, usd2(o.goods), usd2(o.shipping),
-            o.cost_complete ? usd2(o.cogs) : <span key="c" title="Some lines have no cost">{usd2(o.cogs)} *</span>,
+            !o.cost_complete ? <span key="c" title="Some lines have no cost">{usd2(o.cogs)} *</span>
+              : o.cost_estimated ? <span key="c" title="Part of this order is beyond received stock; costed at the last receiving's cost">≈ {usd2(o.cogs)}</span>
+              : usd2(o.cogs),
             usd2(o.gross_profit), pct(o.margin_pct), o.payment_status ? o.payment_status.replace("_", " ") : "not invoiced",
           ])}
         />
@@ -283,7 +299,7 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
 
       <Text size="xsmall" className="text-ui-fg-muted">
         Revenue counts goods the way the QuickBooks invoice bills them: what shipped minus returns, or what was ordered if nothing has shipped yet.
-        COGS uses the landed cost from the last receiving of each item before the order was placed. Margin is on goods only, because shipping costs aren't recorded.
+        COGS is FIFO, like QuickBooks: each receiving is a layer at its landed cost, and orders use up the oldest layer first. Margin is on goods only, because shipping costs aren't recorded.
         Payments are QuickBooks payments by payment date.
       </Text>
     </div>
@@ -378,10 +394,10 @@ function Table({ head, rows }: { head: string[]; rows: Array<Array<React.ReactNo
 }
 
 function downloadCsv(r: Report) {
-  const cols = ["order", "date", "customer", "goods", "shipping", "revenue", "cogs", "gross_profit", "margin_pct", "cost_complete", "payment_status"]
+  const cols = ["order", "date", "customer", "goods", "shipping", "revenue", "cogs", "gross_profit", "margin_pct", "cost_complete", "cost_estimated", "payment_status"]
   const esc = (v: unknown) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
   const lines = [cols.join(",")].concat(r.orders.map((o) => [
-    o.display_id, o.date, o.customer, o.goods, o.shipping, o.revenue, o.cogs, o.gross_profit, o.margin_pct, o.cost_complete, o.payment_status,
+    o.display_id, o.date, o.customer, o.goods, o.shipping, o.revenue, o.cogs, o.gross_profit, o.margin_pct, o.cost_complete, o.cost_estimated, o.payment_status,
   ].map(esc).join(",")))
   const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }))
   const a = document.createElement("a")
