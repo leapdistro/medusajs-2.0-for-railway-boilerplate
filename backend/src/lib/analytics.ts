@@ -16,12 +16,15 @@
  *   covers card payments, Net-terms payments and partial payments.
  *   Refunds come from Medusa.
  * Open balance — a snapshot as of now, not limited to the range.
+ * Pricing mode — the buyer's mode NOW (customer.metadata.pricing_mode);
+ *   the mode at order time isn't recorded.
  */
 
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { billableLines } from "./billable-quantities"
 import { loadCategoryTree } from "./category-tree"
 import { queryAll } from "./qbo-api"
+import { PRICE_LEVEL_LABELS, type PriceLevel } from "./price-levels"
 import { QBO_CONNECTION_MODULE } from "../modules/qbo-connection"
 
 export type Bucket = "day" | "week" | "month"
@@ -217,13 +220,17 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
   /* ---- Customers ---- */
   const customerIds = [...new Set(live.map((o) => o.customer_id).filter(Boolean))]
   const names = new Map<string, string>()
+  const modes = new Map<string, string>()
   const firstOrderAt = new Map<string, number>()
   if (customerIds.length) {
     const { rows } = await pg.raw(
-      `select id, email, company_name, metadata->>'business_name' as business from customer where id = any(?)`,
+      `select id, email, company_name, metadata->>'business_name' as business, metadata->>'pricing_mode' as mode from customer where id = any(?)`,
       [customerIds],
     )
-    for (const r of rows) names.set(r.id, r.company_name || r.business || r.email)
+    for (const r of rows) {
+      names.set(r.id, r.company_name || r.business || r.email)
+      modes.set(r.id, modeLabel(r.mode))
+    }
     const first = await pg.raw(
       `select customer_id, min(created_at) as first_at from "order"
         where deleted_at is null and canceled_at is null and status <> 'canceled' and customer_id = any(?)
@@ -239,6 +246,7 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
   const byLine = new Map<string, Money & { units: number }>()
   const byCustomer = new Map<string, Money & { orders: number; name: string; first_order: boolean }>()
   const byProduct = new Map<string, Money & { units: number; name: string; line: string }>()
+  const byMode = new Map<string, Money & { orders: number; customers: Set<string> }>()
   const missingCost = new Map<string, { product: string; sku: string | null; orders: Set<number>; revenue: number }>()
   const estimatedCost = new Map<string, { product: string; sku: string | null; orders: Set<number>; pool_units: number }>()
   const orderRows: any[] = []
@@ -299,6 +307,11 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     const first = o.customer_id ? firstOrderAt.get(o.customer_id) : undefined
     if (first != null && first >= fromTs.getTime() && first < toTs.getTime()) bc.first_order = true
     byCustomer.set(cid, bc)
+    const mode = (o.customer_id && modes.get(o.customer_id)) || modeLabel(null)
+    const bm = byMode.get(mode) ?? { ...emptyMoney(), orders: 0, customers: new Set<string>() }
+    for (const k of Object.keys(om) as (keyof Money)[]) bm[k] += om[k]
+    bm.orders += 1; bm.customers.add(cid)
+    byMode.set(mode, bm)
 
     orderRows.push({
       display_id: o.display_id, id: o.id, date: localDate(new Date(o.created_at), tz),
@@ -342,6 +355,9 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     },
     series: [...series.entries()].map(([key, m]) => ({ key, orders: m.orders, ...money(m) })),
     product_lines: [...byLine.entries()].map(([name, m]) => ({ name, units: m.units, ...money(m) })).sort(byRevenue),
+    pricing_modes: [...byMode.entries()]
+      .map(([name, m]) => ({ name, orders: m.orders, customers: m.customers.size, average_order: m.orders ? round2(m.revenue / m.orders) : 0, ...money(m) }))
+      .sort(byRevenue),
     top_products: [...byProduct.values()].map((m) => ({ name: m.name, line: m.line, units: m.units, ...money(m) })).sort(byRevenue).slice(0, 15),
     top_customers: buyers.map((m) => ({ name: m.name, orders: m.orders, first_order: m.first_order, ...money(m) })).sort(byRevenue).slice(0, 15),
     customers: {
@@ -363,6 +379,13 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     open_balance: await openBalance(pg),
     orders: orderRows,
   }
+}
+
+/** A customer's pricing mode as MBS Settings names it. */
+function modeLabel(mode: string | null): string {
+  if (mode === "owner_stores") return "Owner Stores"
+  if (mode === "tier_2" || mode === "tier_3" || mode === "distro") return PRICE_LEVEL_LABELS[mode as PriceLevel]
+  return PRICE_LEVEL_LABELS.default
 }
 
 /** QuickBooks Payments dated in the range. Payments applied to a portal

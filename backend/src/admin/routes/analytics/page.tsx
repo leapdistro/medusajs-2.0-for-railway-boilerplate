@@ -25,6 +25,7 @@ type Report = {
   sales: MoneyRow & { orders: number; canceled_orders: number; average_order: number }
   series: Array<MoneyRow & { key: string; orders: number }>
   product_lines: Array<MoneyRow & { name: string; units: number }>
+  pricing_modes: Array<MoneyRow & { name: string; orders: number; customers: number; average_order: number }>
   top_products: Array<MoneyRow & { name: string; line: string; units: number }>
   top_customers: Array<MoneyRow & { name: string; orders: number; first_order: boolean }>
   customers: { signed_up: number; approved: number; pending_applications: number; buying: number; first_time_buyers: number; repeat_buyers: number }
@@ -241,6 +242,14 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
           <Table
             head={["Product line", "Units", "Revenue", "COGS", "Gross profit", "Margin"]}
             rows={r.product_lines.map((l) => [l.name, l.units, usd(l.revenue), usd(l.cogs), usd(l.gross_profit), pct(l.margin_pct)])}
+          />
+        </Container>
+        <Container className="flex flex-col gap-3 p-0">
+          <Heading level="h2" className="px-6 pt-4">By pricing mode</Heading>
+          <Text size="xsmall" className="-mt-2 px-6 text-ui-fg-muted">Grouped by each buyer's pricing mode today.</Text>
+          <Table
+            head={["Pricing mode", "Buyers", "Orders", "Avg order", "Revenue", "COGS", "Gross profit", "Margin"]}
+            rows={r.pricing_modes.map((m) => [m.name, m.customers, m.orders, usd(m.average_order), usd(m.revenue), usd(m.cogs), usd(m.gross_profit), pct(m.margin_pct)])}
           />
         </Container>
         <Container className="flex flex-col gap-3 p-0">
