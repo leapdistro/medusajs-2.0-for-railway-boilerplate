@@ -38,6 +38,15 @@ type Report = {
     aging: Array<{ label: string; amount: number; count: number }>
     customers: Array<{ customer: string; amount: number; orders: number[]; oldest_days: number }>
   }
+  inventory: {
+    as_of: string; total: number; items_in_stock: number; estimated_value: number
+    by_line: Array<{ name: string; items: number; units: number; value: number; share_pct: number }>
+    items: Array<{
+      product: string; sku: string; line: string; unit: string; on_hand: number
+      value: number | null; unit_cost: number | null; latest_cost: number | null
+      last_received: string | null; estimated_units: number
+    }>
+  }
   orders: Array<{
     display_id: number; id: string; date: string; customer: string; goods: number; shipping: number
     revenue: number; cogs: number; gross_profit: number; margin_pct: number | null; cost_complete: boolean; cost_estimated: boolean
@@ -291,6 +300,8 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
         </Container>
       </div>
 
+      <Inventory inv={r.inventory} />
+
       <Container className="flex flex-col gap-3 p-0">
         <Heading level="h2" className="px-6 pt-4">Orders ({r.orders.length})</Heading>
         <Table
@@ -312,6 +323,64 @@ function Body({ report: r, prev, loading }: { report: Report; prev: Report | nul
         Payments are QuickBooks payments by payment date.
       </Text>
     </div>
+  )
+}
+
+function Inventory({ inv }: { inv: Report["inventory"] }) {
+  const [all, setAll] = useState(false)
+  const missing = inv.items.filter((i) => i.value == null)
+  const estimated = inv.items.filter((i) => i.estimated_units > 0)
+  const asOf = new Date(inv.as_of).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+  return (
+    <Container className="flex flex-col gap-3 p-0">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 px-6 pt-4">
+        <Heading level="h2">Inventory valuation</Heading>
+        <div className="flex items-center gap-3">
+          <Text size="small" weight="plus">{usd(inv.total)} across {inv.items_in_stock} items in stock</Text>
+          <Button size="small" variant="secondary" onClick={() => downloadInventoryCsv(inv)}>Export CSV</Button>
+        </div>
+      </div>
+      <Text size="xsmall" className="px-6 text-ui-fg-muted">
+        Stock on hand as of {asOf} (not limited to the range), at FIFO cost: each item is valued at its most recent receivings, since the older ones are what's been sold.
+        {inv.estimated_value > 0.5 ? ` ${usd(inv.estimated_value)} is stock beyond receiving history, valued at the current landed cost.` : ""}
+      </Text>
+      <div className="grid grid-cols-2 gap-2 px-6 lg:grid-cols-4">
+        {inv.by_line.map((l) => (
+          <div key={l.name} className="rounded-md border border-ui-border-base px-3 py-2">
+            <Text size="xsmall" className="text-ui-fg-subtle">{l.name}</Text>
+            <Text size="small" weight="plus">{usd(l.value)}</Text>
+            <Text size="xsmall" className="text-ui-fg-muted">{pct(l.share_pct)} · {l.items} item{l.items === 1 ? "" : "s"}</Text>
+          </div>
+        ))}
+      </div>
+      {missing.length > 0 && (
+        <Text size="xsmall" className="px-6 text-ui-fg-error">
+          No cost for {missing.length} item{missing.length === 1 ? "" : "s"} in stock, left out of the total: {missing.slice(0, 6).map((m) => `${m.product} (${m.on_hand} ${m.unit})`).join("; ")}{missing.length > 6 ? "; …" : ""}
+        </Text>
+      )}
+      <Table
+        head={["Product", "Line", "On hand", "Avg cost", "Latest cost", "Value", "Last received"]}
+        rows={(all ? inv.items : inv.items.slice(0, 15)).map((i) => [
+          i.product, i.line, `${i.on_hand} ${i.unit}`,
+          i.unit_cost == null ? "—" : usd2(i.unit_cost),
+          i.latest_cost == null ? "—" : usd2(i.latest_cost),
+          i.value == null ? "no cost" : i.estimated_units > 0
+            ? <span key="v" title={`${i.estimated_units} ${i.unit} beyond receiving history, valued at the current landed cost`}>≈ {usd2(i.value)}</span>
+            : usd2(i.value),
+          i.last_received ? new Date(i.last_received).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—",
+        ])}
+      />
+      {inv.items.length > 15 && (
+        <div className="px-6 pb-4">
+          <Button size="small" variant="transparent" onClick={() => setAll(!all)}>
+            {all ? "Show top 15" : `Show all ${inv.items.length} items`}
+          </Button>
+        </div>
+      )}
+      {estimated.length > 0 && (
+        <Text size="xsmall" className="px-6 pb-4 text-ui-fg-muted">≈ marks items with more on hand than receiving history shows came in.</Text>
+      )}
+    </Container>
   )
 }
 
@@ -403,14 +472,29 @@ function Table({ head, rows }: { head: string[]; rows: Array<Array<React.ReactNo
 }
 
 function downloadCsv(r: Report) {
-  const cols = ["order", "date", "customer", "goods", "shipping", "revenue", "cogs", "gross_profit", "margin_pct", "cost_complete", "cost_estimated", "payment_status"]
+  saveCsv(
+    `mbs-orders-${r.range.from_date}-to-${r.range.to_date}.csv`,
+    ["order", "date", "customer", "goods", "shipping", "revenue", "cogs", "gross_profit", "margin_pct", "cost_complete", "cost_estimated", "payment_status"],
+    r.orders.map((o) => [
+      o.display_id, o.date, o.customer, o.goods, o.shipping, o.revenue, o.cogs, o.gross_profit, o.margin_pct, o.cost_complete, o.cost_estimated, o.payment_status,
+    ]),
+  )
+}
+
+function downloadInventoryCsv(inv: Report["inventory"]) {
+  saveCsv(
+    `mbs-inventory-${inv.as_of.slice(0, 10)}.csv`,
+    ["product", "sku", "line", "on_hand", "unit", "avg_cost", "latest_cost", "value", "estimated_units", "last_received"],
+    inv.items.map((i) => [i.product, i.sku, i.line, i.on_hand, i.unit, i.unit_cost, i.latest_cost, i.value, i.estimated_units, i.last_received?.slice(0, 10)]),
+  )
+}
+
+function saveCsv(filename: string, cols: string[], rows: unknown[][]) {
   const esc = (v: unknown) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
-  const lines = [cols.join(",")].concat(r.orders.map((o) => [
-    o.display_id, o.date, o.customer, o.goods, o.shipping, o.revenue, o.cogs, o.gross_profit, o.margin_pct, o.cost_complete, o.cost_estimated, o.payment_status,
-  ].map(esc).join(",")))
+  const lines = [cols.join(",")].concat(rows.map((row) => row.map(esc).join(",")))
   const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }))
   const a = document.createElement("a")
-  a.href = url; a.download = `mbs-orders-${r.range.from_date}-to-${r.range.to_date}.csv`
+  a.href = url; a.download = filename
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
   toast.success("CSV downloaded")

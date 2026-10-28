@@ -16,6 +16,11 @@
  *   covers card payments, Net-terms payments and partial payments.
  *   Refunds come from Medusa.
  * Open balance — a snapshot as of now, not limited to the range.
+ * Inventory valuation — also a snapshot as of now: stock on hand valued
+ *   FIFO, i.e. at the costs of the most recent receivings that add up to
+ *   what's on hand (the older layers are the ones already sold). Stock
+ *   beyond receiving history is valued at the current landed cost and
+ *   listed as estimated.
  * Pricing mode — the mode saved on the order at placement
  *   (order.metadata.pricing_mode, from 2026-10-28); older orders fall
  *   back to the buyer's mode now (customer.metadata.pricing_mode).
@@ -206,17 +211,7 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
 
   /* ---- Product lines: top-level › next level ---- */
   const tree = await loadCategoryTree(query)
-  const lineOf = new Map<string, string>()
-  if (productIds.length) {
-    const { rows } = await pg.raw(`select product_id, product_category_id from product_category_product where product_id = any(?)`, [productIds])
-    const byProduct = new Map<string, string[]>()
-    for (const r of rows) byProduct.set(r.product_id, [...(byProduct.get(r.product_id) ?? []), r.product_category_id])
-    for (const [pid, cats] of byProduct) {
-      let best: { name: string }[] = []
-      for (const c of cats) { const p = tree.pathOf(c); if (p.length > best.length) best = p }
-      lineOf.set(pid, best.slice(0, 2).map((c) => c.name).join(" › ") || "Uncategorised")
-    }
-  }
+  const lineOf = await productLines(pg, tree, productIds)
 
   /* ---- Customers ---- */
   const customerIds = [...new Set(live.map((o) => o.customer_id).filter(Boolean))]
@@ -380,7 +375,128 @@ export async function analyticsReport(scope: any, args: { from: string; to: stri
     refunds: { amount: round2(num(refundRows[0]?.amount)), count: Number(refundRows[0]?.n ?? 0) },
     payments: await qboPayments(scope, pg, fromDate, toDate),
     open_balance: await openBalance(pg),
+    inventory: await inventoryValuation(pg, tree),
     orders: orderRows,
+  }
+}
+
+/** Product line ("Flower › CBD") of each product: the first two levels
+ *  of its deepest category. */
+async function productLines(pg: any, tree: Awaited<ReturnType<typeof loadCategoryTree>>, productIds: string[]) {
+  const lineOf = new Map<string, string>()
+  if (!productIds.length) return lineOf
+  const { rows } = await pg.raw(`select product_id, product_category_id from product_category_product where product_id = any(?)`, [productIds])
+  const byProduct = new Map<string, string[]>()
+  for (const r of rows) byProduct.set(r.product_id, [...(byProduct.get(r.product_id) ?? []), r.product_category_id])
+  for (const [pid, cats] of byProduct) {
+    let best: { name: string }[] = []
+    for (const c of cats) { const p = tree.pathOf(c); if (p.length > best.length) best = p }
+    lineOf.set(pid, best.slice(0, 2).map((c) => c.name).join(" › ") || "Uncategorised")
+  }
+  return lineOf
+}
+
+/** Stock on hand now, valued FIFO: the newest receiving layers that add
+ *  up to the quantity on hand. Quantities are pool units (QP, box…). */
+async function inventoryValuation(pg: any, tree: Awaited<ReturnType<typeof loadCategoryTree>>) {
+  const { rows: stock } = await pg.raw(
+    `select ii.id, ii.sku, ii.title, ii.metadata->>'landed_per_qp' as landed, sum(l.stocked_quantity) as on_hand
+       from inventory_item ii
+       join inventory_level l on l.inventory_item_id = ii.id and l.deleted_at is null
+      where ii.deleted_at is null
+      group by ii.id
+     having sum(l.stocked_quantity) > 0`,
+  )
+  const invIds = stock.map((r: any) => r.id)
+  const layers = new Map<string, Array<{ qty: number; cost: number; at: string; unit: string | null }>>()
+  const productOf = new Map<string, { id: string; title: string }>()
+  if (invIds.length) {
+    const { rows } = await pg.raw(
+      `select l->>'inventoryItemId' as inv, l->>'qtyQps' as qty, l->>'landedPerQp' as cost,
+              l->>'poolUnitLabel' as unit, r.created_at
+         from receiving_record r, jsonb_array_elements(r.line_results::jsonb) l
+        where r.deleted_at is null
+          and l->>'inventoryItemId' = any(?)
+          and coalesce(l->>'error', '') = ''
+        order by r.created_at`,
+      [invIds],
+    )
+    for (const r of rows) {
+      const qty = Number(r.qty)
+      const cost = Number(r.cost)
+      if (!(qty > 0) || !(cost >= 0)) continue
+      const list = layers.get(r.inv) ?? []
+      list.push({ qty, cost, at: new Date(r.created_at).toISOString(), unit: r.unit || null })
+      layers.set(r.inv, list)
+    }
+    const { rows: prods } = await pg.raw(
+      `select distinct on (v.inventory_item_id) v.inventory_item_id as inv, p.id, p.title
+         from product_variant_inventory_item v
+         join product_variant pv on pv.id = v.variant_id and pv.deleted_at is null
+         join product p on p.id = pv.product_id and p.deleted_at is null
+        where v.deleted_at is null and v.inventory_item_id = any(?)
+        order by v.inventory_item_id, v.created_at desc`,
+      [invIds],
+    )
+    for (const r of prods) productOf.set(r.inv, { id: r.id, title: r.title })
+  }
+  const lineOf = await productLines(pg, tree, [...new Set([...productOf.values()].map((p) => p.id))])
+
+  const items: Array<{
+    product: string; sku: string; line: string; unit: string; on_hand: number
+    value: number | null; unit_cost: number | null; latest_cost: number | null
+    last_received: string | null; estimated_units: number
+  }> = []
+  const byLine = new Map<string, { units: number; value: number; items: number }>()
+  let total = 0
+  let estimatedValue = 0
+  for (const r of stock) {
+    const onHand = Number(r.on_hand)
+    const list = layers.get(r.id) ?? []
+    const current = Number(r.landed)
+    let need = onHand
+    let value = 0
+    for (let i = list.length - 1; i >= 0 && need > 1e-9; i--) {
+      const take = Math.min(need, list[i].qty)
+      value += take * list[i].cost
+      need -= take
+    }
+    const estimated = need > 1e-9 ? need : 0
+    const fallback = Number.isFinite(current) && current > 0 ? current : list.length ? list[list.length - 1].cost : null
+    const costed = estimated === 0 || fallback != null
+    if (estimated && fallback != null) { value += estimated * fallback; estimatedValue += estimated * fallback }
+    const product = productOf.get(r.id)
+    const line = (product && lineOf.get(product.id)) || "Uncategorised"
+    const last = list[list.length - 1]
+    items.push({
+      product: product?.title ?? r.title ?? r.sku,
+      sku: r.sku,
+      line,
+      unit: last?.unit ?? "unit",
+      on_hand: onHand,
+      value: costed ? round2(value) : null,
+      unit_cost: costed ? round2(value / onHand) : null,
+      latest_cost: last ? round2(last.cost) : fallback,
+      last_received: last?.at ?? null,
+      estimated_units: round2(estimated),
+    })
+    if (costed) {
+      total += value
+      const bl = byLine.get(line) ?? { units: 0, value: 0, items: 0 }
+      bl.units += onHand; bl.value += value; bl.items += 1
+      byLine.set(line, bl)
+    }
+  }
+  items.sort((a, b) => (b.value ?? -1) - (a.value ?? -1))
+  return {
+    as_of: new Date().toISOString(),
+    total: round2(total),
+    items_in_stock: items.length,
+    estimated_value: round2(estimatedValue),
+    by_line: [...byLine.entries()]
+      .map(([name, m]) => ({ name, items: m.items, units: m.units, value: round2(m.value), share_pct: total > 0 ? round2((m.value / total) * 100) : 0 }))
+      .sort((a, b) => b.value - a.value),
+    items,
   }
 }
 
