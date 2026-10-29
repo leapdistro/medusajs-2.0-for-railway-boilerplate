@@ -13,7 +13,23 @@ import { loadCategoryTree, productPath } from "../../../../../lib/category-tree"
  * down to 0 are left out. Category and tier come from the product's
  * category path: the level with a `tier_key` (else the third level, for
  * older trees without one) is the tier, the levels above it the category.
+ *
+ * The logo is the storefront's own /logo.svg (same file as the site
+ * header), fetched at print time so there's one copy of it; the text
+ * wordmark stands in if the storefront can't be reached.
  */
+const STOREFRONT_URL = process.env.STOREFRONT_URL || "https://hempmbs.com"
+
+async function loadLogo(): Promise<string | null> {
+  try {
+    const r = await fetch(`${STOREFRONT_URL}/logo.svg`, { signal: AbortSignal.timeout(4000) })
+    if (!r.ok) return null
+    const svg = (await r.text()).replace(/<\?xml[^>]*>/, "").trim()
+    return svg.startsWith("<svg") ? svg : null
+  } catch {
+    return null
+  }
+}
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const orderId = req.params.id
   const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
@@ -72,6 +88,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const cityLine = [a.city, [a.province?.toUpperCase(), a.postal_code].filter(Boolean).join(" ")].filter(Boolean).join(", ")
   const date = new Date(order.created_at).toLocaleDateString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", year: "numeric" })
   const units = rows.reduce((s, r) => s + r.qty, 0)
+  const logo = await loadLogo()
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -80,6 +97,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font: 13px/1.45 Inter, system-ui, -apple-system, sans-serif; color: #0A0A0A; background: #fff; padding: 32px; }
   header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0A0A0A; padding-bottom: 14px; }
+  .logo svg { display: block; height: 52px; width: auto; }
   .brand { font: 600 22px Georgia, serif; }
   .brand small { display: block; font: 500 9px Inter, sans-serif; letter-spacing: .3em; text-transform: uppercase; color: #4A4A45; margin-top: 2px; }
   h1 { font-size: 20px; letter-spacing: .04em; text-transform: uppercase; text-align: right; }
@@ -103,7 +121,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 <body>
   <div class="bar"><button onclick="window.print()">Print</button></div>
   <header>
-    <div class="brand">Mind Body Spirit<small>Premium Cannabis</small></div>
+    ${logo ? `<div class="logo" role="img" aria-label="Mind Body Spirit">${logo}</div>` : `<div class="brand">Mind Body Spirit<small>Premium Cannabis</small></div>`}
     <div><h1>Packing slip</h1><div class="meta">Order #${esc(order.display_id)} · ${esc(date)}</div></div>
   </header>
   <div class="cols">
