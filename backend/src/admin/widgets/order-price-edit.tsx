@@ -4,13 +4,13 @@ import { Button, Container, Heading, Input, Text, toast, Tooltip } from "@medusa
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 /**
- * Per-line unit-price editor for Net-15, unfulfilled, unpushed orders.
+ * Per-line unit-price editor for Net-15 orders, fulfilled or not.
  *
  * Mirror of POST /admin/orders/:id/line-items/:itemId/price guards:
- *   - order.fulfillments is empty (or all canceled)
- *   - order.metadata.qbo_invoice_id is unset
  *   - customer.metadata.payment_terms === "net15"
  *   - no captured card payment on the order
+ *   - QBO invoice not paid (cached qbo_payment_status here; the backend
+ *     checks QuickBooks live). A pushed invoice is updated automatically.
  *
  * If any guard fails, the widget shows a disabled Input with a Tooltip
  * explaining why. The backend re-validates so the guard is defense-in-
@@ -120,9 +120,7 @@ const OrderPriceEditWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
 
   const guardMessage = useMemo(() => {
     if (!order) return "Loading…"
-    const hasActiveFulfillment = (order.fulfillments ?? []).some((f) => !f?.canceled_at)
-    if (hasActiveFulfillment) return "Order has been fulfilled — cancel the fulfillment first."
-    if (order.metadata?.qbo_invoice_id) return `Already pushed to QuickBooks as Invoice ${order.metadata.qbo_invoice_id}. Void it in QBO before editing prices.`
+    if (order.metadata?.qbo_payment_status === "paid") return "The QuickBooks invoice is paid — prices can't change."
     const captured = (order.payment_collections ?? [])
       .flatMap((pc) => pc?.payments ?? [])
       .some((p) => !!p?.captured_at && !p?.canceled_at)
@@ -141,7 +139,7 @@ const OrderPriceEditWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
       <div className="flex items-center justify-between px-6 py-4">
         <Heading level="h2">Edit Line Prices</Heading>
         {canEdit
-          ? <Text size="small" className="text-ui-fg-subtle">Net-15, unfulfilled, unpushed — edits allowed</Text>
+          ? <Text size="small" className="text-ui-fg-subtle">Edits allowed{order.metadata?.qbo_invoice_id ? " — the QuickBooks invoice updates too" : ""}</Text>
           : <Text size="small" className="text-ui-fg-subtle">{guardMessage}</Text>
         }
       </div>

@@ -12,18 +12,20 @@ import {
  * POST /admin/orders/:id/line-items/:itemId/price
  * Body: { unit_price: number }
  *
- * Admin-only per-line unit-price edit for orders that are ALL of:
- *   - unfulfilled (order.fulfillments empty or all canceled)
- *   - not yet pushed to QBO (no metadata.qbo_invoice_id)
+ * Admin-only per-line unit-price edit. Allowed when:
  *   - buyer is on Net-15 terms (customer.metadata.payment_terms === "net15")
+ *   - no captured card payment (a price change without a refund/re-charge
+ *     would desync the payment from the invoice)
+ *   - the QBO invoice, if any, isn't fully paid (qboSettledGuard in
+ *     middlewares.ts runs first on this path)
  *
- * The three guards keep the surface tight. Card-captured orders are
- * blocked because a price change without a card refund/re-charge would
- * desync the payment vs the invoice. Fulfilled orders are blocked so
- * we don't have to reason about reversing shipment. QBO push happens
- * on fulfillment (or manual button) and reads the current unit_price
- * at push time — so an edited unpushed order picks up the new prices
- * automatically without any QBO-side changes.
+ * Fulfilled and already-invoiced orders are fine: a price-only change
+ * doesn't touch quantities, and the confirm emits `order-edit.confirmed`,
+ * which the QBO sync subscriber turns into an invoice update (an
+ * uninvoiced order picks up the new prices at first push).
+ *
+ * $0 is refused: Medusa's ITEM_UPDATE only applies `unit_price` when it's
+ * truthy, so 0 would silently keep the old price.
  *
  * Uses Medusa's built-in order-edit workflow (begin → add
  * ITEM_UPDATE action with details.unit_price → request → confirm) so
@@ -53,6 +55,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const newPrice = Number(body.unit_price)
   if (!Number.isFinite(newPrice) || newPrice < 0) {
     return res.status(400).json({ ok: false, message: "unit_price must be a non-negative number" })
+  }
+  if (newPrice === 0) {
+    return res.status(400).json({
+      ok: false,
+      message: "Medusa can't set a line to $0. Remove the item with Edit Order instead, or use $0.01",
+    })
   }
 
   /* Load order with everything we need for guard checks + audit.
@@ -86,25 +94,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(404).json({ ok: false, message: `Line item ${itemId} not found on order ${orderId}` })
   }
 
-  /* ── Guard 1: no active fulfillments ── */
-  const activeFulfillments = ((order.fulfillments ?? []) as any[]).filter((f) => !f?.canceled_at)
-  if (activeFulfillments.length > 0) {
-    return res.status(400).json({
-      ok: false,
-      message: "Cannot edit price after fulfillment — cancel the fulfillment first or edit inventory adjustments instead",
-    })
-  }
-
-  /* ── Guard 2: not already pushed to QBO ── */
-  const qboInvoiceId = (order.metadata as Record<string, any> | null | undefined)?.qbo_invoice_id
-  if (qboInvoiceId) {
-    return res.status(400).json({
-      ok: false,
-      message: `Order already pushed to QuickBooks as Invoice ${qboInvoiceId}. Editing prices after push requires voiding the QBO invoice first`,
-    })
-  }
-
-  /* ── Guard 3: buyer on Net-15 terms, and no captured card payment. */
+  /* ── Guard: buyer on Net-15 terms, and no captured card payment. */
   const [customer] = await customerService
     .listCustomers({ id: [order.customer_id] }, { take: 1 })
     .catch(() => [])
