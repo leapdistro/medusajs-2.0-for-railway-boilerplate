@@ -61,6 +61,11 @@ type SessionData = {
    *  cradle is a Proxy and any property access becomes a resolve()).
    *  Storefront includes it alongside saved_card_id when attaching. */
   cim_profile_id?: string
+  /** Card billing street / ZIP the buyer typed on the card form. Sent to
+   *  Authorize.net in place of the account's billing street / ZIP, since
+   *  the bank's address check (AVS) compares them with the card's. */
+  card_billing_address?: string | null
+  card_billing_zip?: string | null
   /** After authorize succeeds: the Authorize.net transaction record.
    *  In auth_only mode this is the AUTHORIZATION transId (money has
    *  NOT moved yet). In auth_capture mode it's the capture transId
@@ -235,7 +240,7 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
      * outside, so without this trace a generic "not authorized" error
      * could mean any of: missing opaque data, missing cim_profile_id,
      * zero amount, or a real Authorize.net decline. */
-    console.info(`[kaja-authnet] authorizePayment: mode=${mode} amount=${data.amount} hasOpaque=${!!(data.opaque_data_descriptor && data.opaque_data_value)} hasSavedCardId=${!!data.saved_card_id} hasCimProfileId=${!!data.cim_profile_id}`)
+    console.info(`[kaja-authnet] authorizePayment: mode=${mode} amount=${data.amount} hasOpaque=${!!(data.opaque_data_descriptor && data.opaque_data_value)} hasSavedCardId=${!!data.saved_card_id} hasCimProfileId=${!!data.cim_profile_id} cardBilling=${!!(data.card_billing_address || data.card_billing_zip)}`)
     const amount = toAmount(data.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Payment amount is zero or invalid")
@@ -284,14 +289,14 @@ class KajaAuthnetProviderService extends AbstractPaymentProvider<KajaOptions> {
         },
         customerEmail: customer?.email,
         mode,
-        billingAddress: billing || customer ? {
+        billingAddress: billing || customer || data.card_billing_zip ? {
           firstName: customer?.first_name ?? null,
           lastName: customer?.last_name ?? null,
           company: customer?.company_name ?? billing?.company ?? null,
-          address: billing?.address_1 ?? null,
+          address: data.card_billing_address || billing?.address_1 || null,
           city: billing?.city ?? null,
           state: billing?.province ?? null,
-          zip: billing?.postal_code ?? null,
+          zip: data.card_billing_zip || billing?.postal_code || null,
           country: (billing?.country_code ?? "us").toUpperCase(),
           phone: customer?.phone ?? billing?.phone ?? null,
         } : undefined,

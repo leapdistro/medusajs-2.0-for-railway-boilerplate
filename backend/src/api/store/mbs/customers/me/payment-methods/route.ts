@@ -88,7 +88,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return res.status(401).json({ ok: false, message: "Sign in required" })
   }
 
-  const body = (req.body ?? {}) as { opaqueData?: { dataDescriptor?: string; dataValue?: string } }
+  const body = (req.body ?? {}) as {
+    opaqueData?: { dataDescriptor?: string; dataValue?: string }
+    /** Card street/ZIP typed at checkout; replaces the account address
+     *  on the saved card's bill-to (the bank checks these). */
+    billing?: { address?: string; zip?: string }
+  }
   const opaqueData = body.opaqueData
   if (!opaqueData?.dataDescriptor || !opaqueData?.dataValue) {
     return res.status(400).json({ ok: false, message: "Missing card token" })
@@ -174,6 +179,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         firstName: customer.first_name ?? null,
         lastName: customer.last_name ?? null,
       }
+
+  const cardStreet = typeof body.billing?.address === "string" ? body.billing.address.trim() : ""
+  const cardZip = typeof body.billing?.zip === "string" ? body.billing.zip.trim() : ""
+  if (cardStreet) billTo.address = cardStreet
+  if (cardZip) billTo.zip = cardZip
 
   const createResult = await createCustomerPaymentProfile({
     customerProfileId: cimProfileId!,
