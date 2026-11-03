@@ -121,7 +121,6 @@ export async function loadPlannerSheet(scope: any, orderId: string, customer: an
         "id", "display_id", "created_at", "metadata",
         "items.id", "items.product_id", "items.variant_id", "items.product_title", "items.variant_title",
         "items.quantity", "items.detail.quantity", "items.unit_price", "items.detail.unit_price",
-        "items.variant.metadata",
         "shipping_methods.amount",
       ],
       filters: { id: orderId },
@@ -156,16 +155,25 @@ export async function loadPlannerSheet(scope: any, orderId: string, customer: an
   const goodsTotal = items.reduce((s, i) => s + i.qty * i.price, 0)
   const shippingTotal = ((order?.shipping_methods ?? []) as any[]).reduce((s, m) => s + num(m.amount), 0)
 
-  /* Pool units per variant (QP = 1, ½ LB = 2, LB = 4). */
+  /* Net grams and pool units (QP = 1, ½ LB = 2, LB = 4) per variant.
+   * Read from the tables directly, soft-deleted rows included: an order
+   * keeps its lines after the product is retired (THC-A flower was
+   * soft-deleted 2026-08-18), and query.graph drops deleted variants. */
   const variantIds = [...new Set(items.map((i) => i.variant_id).filter(Boolean))]
+  const netGramsOf = new Map<string, number>()
   const poolUnits = new Map<string, number>()
   if (variantIds.length) {
-    const r = await pg.raw(
-      `select variant_id, required_quantity from product_variant_inventory_item
-        where variant_id = any(?) and deleted_at is null`,
-      [variantIds],
-    )
-    for (const row of r.rows) poolUnits.set(row.variant_id, Number(row.required_quantity) || 1)
+    const [grams, links] = await Promise.all([
+      pg.raw(`select id, metadata->>'net_grams' as net_grams from product_variant where id = any(?)`, [variantIds]),
+      pg.raw(
+        `select variant_id, required_quantity from product_variant_inventory_item
+          where variant_id = any(?) order by deleted_at is null`,
+        [variantIds],
+      ),
+    ])
+    for (const row of grams.rows) netGramsOf.set(row.id, Number(row.net_grams) || 0)
+    /* Live link rows sort last, so they win over deleted ones. */
+    for (const row of links.rows) poolUnits.set(row.variant_id, Number(row.required_quantity) || 1)
   }
 
   const productIds = [...new Set(items.map((i) => i.product_id).filter(Boolean))]
@@ -187,7 +195,7 @@ export async function loadPlannerSheet(scope: any, orderId: string, customer: an
     const path = pathByProduct.get(i.product_id) ?? []
     if (setting(path, "labels") !== true) continue
     const units = poolUnits.get(i.variant_id) ?? 1
-    const netGrams = num(i.variant?.metadata?.net_grams)
+    const netGrams = netGramsOf.get(i.variant_id) ?? 0
     if (!(netGrams > 0) || netGrams / units <= largestSize) continue
 
     let t = path.findIndex((c) => typeof c.metadata?.tier_key === "string" && c.metadata.tier_key)
