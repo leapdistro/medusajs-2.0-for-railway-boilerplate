@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { CategoryProfilesForm } from "../../components/category-profiles-form"
 import { PriceLevelForm } from "../../components/price-level-form"
 import { ShippingRatesForm } from "../../components/shipping-rates-form"
+import { formatGrams } from "../../../lib/label-weight"
 
 /* Inline gear SVG so we don't need to depend on @medusajs/icons. Sized
  * 20x20 to match the admin sidebar's other icons. */
@@ -51,6 +52,9 @@ const TABS = [
    * takes `rows` rather than `currentRow`, same as the price tabs. */
   { id: "label_formats",           label: "Labels"                  },
   { id: "standalone_coas",         label: "COA Library"             },
+  /* Owner Stores' Packaging Planner: packaging cost per label weight +
+   * default usable grams per QP. Sizes come from the Labels tab. */
+  { id: "packaging_planner",       label: "Packaging Planner"       },
 ] as const
 type TabId = typeof TABS[number]["id"]
 
@@ -164,6 +168,9 @@ const MbsSettingsPage = () => {
             )}
             {tab === "label_formats" && (
               <LabelsForm rows={rows} onSaved={onSaved} />
+            )}
+            {tab === "packaging_planner" && (
+              <PackagingPlannerForm rows={rows} onSaved={onSaved} />
             )}
             {tab === "standalone_coas" && (
               <StandaloneCoasForm row={currentRow} onSaved={onSaved} />
@@ -899,6 +906,79 @@ const StandaloneCoasForm = ({ row, onSaved }: { row?: SettingRow; onSaved: (r: S
 }
 
 /* ─────────────────────────── Tiny atom ─────────────────────────── */
+/* ─────────────────────── Packaging Planner ─────────────────────── */
+/**
+ * packaging_planner : { usable_grams_per_unit, packaging_costs: { <label format id>: number } }
+ *
+ * Shown to Owner Stores on each order's Packaging Planner sheet: the cost
+ * per size is added to each package's flower cost; usable grams per QP
+ * is the sheet's starting value (buyers can change it per order). Sizes
+ * are the gram-weight label formats from the Labels tab, so adding a
+ * weight there adds it here and on the sheet.
+ */
+const PackagingPlannerForm = ({ rows, onSaved }: { rows: Record<string, SettingRow>; onSaved: (r: SettingRow | null) => void }) => {
+  const sizes = readLabelFormats(rows["label_formats"])
+    .filter((f) => !f.archived)
+    .map((f) => ({ ...f, grams: formatGrams(f) }))
+    .filter((f) => f.grams != null && f.grams > 0)
+  const [usable, setUsable] = useState("110")
+  const [costs, setCosts] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    const v = (rows["packaging_planner"]?.value ?? {}) as { usable_grams_per_unit?: number; packaging_costs?: Record<string, number> }
+    setUsable(String(v.usable_grams_per_unit ?? 110))
+    setCosts(Object.fromEntries(Object.entries(v.packaging_costs ?? {}).map(([k, c]) => [k, String(c)])))
+  }, [rows])
+
+  const save = async () => {
+    const u = Number(usable)
+    if (!Number.isFinite(u) || u <= 0) { toast.error("Usable grams per QP must be a positive number"); return }
+    const packaging_costs: Record<string, number> = {}
+    for (const s of sizes) {
+      const raw = (costs[s.id] ?? "").trim()
+      if (raw === "") continue
+      const c = Number(raw)
+      if (!Number.isFinite(c) || c < 0) { toast.error(`Packaging cost for ${s.label} must be 0 or more`); return }
+      packaging_costs[s.id] = Math.round(c * 100) / 100
+    }
+    setSaving(true)
+    try {
+      const next = await saveSetting("packaging_planner", { usable_grams_per_unit: u, packaging_costs },
+        "Owner Stores Packaging Planner: packaging cost per size (jar/bag + label) and the default usable grams per QP.")
+      onSaved(next)
+      toast.success("Packaging Planner settings saved")
+    } catch (e: any) {
+      toast.error(e?.message ?? "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-5 max-w-xl">
+      <Field label="Usable grams per QP (default)">
+        <Input type="number" min={1} step="0.1" value={usable} onChange={(e) => setUsable(e.target.value)} className="w-32" />
+      </Field>
+      <div className="flex flex-col gap-2">
+        <Label size="xsmall" weight="plus">Packaging cost per package (jar or bag + label)</Label>
+        {sizes.length === 0 && (
+          <Text size="small" className="text-ui-fg-subtle">No gram-weight label sizes yet. Add them in the Labels tab.</Text>
+        )}
+        {sizes.map((s) => (
+          <div key={s.id} className="flex items-center gap-3">
+            <Text size="small" className="w-16">{s.label}</Text>
+            <Input type="number" min={0} step="0.01" placeholder="0.00" value={costs[s.id] ?? ""}
+              onChange={(e) => setCosts((p) => ({ ...p, [s.id]: e.target.value }))} className="w-32" />
+          </div>
+        ))}
+      </div>
+      <div>
+        <Button variant="primary" onClick={save} isLoading={saving}>Save Packaging Planner</Button>
+      </div>
+    </div>
+  )
+}
+
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex flex-col gap-1.5">
     <Label size="xsmall" weight="plus">{label}</Label>
