@@ -180,8 +180,10 @@ const LineRow = ({
 
   const submit = async () => {
     const nextPrice = Number(value)
-    if (!Number.isFinite(nextPrice) || nextPrice < 0) {
-      toast.error("Price must be a non-negative number")
+    if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
+      toast.error(nextPrice === 0
+        ? "A line can't be $0 — remove the item with Edit Order instead"
+        : "Price must be a positive number")
       return
     }
     setBusy(true)
@@ -200,7 +202,12 @@ const LineRow = ({
       if (json?.changed === false) {
         toast.info("Price unchanged")
       } else {
-        toast.success(`${label}: ${fmtUsd(currentPrice)} → ${fmtUsd(nextPrice)}`)
+        const totals = json?.total_before != null && json?.total_after != null
+          ? ` · order total ${fmtUsd(json.total_before)} → ${fmtUsd(json.total_after)}`
+          : ""
+        toast.success(`${label}: ${fmtUsd(currentPrice)} → ${fmtUsd(nextPrice)}${totals}`, {
+          description: json?.qbo_invoice_id ? "QuickBooks invoice is being updated" : undefined,
+        })
         onSaved()
       }
     } catch (e: any) {
@@ -214,7 +221,7 @@ const LineRow = ({
     <Input
       type="number"
       step="0.01"
-      min={0}
+      min={0.01}
       value={value}
       onChange={(e) => setValue(e.target.value)}
       disabled={disabled || busy}

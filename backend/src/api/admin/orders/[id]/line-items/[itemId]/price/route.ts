@@ -24,8 +24,13 @@ import {
  * which the QBO sync subscriber turns into an invoice update (an
  * uninvoiced order picks up the new prices at first push).
  *
- * $0 is refused: Medusa's ITEM_UPDATE only applies `unit_price` when it's
- * truthy, so 0 would silently keep the old price.
+ * The edit is previewed before it's confirmed: if Medusa wouldn't land
+ * the line at the requested price, the edit is rolled back and nothing
+ * changes. Response carries the order total before and after.
+ *
+ * $0 is refused: the QBO invoice push rejects $0 lines, and Medusa's
+ * ITEM_UPDATE skips a falsy unit_price anyway. A free line is removed
+ * with Edit Order instead.
  *
  * Uses Medusa's built-in order-edit workflow (begin → add
  * ITEM_UPDATE action with details.unit_price → request → confirm) so
@@ -52,16 +57,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   const body = (req.body ?? {}) as { unit_price?: number }
-  const newPrice = Number(body.unit_price)
+  const newPrice = Math.round(Number(body.unit_price) * 100) / 100
   if (!Number.isFinite(newPrice) || newPrice < 0) {
     return res.status(400).json({ ok: false, message: "unit_price must be a non-negative number" })
   }
   if (newPrice === 0) {
     return res.status(400).json({
       ok: false,
-      message: "Medusa can't set a line to $0. Remove the item with Edit Order instead, or use $0.01",
+      message: "A line can't be $0 (QuickBooks invoices reject $0 lines). To give it away, remove the item with Edit Order",
     })
   }
+  const actorId: string | null = (req as any).auth_context?.actor_id ?? null
 
   /* Load order with everything we need for guard checks + audit.
    *   - items.quantity can be zeroed after fulfillment cancellation;
@@ -75,7 +81,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const { data: orders } = await query.graph({
     entity: "order",
     fields: [
-      "id", "customer_id", "metadata",
+      "id", "display_id", "customer_id", "metadata", "total",
       "items.id", "items.quantity", "items.raw_quantity", "items.detail.quantity",
       "items.unit_price", "items.detail.unit_price", "items.product_title",
       "fulfillments.id", "fulfillments.canceled_at",
@@ -123,6 +129,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     if (v == null) return NaN
     if (typeof v === "number") return v
     if (typeof v === "string") return Number(v)
+    /* Medusa BigNumber (previewOrderChange returns these): numeric getter. */
+    if (typeof v === "object" && v !== null && "numeric" in v) return Number((v as any).numeric)
     if (typeof v === "object" && v !== null && "value" in v) return Number((v as any).value)
     return Number(v)
   }
@@ -154,17 +162,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.json({ ok: true, changed: false, unit_price: originalPrice })
   }
 
-  /* ── Framework path: begin → add ITEM_UPDATE action → request → confirm.
-   * Any failure between begin and confirm rolls back via
-   * cancelBeginOrderEditWorkflow so we don't leave a dangling
-   * PENDING/REQUESTED order_change record on the order. */
+  /* ── Framework path: begin → add ITEM_UPDATE → preview + verify →
+   * request → confirm. Any failure (including a preview that doesn't
+   * show the new price) rolls back via cancelBeginOrderEditWorkflow so
+   * no PENDING/REQUESTED order_change is left on the order. */
   let orderChangeId: string | null = null
+  let totalAfter: number | null = null
   try {
     const { result: change } = await beginOrderEditOrderWorkflow(req.scope).run({
-      input: {
-        order_id: orderId,
-        created_by: (req as any).auth_context?.actor_id ?? null,
-      } as any,
+      input: { order_id: orderId, created_by: actorId } as any,
     })
     orderChangeId = String((change as any)?.id ?? "")
     if (!orderChangeId) throw new Error("beginOrderEditOrderWorkflow returned no change id")
@@ -179,26 +185,30 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         details: {
           reference_id: itemId,
           /* Quantity is REQUIRED by the framework's ITEM_UPDATE
-           * validator (item-update.js:41). Pass current qty so the
-           * action is a price-only change. */
+           * validator. Pass current qty so the action is price-only
+           * (and never below the fulfilled qty). */
           quantity,
           unit_price: newPrice,
         },
       }],
     })
 
+    /* What the order would look like once confirmed. */
+    const projected: any = await orderService.previewOrderChange(orderId)
+    const projectedLine = ((projected?.items ?? []) as any[]).find((it) => it.id === itemId)
+    const projectedPrice = readPrice(projectedLine?.detail?.unit_price ?? projectedLine?.unit_price)
+    if (!Number.isFinite(projectedPrice) || Math.abs(projectedPrice - newPrice) > 0.005) {
+      throw new Error(`The edit would leave this line at ${Number.isFinite(projectedPrice) ? projectedPrice.toFixed(2) : "an unknown price"}, not ${newPrice.toFixed(2)}; nothing was changed.`)
+    }
+    const projectedTotal = readPrice(projected?.summary?.current_order_total ?? projected?.total)
+    totalAfter = Number.isFinite(projectedTotal) ? projectedTotal : null
+
     await requestOrderEditRequestWorkflow(req.scope).run({
-      input: {
-        order_id: orderId,
-        requested_by: (req as any).auth_context?.actor_id ?? null,
-      } as any,
+      input: { order_id: orderId, requested_by: actorId } as any,
     })
 
     await confirmOrderEditRequestWorkflow(req.scope).run({
-      input: {
-        order_id: orderId,
-        confirmed_by: (req as any).auth_context?.actor_id ?? null,
-      } as any,
+      input: { order_id: orderId, confirmed_by: actorId } as any,
     })
   } catch (e: any) {
     /* Roll back the edit session so a retry doesn't collide with a
@@ -218,32 +228,32 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   /* ── Audit trail on order.metadata. Framework has the change action
-   * too, but this per-order log is queryable without joining. */
-  const prevEdits = (order.metadata as Record<string, any> | null | undefined)?.price_edits
-  const priceEdits = Array.isArray(prevEdits) ? [...prevEdits] : []
-  priceEdits.push({
-    line_item_id: itemId,
-    product_title: line.product_title ?? line.title ?? null,
-    from: originalPrice,
-    to: newPrice,
-    by: (req as any).auth_context?.actor_id ?? null,
-    at: new Date().toISOString(),
-  })
+   * too, but this per-order log is queryable without joining.
+   * Re-read metadata first: the confirm above queues the QBO sync,
+   * which stamps its own keys here, and writing back the snapshot from
+   * before the edit would wipe them. */
   try {
-    await orderService.updateOrders(orderId, {
-      metadata: {
-        ...(order.metadata ?? {}),
-        price_edits: priceEdits,
-      },
+    const { data: fresh } = await query.graph({ entity: "order", fields: ["metadata"], filters: { id: orderId } })
+    const metadata = ((fresh as any[])[0]?.metadata ?? {}) as Record<string, any>
+    const priceEdits = Array.isArray(metadata.price_edits) ? [...metadata.price_edits] : []
+    priceEdits.push({
+      line_item_id: itemId,
+      product_title: line.product_title ?? line.title ?? null,
+      from: originalPrice,
+      to: newPrice,
+      by: actorId,
+      at: new Date().toISOString(),
     })
+    await orderService.updateOrders(orderId, { metadata: { ...metadata, price_edits: priceEdits } })
   } catch (e: any) {
     /* Non-fatal — the price change already persisted via the edit
      * workflow. Log the audit failure so it can be reconciled. */
     logger.warn(`[order-price-edit] audit metadata write failed for order ${orderId}: ${e?.message}`)
   }
 
+  const totalBefore = readPrice(order.total)
   logger.info(
-    `[order-price-edit] order ${orderId} line ${itemId} price ${originalPrice.toFixed(2)} → ${newPrice.toFixed(2)}`,
+    `[order-price-edit] order #${order.display_id} line ${itemId} price ${originalPrice.toFixed(2)} → ${newPrice.toFixed(2)}`,
   )
 
   return res.json({
@@ -252,5 +262,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     line_item_id: itemId,
     unit_price: newPrice,
     previous_unit_price: originalPrice,
+    total_before: Number.isFinite(totalBefore) ? totalBefore : null,
+    total_after: totalAfter,
+    /* The QBO sync queue updates the invoice in the background. */
+    qbo_invoice_id: (order.metadata as Record<string, any> | null)?.qbo_invoice_id ?? null,
   })
 }
