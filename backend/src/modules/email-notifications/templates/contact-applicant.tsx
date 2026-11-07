@@ -23,18 +23,18 @@ export const ContactApplicantEmail = ({
   const firstName = name.split(' ')[0] || name
   return (
     <Base preview={preview}>
-      <Headline>Got your <span style={{ color: '#D93737' }}>message.</span></Headline>
+      <Headline>Got your <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>message.</span></Headline>
       <P>
         Hi {firstName} — thanks for reaching out to Mind Body Spirit about{' '}
         <strong>{subject.toLowerCase()}</strong>. Your message is in.
       </P>
       <P>
         Our team replies within{' '}
-        <strong style={{ color: '#D93737' }}>one business day</strong> Mon–Fri.
+        <strong style={{ color: '#171B14' }}>one business day</strong> Mon–Fri.
         Weekend messages get a response by end of day Monday.
       </P>
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
 
       <P muted>
         Need a faster answer? Reply to this email or call 1-888-618-0533

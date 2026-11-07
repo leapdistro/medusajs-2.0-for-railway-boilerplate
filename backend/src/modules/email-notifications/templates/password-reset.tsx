@@ -27,9 +27,9 @@ export const PasswordResetEmail = ({
   return (
     <Base preview={previewLine}>
       {isWelcome ? (
-        <Headline>You&rsquo;re <span style={{ color: '#D93737' }}>approved.</span></Headline>
+        <Headline>You&rsquo;re <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>approved.</span></Headline>
       ) : (
-        <Headline>Reset your <span style={{ color: '#D93737' }}>password.</span></Headline>
+        <Headline>Reset your <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>password.</span></Headline>
       )}
 
       <P>
@@ -47,7 +47,7 @@ export const PasswordResetEmail = ({
           margin: '8px 0 6px',
           fontFamily: 'Helvetica, Arial, sans-serif',
           fontSize: '11px',
-          color: '#4A4A45',
+          color: '#414738',
           letterSpacing: '0.06em',
           textTransform: 'uppercase',
           fontWeight: 600,
@@ -65,12 +65,12 @@ export const PasswordResetEmail = ({
           overflowWrap: 'break-word',
         }}
       >
-        <Link href={resetUrl} style={{ color: '#1A1A1A', textDecoration: 'underline' }}>
+        <Link href={resetUrl} style={{ color: '#171B14', textDecoration: 'underline' }}>
           {resetUrl}
         </Link>
       </Text>
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '28px 0 16px' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '28px 0 16px' }} />
 
       <P muted>
         {isWelcome

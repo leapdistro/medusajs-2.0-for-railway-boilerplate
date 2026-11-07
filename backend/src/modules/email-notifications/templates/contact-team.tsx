@@ -35,20 +35,20 @@ export const ContactTeamEmail = ({
   const previewLine = preview ?? `${subject} — ${name} (${email})`
   return (
     <Base preview={previewLine}>
-      <Headline>Contact form: <span style={{ color: '#D93737' }}>{subject}.</span></Headline>
+      <Headline>Contact form: <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>{subject}.</span></Headline>
 
       <P><strong>From:</strong> {name}</P>
       <P><strong>Email:</strong> {email}</P>
       {phone ? <P><strong>Phone:</strong> {phone}</P> : null}
       {company ? <P><strong>Company:</strong> {company}</P> : null}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <Text
         style={{
           fontFamily: 'Helvetica, Arial, sans-serif',
           fontSize: '11px',
-          color: '#4A4A45',
+          color: '#414738',
           letterSpacing: '0.06em',
           textTransform: 'uppercase',
           fontWeight: 600,
@@ -62,7 +62,7 @@ export const ContactTeamEmail = ({
           fontFamily: 'Helvetica, Arial, sans-serif',
           fontSize: '14px',
           lineHeight: 1.5,
-          color: '#1A1A1A',
+          color: '#171B14',
           whiteSpace: 'pre-wrap',
           margin: 0,
         }}
@@ -70,7 +70,7 @@ export const ContactTeamEmail = ({
         {message}
       </Text>
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '28px 0 16px' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '28px 0 16px' }} />
 
       <P muted>Reply directly to this email — it goes to the sender.</P>
     </Base>

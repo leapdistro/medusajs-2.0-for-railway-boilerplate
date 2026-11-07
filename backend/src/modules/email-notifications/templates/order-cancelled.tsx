@@ -27,7 +27,7 @@ export const OrderCancelledTemplate = (p: OrderCancelledProps) => {
   const firstName = p.contactName.split(' ')[0] || p.contactName
   return (
     <Base preview={p.preview ?? `Order #${p.displayId} cancelled`}>
-      <Headline>Order <span style={{ color: '#D93737' }}>cancelled.</span></Headline>
+      <Headline>Order <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>cancelled.</span></Headline>
       <P>Hi {firstName} — Order #{p.displayId} has been cancelled.</P>
 
       <KvLine label="Reason" value={p.reasonLabel} />
@@ -40,13 +40,13 @@ export const OrderCancelledTemplate = (p: OrderCancelledProps) => {
 
       {p.operatorNote && p.operatorNote.trim().length > 0 && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <P><em>From our team:</em></P>
           <P>{p.operatorNote}</P>
         </>
       )}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
       <P muted>
         Want help re-ordering or have questions about this cancellation? Reach out at <strong>{p.contactEmail}</strong>{p.contactPhone ? <> · {p.contactPhone}</> : null}.
       </P>

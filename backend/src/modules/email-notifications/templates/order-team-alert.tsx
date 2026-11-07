@@ -31,10 +31,10 @@ export const OrderTeamAlertTemplate = (p: OrderTeamAlertProps) => {
   const orderLink = adminBase ? `${adminBase.replace(/\/$/, '')}/app/orders/${p.orderId}` : null
   return (
     <Base preview={p.preview ?? `New order #${p.displayId} — ${p.grandTotalFormatted} from ${p.businessName || p.contactName}`}>
-      <Headline>New <span style={{ color: '#D93737' }}>order.</span></Headline>
+      <Headline>New <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>order.</span></Headline>
       <P muted>Confirm payment, then prep + ship.</P>
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <SubHead>Order #{p.displayId}</SubHead>
       <KvLine label="Customer" value={`${p.contactName} (${p.customerEmail})`} />
@@ -42,23 +42,23 @@ export const OrderTeamAlertTemplate = (p: OrderTeamAlertProps) => {
       <KvLine label="Payment"  value={p.paymentLabel} />
       <KvLine label="Shipping" value={p.shippingMethodName} />
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <SubHead>Items</SubHead>
       {p.items.map((it, i) => (
-        <Text key={i} style={{ margin: '0 0 6px', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', color: '#0A0A0A' }}>
+        <Text key={i} style={{ margin: '0 0 6px', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', color: '#171B14' }}>
           {it.qty} × <strong>{it.title}</strong>{it.variantTitle ? ` (${it.variantTitle})` : ''} — {it.subtotalFormatted}
         </Text>
       ))}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <MoneyRow label="Items"    value={p.itemsTotalFormatted} />
       <MoneyRow label="Shipping" value={p.shippingTotalFormatted} />
       <MoneyRow label="Tax"      value={p.taxTotalFormatted} />
       <MoneyRow label="Total"    value={p.grandTotalFormatted} bold />
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <SubHead>Ship to</SubHead>
       <AddressBlock a={p.shippingAddress} />
@@ -68,9 +68,9 @@ export const OrderTeamAlertTemplate = (p: OrderTeamAlertProps) => {
 
       {orderLink && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <Text style={{ margin: 0, fontSize: '14px', fontFamily: 'Helvetica, Arial, sans-serif', fontWeight: 700 }}>
-            <Link href={orderLink} style={{ color: '#0A0A0A' }}>Open in Medusa admin →</Link>
+            <Link href={orderLink} style={{ color: '#171B14' }}>Open in Medusa admin →</Link>
           </Text>
         </>
       )}

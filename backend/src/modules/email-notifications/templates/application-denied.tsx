@@ -41,7 +41,7 @@ export const ApplicationDeniedEmail = ({
   const firstName = contactName.split(' ')[0] || contactName
   return (
     <Base preview={preview}>
-      <Headline>About your <span style={{ color: '#D93737' }}>application.</span></Headline>
+      <Headline>About your <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>application.</span></Headline>
       <P>
         Hi {firstName} — thank you for applying for a Mind Body Spirit
         wholesale account{businessName ? <> on behalf of <strong>{businessName}</strong></> : null}.
@@ -53,7 +53,7 @@ export const ApplicationDeniedEmail = ({
 
       {operatorNote && operatorNote.trim().length > 0 && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <P>
             <em>From our team:</em>
           </P>
@@ -61,7 +61,7 @@ export const ApplicationDeniedEmail = ({
         </>
       )}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
 
       <P muted>
         Questions, or want to re-apply once the issue is addressed? Reach out

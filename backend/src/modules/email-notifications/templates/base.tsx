@@ -54,7 +54,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
         <Body
           className="my-auto mx-auto"
           style={{
-            backgroundColor: '#F3F1EA', /* --mbs-paper */
+            backgroundColor: '#FFF9ED', /* --mbs-paper */
             fontFamily: 'Helvetica, Arial, sans-serif',
             margin: 0,
             padding: '24px 12px',
@@ -63,17 +63,17 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
           <Container
             className="mx-auto max-w-[560px] w-full overflow-hidden"
             style={{
-              backgroundColor: '#FAFAF7', /* --mbs-white */
-              border: '1px solid #C9C3B2', /* --mbs-line-strong */
-              borderRadius: 0,
+              backgroundColor: '#FFFDF7', /* card */
+              border: '1.5px solid #171B14', /* ink */
+              borderRadius: '7px',
             }}
           >
-            {/* Header: centered logo with red accent bar below. */}
+            {/* Header: centered logo on the sage band, ink rule below. */}
             <Section
               style={{
                 padding: '36px 24px 24px',
                 textAlign: 'center',
-                backgroundColor: '#FAFAF7',
+                backgroundColor: '#DCE8D7', /* sage */
               }}
             >
               <Img
@@ -89,7 +89,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                   fontSize: '10px',
                   fontWeight: 700,
                   letterSpacing: '0.32em',
-                  color: '#4A4A45', /* --mbs-mute */
+                  color: '#414738', /* --mbs-mute */
                   textTransform: 'uppercase',
                 }}
               >
@@ -97,8 +97,8 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
               </Text>
             </Section>
 
-            {/* Red accent bar — full width, separates header from content. */}
-            <div style={{ height: '4px', backgroundColor: '#D93737' }} />
+            {/* Ink rule — separates the sage header from content. */}
+            <div style={{ height: '2px', backgroundColor: '#171B14' }} />
 
             {/* Content area — templates render here. */}
             <Section style={{ padding: '32px 32px 24px' }}>
@@ -108,11 +108,11 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
             </Section>
 
             {/* Brand footer band — DBA address (KAJA-required) + contact + compliance. */}
-            <div style={{ height: '1px', backgroundColor: '#E5E1D6' }} />
+            <div style={{ height: '1px', backgroundColor: '#DDD7C4' }} />
             <Section
               style={{
                 padding: '20px 32px 28px',
-                backgroundColor: '#F3F1EA', /* paper background for visual separation */
+                backgroundColor: '#FFF9ED', /* paper background for visual separation */
                 textAlign: 'center',
               }}
             >
@@ -123,7 +123,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                   fontSize: '11px',
                   fontWeight: 700,
                   letterSpacing: '0.18em',
-                  color: '#1A1A1A', /* --mbs-ink */
+                  color: '#171B14', /* --mbs-ink */
                   textTransform: 'uppercase',
                 }}
               >
@@ -134,7 +134,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                   margin: '6px 0 0',
                   fontFamily: 'Helvetica, Arial, sans-serif',
                   fontSize: '11px',
-                  color: '#4A4A45',
+                  color: '#414738',
                   lineHeight: '1.5',
                 }}
               >
@@ -145,19 +145,19 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                   margin: '12px 0 0',
                   fontFamily: 'Helvetica, Arial, sans-serif',
                   fontSize: '11px',
-                  color: '#4A4A45',
+                  color: '#414738',
                 }}
               >
                 <Link
                   href={`mailto:wholesale@hempmbs.com`}
-                  style={{ color: '#D93737', textDecoration: 'none', fontWeight: 600 }}
+                  style={{ color: '#171B14', textDecoration: 'underline', fontWeight: 600 }}
                 >
                   wholesale@hempmbs.com
                 </Link>
                 {' · '}
                 <Link
                   href={STOREFRONT_BASE}
-                  style={{ color: '#D93737', textDecoration: 'none', fontWeight: 600 }}
+                  style={{ color: '#171B14', textDecoration: 'underline', fontWeight: 600 }}
                 >
                   hempmbs.com
                 </Link>
@@ -167,7 +167,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                   margin: '14px 0 0',
                   fontFamily: 'Helvetica, Arial, sans-serif',
                   fontSize: '10px',
-                  color: '#4A4A45',
+                  color: '#414738',
                   fontStyle: 'italic',
                   lineHeight: '1.5',
                 }}
@@ -184,7 +184,7 @@ export const Base: React.FC<BaseProps> = ({ preview, children }) => {
                 margin: '12px auto 0',
                 fontFamily: 'Helvetica, Arial, sans-serif',
                 fontSize: '10px',
-                color: '#4A4A45',
+                color: '#414738',
                 textAlign: 'center',
                 lineHeight: '1.5',
               }}
@@ -205,16 +205,16 @@ export const Headline: React.FC<{ children: React.ReactNode; accent?: string }> 
   <Text
     style={{
       margin: '0 0 16px',
-      fontFamily: 'Helvetica, Arial, sans-serif',
-      fontSize: '28px',
-      fontWeight: 900,
-      lineHeight: '1.15',
-      letterSpacing: '0.005em',
-      color: '#0A0A0A',
+      fontFamily: 'Fraunces, Georgia, serif',
+      fontSize: '30px',
+      fontWeight: 800,
+      lineHeight: '1.1',
+      letterSpacing: '-0.03em',
+      color: '#171B14',
     }}
   >
     {children}
-    {accent && <span style={{ color: '#D93737' }}> {accent}</span>}
+    {accent && <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}> {accent}</span>}
   </Text>
 )
 
@@ -226,14 +226,14 @@ export const P: React.FC<{ children: React.ReactNode; muted?: boolean }> = ({ ch
       fontFamily: 'Helvetica, Arial, sans-serif',
       fontSize: '15px',
       lineHeight: '1.6',
-      color: muted ? '#4A4A45' : '#1A1A1A',
+      color: muted ? '#414738' : '#171B14',
     }}
   >
     {children}
   </Text>
 )
 
-/** Primary CTA button — black fill, red top/bottom bars (matches site .btn-primary). */
+/** Primary CTA button — butter pill with an ink border (matches site .btn-primary). */
 export const PrimaryButton: React.FC<{ href: string; children: React.ReactNode }> = ({ href, children }) => (
   <table role="presentation" cellPadding={0} cellSpacing={0} border={0} style={{ width: '100%', margin: '8px 0 16px' }}>
     <tbody>
@@ -243,18 +243,16 @@ export const PrimaryButton: React.FC<{ href: string; children: React.ReactNode }
             href={href}
             style={{
               display: 'inline-block',
-              backgroundColor: '#0A0A0A',
-              color: '#FAFAF7',
+              backgroundColor: '#FFE6B8', /* butter */
+              color: '#171B14',
               fontFamily: 'Helvetica, Arial, sans-serif',
-              fontSize: '14px',
+              fontSize: '16px',
               fontWeight: 700,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              padding: '16px 36px',
-              borderTop: '3px solid #D93737',
-              borderBottom: '3px solid #D93737',
+              letterSpacing: '-0.01em',
+              padding: '15px 34px',
+              border: '2.5px solid #171B14',
               textDecoration: 'none',
-              borderRadius: 0,
+              borderRadius: '999px',
             }}
           >
             {children}

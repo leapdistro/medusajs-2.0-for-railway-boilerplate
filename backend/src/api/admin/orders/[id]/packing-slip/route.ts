@@ -95,27 +95,27 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 <title>Packing slip #${esc(order.display_id)}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font: 13px/1.45 Inter, system-ui, -apple-system, sans-serif; color: #0A0A0A; background: #fff; padding: 32px; }
-  header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0A0A0A; padding-bottom: 14px; }
+  body { font: 13px/1.45 Inter, system-ui, -apple-system, sans-serif; color: #171B14; background: #fff; padding: 32px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #171B14; padding-bottom: 14px; }
   .logo svg { display: block; height: 52px; width: auto; }
   .brand { font: 600 22px Georgia, serif; }
-  .brand small { display: block; font: 500 9px Inter, sans-serif; letter-spacing: .3em; text-transform: uppercase; color: #4A4A45; margin-top: 2px; }
+  .brand small { display: block; font: 500 9px Inter, sans-serif; letter-spacing: .3em; text-transform: uppercase; color: #414738; margin-top: 2px; }
   h1 { font-size: 20px; letter-spacing: .04em; text-transform: uppercase; text-align: right; }
-  .meta { text-align: right; color: #4A4A45; margin-top: 4px; }
+  .meta { text-align: right; color: #414738; margin-top: 4px; }
   .cols { display: flex; gap: 48px; margin: 20px 0; }
-  .label { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .15em; text-transform: uppercase; color: #4A4A45; margin-bottom: 4px; }
+  .label { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .15em; text-transform: uppercase; color: #414738; margin-bottom: 4px; }
   table { width: 100%; border-collapse: collapse; }
-  th { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; text-align: left; border-bottom: 1.5px solid #0A0A0A; padding: 6px 8px; }
-  td { border-bottom: 1px solid #E5E1D6; padding: 8px; vertical-align: top; }
+  th { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; text-align: left; border-bottom: 1.5px solid #171B14; padding: 6px 8px; }
+  td { border-bottom: 1px solid #DDD7C4; padding: 8px; vertical-align: top; }
   td.qty, th.qty { text-align: right; font-variant-numeric: tabular-nums; width: 60px; }
   td.qty { font-weight: 700; font-size: 15px; }
   td.chk, th.chk { width: 34px; }
-  .box { display: inline-block; width: 16px; height: 16px; border: 1.5px solid #0A0A0A; }
-  tfoot td { border-bottom: 0; border-top: 1.5px solid #0A0A0A; font-weight: 600; }
+  .box { display: inline-block; width: 16px; height: 16px; border: 1.5px solid #171B14; }
+  tfoot td { border-bottom: 0; border-top: 1.5px solid #171B14; font-weight: 600; }
   .sign { display: flex; gap: 48px; margin-top: 40px; }
-  .sign div { flex: 1; border-top: 1px solid #0A0A0A; padding-top: 4px; color: #4A4A45; font-size: 11px; }
+  .sign div { flex: 1; border-top: 1px solid #171B14; padding-top: 4px; color: #414738; font-size: 11px; }
   .bar { margin-bottom: 20px; }
-  .bar button { font: 600 13px Inter, sans-serif; padding: 8px 18px; border: 0; background: #0A0A0A; color: #fff; cursor: pointer; }
+  .bar button { font: 600 13px Inter, sans-serif; padding: 8px 18px; border: 0; background: #171B14; color: #fff; cursor: pointer; }
   @media print { body { padding: 0; } .bar { display: none; } @page { margin: 14mm; } tr { break-inside: avoid; } }
 </style></head>
 <body>

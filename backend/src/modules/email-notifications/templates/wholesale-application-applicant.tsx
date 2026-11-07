@@ -23,7 +23,7 @@ export const WholesaleApplicationApplicantEmail = ({
   const firstName = contactName.split(' ')[0] || contactName
   return (
     <Base preview={preview}>
-      <Headline>Application <span style={{ color: '#D93737' }}>received.</span></Headline>
+      <Headline>Application <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>received.</span></Headline>
       <P>
         Hi {firstName} — thanks for applying for a Mind Body Spirit wholesale
         account on behalf of <strong>{businessName}</strong>. Your application
@@ -31,12 +31,12 @@ export const WholesaleApplicationApplicantEmail = ({
       </P>
       <P>
         Our team reviews new accounts within{' '}
-        <strong style={{ color: '#D93737' }}>one business day</strong>. Once
+        <strong style={{ color: '#171B14' }}>one business day</strong>. Once
         approved, you&rsquo;ll get a welcome email with a link to set your
         password and start ordering at wholesale pricing.
       </P>
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
 
       <P muted>
         Questions in the meantime? Just reply to this email — it goes

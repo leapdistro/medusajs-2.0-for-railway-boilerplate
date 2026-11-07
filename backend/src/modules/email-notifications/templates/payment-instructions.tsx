@@ -42,13 +42,13 @@ export const PaymentInstructionsTemplate = (p: PaymentInstructionsProps) => {
   const hasBank = !!(bank.bank_name || bank.routing_number || bank.account_number)
   return (
     <Base preview={p.preview ?? `Payment instructions for Order #${p.displayId} — ${p.amountDueFormatted} due`}>
-      <Headline>Payment <span style={{ color: '#D93737' }}>instructions.</span></Headline>
+      <Headline>Payment <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>instructions.</span></Headline>
       <P>Hi {firstName} — here&rsquo;s how to send payment for Order #{p.displayId}. Once received, we&rsquo;ll cut your shipping label and email tracking.</P>
 
       <KvLine label="Order"       value={`#${p.displayId}`} />
       <KvLine label="Amount due"  value={p.amountDueFormatted} />
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <SubHead>Pay by check</SubHead>
       <P>
@@ -59,7 +59,7 @@ export const PaymentInstructionsTemplate = (p: PaymentInstructionsProps) => {
 
       {hasBank && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <SubHead>Pay by wire / ACH</SubHead>
           {bank.bank_name        && <KvLine label="Bank"        value={bank.bank_name} />}
           {bank.beneficiary_name && <KvLine label="Beneficiary" value={bank.beneficiary_name} />}
@@ -72,13 +72,13 @@ export const PaymentInstructionsTemplate = (p: PaymentInstructionsProps) => {
 
       {p.payment.net_terms_default && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <SubHead>Net Terms</SubHead>
           <P>{p.payment.net_terms_default}</P>
         </>
       )}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
       <P muted>
         Questions? Reach out at <strong>{p.contactEmail}</strong>{p.contactPhone ? <> · {p.contactPhone}</> : null}.
       </P>

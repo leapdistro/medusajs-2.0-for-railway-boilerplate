@@ -30,7 +30,7 @@ export const OrderShippedTemplate = (p: OrderShippedProps) => {
   const firstName = p.contactName.split(' ')[0] || p.contactName
   return (
     <Base preview={p.preview ?? `Order #${p.displayId} shipped via ${p.carrier} — ${p.trackingNumber}`}>
-      <Headline>Order <span style={{ color: '#D93737' }}>shipped.</span></Headline>
+      <Headline>Order <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>shipped.</span></Headline>
       <P>Hi {firstName} — your Order #{p.displayId} is on its way.</P>
 
       <KvLine label="Carrier"   value={p.carrier} />
@@ -43,18 +43,18 @@ export const OrderShippedTemplate = (p: OrderShippedProps) => {
 
       {p.operatorNote && p.operatorNote.trim().length > 0 && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <P><em>From our team:</em></P>
           <P>{p.operatorNote}</P>
         </>
       )}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <SubHead>Shipping to</SubHead>
       <AddressBlock a={p.shippingAddress} />
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '24px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '24px 0' }} />
       <P muted>
         Questions or didn&rsquo;t get what you expected? Reach out at <strong>{p.contactEmail}</strong>{p.contactPhone ? <> · {p.contactPhone}</> : null}.
       </P>

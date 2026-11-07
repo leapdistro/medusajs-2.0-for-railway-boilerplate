@@ -66,7 +66,7 @@ export const WholesaleApplicationTeamEmail = ({
   return (
     <Base preview={previewLine}>
       <Headline>
-        {isReapplication ? <>Re-<span style={{ color: '#D93737' }}>application.</span></> : <>New <span style={{ color: '#D93737' }}>application.</span></>}
+        {isReapplication ? <>Re-<span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>application.</span></> : <>New <span style={{ backgroundColor: '#FFE6B8', padding: '0 4px' }}>application.</span></>}
       </Headline>
       <P muted>
         Review within one business day per the SLA we promise applicants.
@@ -75,17 +75,17 @@ export const WholesaleApplicationTeamEmail = ({
       {isReapplication && (
         <div style={{
           background: '#FFF7E6',
-          border: '1px solid #C98A00',
+          border: '1px solid #8A5A00',
           padding: '12px 14px',
           margin: '12px 0 0',
         }}>
-          <Text style={{ margin: 0, fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', lineHeight: 1.5, color: '#0A0A0A' }}>
+          <Text style={{ margin: 0, fontFamily: 'Helvetica, Arial, sans-serif', fontSize: '13px', lineHeight: 1.5, color: '#171B14' }}>
             <strong>This applicant was previously denied.</strong>{previousDenialReason ? <> Reason: <em>{previousDenialReason}</em>.</> : null} Review whether the issue is now addressed before approving.
           </Text>
         </div>
       )}
 
-      <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+      <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
 
       <FieldRow label="Business" value={businessName} />
       <FieldRow label="Contact"  value={contactName} />
@@ -101,7 +101,7 @@ export const WholesaleApplicationTeamEmail = ({
 
       {(einDocUrl || licenseDocUrl) && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <Text
             style={{
               margin: 0,
@@ -110,19 +110,19 @@ export const WholesaleApplicationTeamEmail = ({
               fontWeight: 700,
               letterSpacing: '0.18em',
               textTransform: 'uppercase',
-              color: '#0A0A0A',
+              color: '#171B14',
             }}
           >
             Uploaded Documents
           </Text>
           {einDocUrl && (
             <Text style={{ margin: '8px 0 0', fontSize: '13px', fontFamily: 'Helvetica, Arial, sans-serif' }}>
-              EIN: <Link href={einDocUrl} style={{ color: '#D93737', fontWeight: 600 }}>Open</Link>
+              EIN: <Link href={einDocUrl} style={{ color: '#171B14', textDecoration: 'underline', fontWeight: 600 }}>Open</Link>
             </Text>
           )}
           {licenseDocUrl && (
             <Text style={{ margin: '6px 0 0', fontSize: '13px', fontFamily: 'Helvetica, Arial, sans-serif' }}>
-              License: <Link href={licenseDocUrl} style={{ color: '#D93737', fontWeight: 600 }}>Open</Link>
+              License: <Link href={licenseDocUrl} style={{ color: '#171B14', textDecoration: 'underline', fontWeight: 600 }}>Open</Link>
             </Text>
           )}
         </>
@@ -130,7 +130,7 @@ export const WholesaleApplicationTeamEmail = ({
 
       {customerLink && (
         <>
-          <Hr style={{ border: 0, borderTop: '1px solid #E5E1D6', margin: '20px 0' }} />
+          <Hr style={{ border: 0, borderTop: '1px solid #DDD7C4', margin: '20px 0' }} />
           <Text
             style={{
               margin: 0,
@@ -139,7 +139,7 @@ export const WholesaleApplicationTeamEmail = ({
               fontWeight: 700,
             }}
           >
-            <Link href={customerLink} style={{ color: '#0A0A0A' }}>
+            <Link href={customerLink} style={{ color: '#171B14' }}>
               Open in Medusa admin →
             </Link>
           </Text>
@@ -147,7 +147,7 @@ export const WholesaleApplicationTeamEmail = ({
             style={{
               margin: '8px 0 0',
               fontSize: '11px',
-              color: '#4A4A45',
+              color: '#414738',
               fontFamily: 'Helvetica, Arial, sans-serif',
               lineHeight: '1.5',
             }}
@@ -175,7 +175,7 @@ const FieldRow = ({ label, value }: { label: string; value: string }) => (
       style={{
         display: 'inline-block',
         width: '110px',
-        color: '#4A4A45',
+        color: '#414738',
         fontWeight: 600,
         fontSize: '11px',
         letterSpacing: '0.1em',
@@ -184,7 +184,7 @@ const FieldRow = ({ label, value }: { label: string; value: string }) => (
     >
       {label}
     </span>
-    <span style={{ color: '#0A0A0A' }}>{value}</span>
+    <span style={{ color: '#171B14' }}>{value}</span>
   </Text>
 )
 
