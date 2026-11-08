@@ -199,7 +199,7 @@ export async function extractInvoice(pdfBytes: Buffer, unit?: InvoiceUnit): Prom
  * literals (so braces inside `"foo {bar}"` don't confuse the count).
  * Returns null if no balanced object is found.
  */
-function extractJsonObject(text: string): string | null {
+export function extractJsonObject(text: string): string | null {
   const start = text.indexOf("{")
   if (start === -1) return null
 

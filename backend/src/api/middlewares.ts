@@ -143,6 +143,11 @@ export default defineMiddlewares({
       ],
     },
     {
+      matcher: "/store/mbs/applications/read-certificate",
+      method: "POST",
+      middlewares: [upload.fields([{ name: "file", maxCount: 1 }])],
+    },
+    {
       matcher: "/admin/receiving/extract",
       method: "POST",
       middlewares: [

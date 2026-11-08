@@ -1,6 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { randomBytes } from "crypto"
+import { createHash, randomBytes } from "crypto"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
 import { sendFeedNotification } from "../../../../lib/feed-notification"
 
@@ -90,6 +90,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const volume       = pickStr(body.volume)
   const heard        = pickStr(body.heard)
   const message      = pickStr(body.message)
+  /* "certificate" when the licence # was read off the uploaded file and
+   * left as read, "edited" when read then changed, else "typed". */
+  const licenseSource = ["certificate", "edited", "typed"].includes(pickStr(body.licenseSource))
+    ? pickStr(body.licenseSource)
+    : "typed"
 
   const required: { name: string; value: string }[] = [
     { name: "Business name",     value: businessName },
@@ -198,6 +203,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return res.status(500).json({ ok: false, message: "File upload failed. Please try again or email " + NOTIFICATION_TO })
   }
 
+  /* One-time token for the optional "Help us out" answers sent from the
+   * thank-you screen (see ./extras/route.ts). Only its hash is stored. */
+  const extrasToken = randomBytes(24).toString("base64url")
+  const extrasMeta = {
+    extras_token_hash: createHash("sha256").update(extrasToken).digest("hex"),
+    extras_token_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  }
+
   // ─── (4) Either update existing (re-application) or register new ────
   let customerId: string | undefined
 
@@ -234,6 +247,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           message,
           ein_doc_url: einDocUrl,
           license_doc_url: licenseDocUrl,
+          license_source: licenseSource,
+          ...extrasMeta,
           // Clear prior denial state — clean slate for review
           denied_at: null,
           denial_reason_id: null,
@@ -322,6 +337,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
               message,
               ein_doc_url: einDocUrl,
               license_doc_url: licenseDocUrl,
+              license_source: licenseSource,
+              ...extrasMeta,
             },
           }),
         })
@@ -450,5 +467,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     ok: true,
     customerId,
     isReapplication,
+    extrasToken: customerId ? extrasToken : undefined,
   })
 }
