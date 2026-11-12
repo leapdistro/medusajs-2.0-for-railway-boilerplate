@@ -108,7 +108,7 @@ const ReceivingHistoryDetailPage = () => {
 
   return (
     <Container className="flex flex-col gap-6 p-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-3">
         <div className="flex flex-col">
           <Button asChild variant="transparent" size="small" className="self-start mb-2">
             <a href="/app/receiving/history">← All Receivings</a>
@@ -116,7 +116,10 @@ const ReceivingHistoryDetailPage = () => {
           <Heading level="h1">{record.invoice_number}</Heading>
           <Text className="text-ui-fg-subtle">{record.supplier?.name ?? "Unknown supplier"} · {record.invoice_date}</Text>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
+          {created + restocked > 0 && (
+            <Button asChild variant="secondary" size="small"><a href={`/app/photos?receiving=${record.id}`}>Add Photos</a></Button>
+          )}
           {failed === 0
             ? <Badge color="green">{created} created · {restocked} restocked</Badge>
             : <Badge color="orange">{failed} failed</Badge>}

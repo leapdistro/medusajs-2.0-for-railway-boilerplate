@@ -1142,6 +1142,7 @@ const ReviewView: React.FC<{
           ) : (
             <Button variant="primary" isLoading={pushingToQbo} onClick={onPushToQbo}>Push to QuickBooks</Button>
           )}
+          <Button asChild variant="secondary"><a href={`/app/photos?receiving=${saved.historyId}`}>Add Photos</a></Button>
           <Button asChild variant="secondary"><a href={`/app/receiving/history/${saved.historyId}`}>View in History</a></Button>
           <Button asChild variant="secondary"><a href="/app/products">Open Products</a></Button>
           <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>
