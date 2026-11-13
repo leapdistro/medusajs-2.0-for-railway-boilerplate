@@ -47,6 +47,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const profileKey = String((req.body as any)?.profileKey ?? "").trim()
   let unit: { singular: string; plural: string } | undefined
+  let brand = false
   if (profileKey) {
     const profile = await findProfile(req.scope, profileKey)
     if (!profile) {
@@ -58,9 +59,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       return
     }
     unit = profile.inputUnitLabel
+    brand = !!profile.fields.brand
   }
 
-  const result = await extractInvoice(invoiceFile.buffer, unit)
+  const result = await extractInvoice(invoiceFile.buffer, unit, { brand })
 
   if (!result.ok) {
     res.status(502).json({

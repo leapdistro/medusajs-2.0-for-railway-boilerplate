@@ -31,6 +31,7 @@ type Fields = {
   cannabinoids: boolean
   coaRequired: boolean
   upc: boolean
+  brand?: boolean
 }
 type Profile = {
   key: string
@@ -63,6 +64,7 @@ const FIELD_LABELS: Array<[keyof Fields, string]> = [
   ["cannabinoids", "Cannabinoid %"],
   ["coaRequired", "COA required"],
   ["upc", "UPC barcode"],
+  ["brand", "Brand (third-party products)"],
 ]
 
 const slug = (s: string) => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")

@@ -32,6 +32,9 @@ export type ExtractedLineItem = {
    *  or when the strain name is truncated/unfamiliar — operator picks
    *  manually in those cases. */
   strainType: "Indica" | "Sativa" | "Hybrid" | null
+  /** The product's brand (RAW, Zig-Zag…), only asked for categories with
+   *  the Brand field on. null when the line doesn't name one. */
+  brand?: string | null
 }
 
 export type ExtractedSupplier = {
@@ -85,8 +88,26 @@ Rules:
 export type InvoiceUnit = { singular: string; plural: string }
 
 /** The prompt for a category received in `unit`. Pounds (and no unit)
- *  get the original prompt word for word. */
-export function invoicePrompt(unit?: InvoiceUnit): string {
+ *  get the original prompt word for word, unless `brand` asks for each
+ *  line's brand too (third-party products). */
+export function invoicePrompt(unit?: InvoiceUnit, opts: { brand?: boolean } = {}): string {
+  const base = unitPrompt(unit)
+  if (!opts.brand) return base
+  const swap = (text: string, from: string, to: string) => {
+    if (!text.includes(from)) throw new Error(`invoice prompt is missing: ${from}`)
+    return text.replace(from, to)
+  }
+  let out = swap(base,
+    `"strainType": "Indica"|"Sativa"|"Hybrid"|null } ]`,
+    `"strainType": "Indica"|"Sativa"|"Hybrid"|null, "brand": string|null } ]`)
+  out = swap(out,
+    `10. Return ONLY the JSON object.`,
+    `10. brand: the product's brand or manufacturer as printed on the line or its section heading (e.g. "RAW", "Zig-Zag", "Elements"), with the brand's usual capitalisation. Leave strainName exactly as printed. null when no brand is named. strainType is null for anything that isn't a cannabis strain (papers, cones, wraps, accessories).
+11. Return ONLY the JSON object.`)
+  return out
+}
+
+function unitPrompt(unit?: InvoiceUnit): string {
   if (!unit || unit.singular.trim().toLowerCase() === "lb") return PROMPT
   const one = unit.singular.trim()
   const many = unit.plural.trim() || one
@@ -114,7 +135,7 @@ export type ExtractInvoiceResult = {
   error?: string
 }
 
-export async function extractInvoice(pdfBytes: Buffer, unit?: InvoiceUnit): Promise<ExtractInvoiceResult> {
+export async function extractInvoice(pdfBytes: Buffer, unit?: InvoiceUnit, opts: { brand?: boolean } = {}): Promise<ExtractInvoiceResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return { ok: false, raw: "", inputTokens: 0, outputTokens: 0, error: "ANTHROPIC_API_KEY env var not set" }
@@ -137,7 +158,7 @@ export async function extractInvoice(pdfBytes: Buffer, unit?: InvoiceUnit): Prom
               type: "document",
               source: { type: "base64", media_type: "application/pdf", data: base64 },
             },
-            { type: "text", text: invoicePrompt(unit) },
+            { type: "text", text: invoicePrompt(unit, opts) },
           ],
         },
       ],

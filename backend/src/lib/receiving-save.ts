@@ -83,6 +83,9 @@ export type SaveRow = {
   /** UPC barcode — only sent by profiles where fields.upc === true
    *  (Pre-Rolls and its subcategories). Lands on variant.barcode. */
   upc?: string | null
+  /** Brand name — only sent by profiles where fields.brand === true
+   *  (third-party products). Puts the product in that collection. */
+  brand?: string | null
 }
 
 export type TierKey = "classic" | "exotic" | "super" | "snow" | "rapper"
@@ -191,6 +194,34 @@ export type SaveContext = {
   enumRootHandle: string
   /** Default shipping profile id — required link or cart checkout fails. */
   shippingProfileId: string
+  /** Brand name (lowercased) → collection id, filled as rows need them
+   *  (brandCollectionId), so a batch looks each brand up once. */
+  brandIds?: Map<string, Promise<string>>
+}
+
+/**
+ * The collection id for brand `name` (third-party products, lib/brand.ts):
+ * the collection with that title in any case, else a new one (Medusa
+ * makes its handle from the title). Looked up once per name per batch.
+ */
+async function brandCollectionId(container: any, ctx: SaveContext, name: string): Promise<string> {
+  const key = name.trim().toLowerCase()
+  ctx.brandIds ??= new Map()
+  let id = ctx.brandIds.get(key)
+  if (!id) {
+    id = (async () => {
+      const productModule: any = container.resolve(Modules.PRODUCT)
+      const all = await productModule.listProductCollections({}, { select: ["id", "title"], take: 1000 })
+      const hit = (all as Array<{ id: string; title?: string | null }>).find((c) => (c.title ?? "").trim().toLowerCase() === key)
+      if (hit) return hit.id
+      const created = await productModule.createProductCollections({ title: name.trim() })
+      return created.id as string
+    })()
+    ctx.brandIds.set(key, id)
+    /* A failed lookup isn't cached: the next row tries again. */
+    id.catch(() => ctx.brandIds?.delete(key))
+  }
+  return id
 }
 
 export async function buildSaveContext(
@@ -701,6 +732,18 @@ export async function saveOneRow(
    * non-flower variant keys ("30pk" for pre-rolls). */
   const tp = baseResult.sellPrices ?? {}
 
+  /* Brand first, before anything is written: a brand that can't be found
+   * or created fails the row cleanly. */
+  let brandId: string | null = null
+  const brandName = ctx.profile.fields.brand ? row.brand?.trim() : ""
+  if (brandName) {
+    try {
+      brandId = await brandCollectionId(container, ctx, brandName)
+    } catch (e: any) {
+      return { ...baseResult, error: `"${row.strainName}" — couldn't find or create the brand "${brandName}": ${e?.message ?? e}` }
+    }
+  }
+
   try {
     const link = container.resolve(ContainerRegistrationKeys.LINK)
     const inventoryService: any = container.resolve(Modules.INVENTORY)
@@ -765,6 +808,14 @@ export async function saveOneRow(
           metadata: { landed_per_qp: String(landedPerQp.toFixed(4)) },
         }])
       } catch { /* metadata write isn't critical for restock */ }
+
+      /* A restock sets the brand only on a product that has none, so a
+       * brand chosen in admin isn't overwritten by an invoice's spelling. */
+      if (brandId) try {
+        const productModule: any = container.resolve(Modules.PRODUCT)
+        const current = await productModule.retrieveProduct(productId, { select: ["id", "collection_id"] })
+        if (!current?.collection_id) await productModule.updateProducts(productId, { collection_id: brandId })
+      } catch { /* the stock is in; the brand can be set in admin */ }
 
       return {
         ...baseResult,
@@ -876,6 +927,7 @@ export async function saveOneRow(
             handle: createHandle,
             status: ProductStatus.PUBLISHED,
             category_ids: [ctx.subcategoryIds[row.tier]],
+            ...(brandId ? { collection_id: brandId } : {}),
             options: [{ title: "Size", values: variantDefs.map((v) => v.label) }],
             variants,
             sales_channels: [{ id: ctx.salesChannelId }],

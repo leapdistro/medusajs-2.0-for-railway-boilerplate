@@ -40,7 +40,7 @@ type Profile = {
   archived?: boolean
   subcategories: Array<{ key: string; label: string; variants?: Variant[] }>
   variants: Variant[]
-  fields: { strainType: boolean; bestFor: boolean; effects: boolean; cannabinoids: boolean; coaRequired: boolean; upc: boolean }
+  fields: { strainType: boolean; bestFor: boolean; effects: boolean; cannabinoids: boolean; coaRequired: boolean; upc: boolean; brand?: boolean }
   pricingModel: "tier" | "flat"
   tierPricesSettingKey?: string
   inputUnitLabel: Unit
@@ -75,7 +75,7 @@ type Invoice = {
   invoiceDate: string
   /* Quantities and prices are in the category's receiving unit; the
    * reader keeps the lb names. */
-  lineItems: Array<{ strainName: string; quantityLb: number; unitPricePerLb: number; strainType: StrainType | null }>
+  lineItems: Array<{ strainName: string; quantityLb: number; unitPricePerLb: number; strainType: StrainType | null; brand?: string | null }>
   shippingTotal: number
   subtotal: number | null
   total: number
@@ -117,6 +117,8 @@ type Row = {
   totalCannabinoidsPercent: string
   batchId: string
   upc: string
+  /* Brand name, for categories with the Brand field (third-party products). */
+  brand: string
   coaNotes: string | null
   nearMatches: NearMatch[]
   classification: Classification | null
@@ -137,6 +139,7 @@ const blankRow = (subcategory: string | null = null): Row => ({
   totalCannabinoidsPercent: "",
   batchId: "",
   upc: "",
+  brand: "",
   coaNotes: null,
   nearMatches: [],
   classification: null,
@@ -191,6 +194,7 @@ function fromOldDraft(payload: any): Draft {
         totalCannabinoidsPercent: r.totalCannabinoidsPercent ?? "",
         batchId: r.batchId ?? "",
         upc: r.upc ?? "",
+        brand: r.brand ?? "",
       })),
     }
   }
@@ -527,6 +531,7 @@ const StartView: React.FC<{
           unitPrice: li.unitPricePerLb,
           strainType: profile.fields.strainType ? li.strainType ?? null : null,
           bestFor: profile.fields.strainType && li.strainType ? TYPE_TO_BEST_FOR[li.strainType] : null,
+          brand: profile.fields.brand ? li.brand ?? "" : "",
         })),
       }, null)
     } catch (e: any) {
@@ -632,6 +637,16 @@ const ReviewView: React.FC<{
 
   const [invoice, setInvoice] = useState<Invoice>(initial.invoice)
   const [rows, setRows] = useState<Row[]>(initial.rows.length ? initial.rows : [blankRow(onlySub)])
+  /* Existing brands (collections), suggested in the Brand column. A new
+   * name is fine: saving creates the brand. */
+  const [brandNames, setBrandNames] = useState<string[]>([])
+  useEffect(() => {
+    if (!f.brand) return
+    fetch("/admin/collections?limit=500&fields=id,title", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => setBrandNames(((j?.collections ?? []) as Array<{ title?: string }>).map((c) => c.title ?? "").filter(Boolean)))
+      .catch(() => {})
+  }, [f.brand])
   const [draftId, setDraftId] = useState<string | null>(initial.draftId)
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(initial.draftId ? new Date() : null)
   const [saving, setSaving] = useState(false)
@@ -895,6 +910,7 @@ const ReviewView: React.FC<{
       } : {}),
       ...(showBatch ? { batchId: r.batchId.trim() || null } : {}),
       ...(f.upc ? { upc: r.upc.trim() || null } : {}),
+      ...(f.brand ? { brand: r.brand.trim() || null } : {}),
     })),
   })
   /* What the last preview was of: any change after it makes it stale. */
@@ -1095,6 +1111,13 @@ const ReviewView: React.FC<{
         </>
       ),
     }] : []),
+    ...(f.brand ? [{
+      id: "brand", width: 150, header: "Brand",
+      cell: (row: Row, i: number) => (
+        <Input type="text" placeholder="e.g. RAW" list="receiving-brands" value={row.brand}
+          onChange={(e) => updateRow(i, { brand: e.target.value })} />
+      ),
+    }] : []),
     ...(f.upc ? [{
       id: "upc", width: 140, header: "UPC",
       cell: (row: Row, i: number) => <Input type="text" placeholder="optional" value={row.upc} onChange={(e) => updateRow(i, { upc: e.target.value })} />,
@@ -1158,6 +1181,7 @@ const ReviewView: React.FC<{
 
   return (
     <div className="flex flex-col gap-6">
+      {f.brand && <datalist id="receiving-brands">{brandNames.map((n) => <option key={n} value={n} />)}</datalist>}
       <div className="flex justify-between items-center gap-4 flex-wrap">
         <div className="flex flex-col">
           <Heading level="h2">Review · {profile.displayName}</Heading>

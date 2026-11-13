@@ -104,6 +104,11 @@ export type ProfileFields = {
    *  field per row and saves to variant.barcode. PDP shows "UPC: XXXX"
    *  under product title. Pre-Rolls + any future subcat under it. */
   upc: boolean
+  /** Brand text input (third-party products, 2026-11-12): saving finds
+   *  the Medusa collection with the row's brand name (any case) or
+   *  creates it, and puts the product in it (lib/brand.ts). The invoice
+   *  reader also reads each line's brand. Off for our own products. */
+  brand?: boolean
 }
 
 export type ReceivingProfile = {

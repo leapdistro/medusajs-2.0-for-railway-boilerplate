@@ -388,6 +388,7 @@ export function normalizeProfile(p: any): { profile: ReceivingProfile | null; er
       cannabinoids: !!f.cannabinoids,
       coaRequired: !!f.coaRequired,
       upc: !!f.upc,
+      brand: !!f.brand,
     },
     pricingModel,
     ...(tierPricesSettingKey ? { tierPricesSettingKey } : {}),
