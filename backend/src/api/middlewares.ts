@@ -21,7 +21,10 @@ import { qboSettledGuard } from "../lib/qbo-settled-guard"
  * ~25% but the storefront PDP carousel is the only consumer of these
  * URLs and it doesn't currently emit a <picture> fallback.
  *
- * Non-image files (PDFs, etc.) pass through untouched.
+ * Non-image files (PDFs, etc.) pass through untouched. So do SVGs (brand
+ * logos: already small, and sharp would flatten them), and an image with
+ * transparency stays a PNG (resized only), because JPEG has no alpha and
+ * a transparent logo would come out on a black box (brands, 2026-11-12).
  */
 async function compressUploadsMiddleware(
   req: MedusaRequest,
@@ -37,20 +40,26 @@ async function compressUploadsMiddleware(
   if (!Array.isArray(files) || files.length === 0) return next()
 
   await Promise.all(files.map(async (file) => {
-    if (!file?.buffer || !file.mimetype?.startsWith("image/")) return
+    if (!file?.buffer || !file.mimetype?.startsWith("image/") || file.mimetype === "image/svg+xml") return
     try {
       const original = file.buffer.length
-      const compressed = await sharp(file.buffer)
+      /* Only real see-through pixels count: screenshots often carry an
+       * alpha channel that's fully opaque, and those can be JPEGs. */
+      const hasAlpha = (await sharp(file.buffer).metadata()).hasAlpha
+        && !(await sharp(file.buffer).stats()).isOpaque
+      const resized = sharp(file.buffer)
         /* .rotate() with no args reads EXIF orientation and bakes the
          * rotation into the pixels. Without this, phone photos taken
          * in portrait end up sideways once EXIF is stripped. */
         .rotate()
         .resize({ width: 2000, height: 2000, fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 85, mozjpeg: true })
-        .toBuffer()
+      const compressed = hasAlpha
+        ? await resized.png({ compressionLevel: 9 }).toBuffer()
+        : await resized.jpeg({ quality: 85, mozjpeg: true }).toBuffer()
+      const ext = hasAlpha ? "png" : "jpg"
       file.buffer = compressed
-      file.mimetype = "image/jpeg"
-      file.originalname = (file.originalname ?? "image").replace(/\.[^.]+$/, "") + ".jpg"
+      file.mimetype = hasAlpha ? "image/png" : "image/jpeg"
+      file.originalname = (file.originalname ?? "image").replace(/\.[^.]+$/, "") + "." + ext
       file.size = compressed.length
       // eslint-disable-next-line no-console
       console.info(`[uploads-compress] ${file.originalname}: ${(original / 1024).toFixed(0)}KB → ${(compressed.length / 1024).toFixed(0)}KB`)

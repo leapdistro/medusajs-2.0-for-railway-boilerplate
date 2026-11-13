@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules, QueryContext } from "@medusajs/framework/utils"
 import { loadCategoryTree, productPath } from "../../../../lib/category-tree"
+import { storeBrand } from "../../../../lib/brand"
 
 /**
  * Custom Store route that returns products with the linked `product_attributes`
@@ -23,7 +24,9 @@ import { loadCategoryTree, productPath } from "../../../../lib/category-tree"
  * `category_path`: its deepest category's levels from the top down
  * (inactive levels included), each with its behaviour metadata, so
  * product behaviour comes from category settings, and `custom_fields`:
- * its values for the extra fields those categories define.
+ * its values for the extra fields those categories define. A third-party
+ * product carries `brand` (its Medusa collection, with display settings
+ * and colour shades; see lib/brand.ts), null for our own products.
  *
  * Customer-group pricing (Distro, Owner Stores) — when called with a
  * customer Bearer token, the route resolves the customer's group
@@ -135,6 +138,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "categories.parent_category.name", "categories.parent_category.handle",
       "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
       "product_attributes.*",
+      /* Brand = the product's collection (lib/brand.ts). */
+      "collection.handle", "collection.title", "collection.metadata",
     ],
     filters,
     context: {
@@ -152,6 +157,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
      * fields"); the rest of product metadata stays private. */
     p.custom_fields = p.metadata?.custom_fields ?? {}
     delete p.metadata
+    p.brand = storeBrand(p.collection)
+    delete p.collection
   }
 
   res.json({ products, count: products.length })
