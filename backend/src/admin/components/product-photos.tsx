@@ -15,7 +15,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
  * photo can be edited, reordered or deleted from the product page too.
  *
  * Phones (coarse pointer) open the camera app through a file input
- * with `capture`; computers show a live webcam view, or a file picker
+ * with `capture`, and From library picks several saved photos;
+ * computers show a live webcam view, or a file picker
  * when there's no camera, and take photos dragged onto a product card,
  * the product's screen, or one of its photos (replaces it), or picked
  * with Choose files. Uploads run in the background so the next
@@ -383,6 +384,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
     </>
   )
 
+  const rowBtn = { flex: "1 1 0", minWidth: 0, paddingInline: 8 }
   const tierOf = (p: WalkProduct) => p.categories?.map((c) => c.name).join(" · ")
   const desktop = !isPhone()
   const dropRing = (key: string) => (dragKey === key ? { outline: "2px dashed var(--fg-interactive, #3b82f6)", outlineOffset: 2 } : {})
@@ -524,16 +526,31 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
             </div>
           )}
 
-          <div className="flex gap-2 flex-wrap">
-            {justSaved ? (
-              <>
-                <Button size="large" variant="secondary" onClick={() => openCamera()}>Add another photo</Button>
-                <Button size="large" onClick={close}>Back to list</Button>
-              </>
-            ) : (
-              <Button size="large" onClick={() => openCamera()}>{list.length ? "Add a photo" : "Take photo"}</Button>
-            )}
-          </div>
+          {desktop ? (
+            <div className="flex gap-2 flex-wrap">
+              {justSaved ? (
+                <>
+                  <Button size="large" variant="secondary" onClick={() => openCamera()}>Add another photo</Button>
+                  <Button size="large" onClick={close}>Back to list</Button>
+                </>
+              ) : (
+                <Button size="large" onClick={() => openCamera()}>{list.length ? "Add a photo" : "Take photo"}</Button>
+              )}
+            </div>
+          ) : (
+            /* One row on phones (owner, 2026-11-12), equal widths, short
+             * labels so three fit at 360px. Phones can't drag files in;
+             * the library is their way to add several at once. */
+            <div className="flex gap-2">
+              <Button size="large" variant={justSaved ? "secondary" : "primary"} style={rowBtn} onClick={() => openCamera()}>
+                {justSaved ? "Take another" : "Take photo"}
+              </Button>
+              <Button size="large" variant="secondary" style={rowBtn} onClick={() => filesInput.current?.click()}>
+                From library
+              </Button>
+              {justSaved && <Button size="large" style={rowBtn} onClick={close}>Back to list</Button>}
+            </div>
+          )}
           {desktop && (
             <div
               className="flex flex-col items-center gap-2 text-ui-fg-subtle"
