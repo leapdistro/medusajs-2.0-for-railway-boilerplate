@@ -1,15 +1,15 @@
 import { defineRouteConfig } from "@medusajs/admin-sdk"
-import { Badge, Button, Container, Heading, Text } from "@medusajs/ui"
+import { Container, Text } from "@medusajs/ui"
 import { useEffect, useState } from "react"
 import { PhotoWalk, fetchProducts, photoOrder, type WalkProduct } from "../../components/product-photos"
 
 /**
  * Product Photos (owner, 2026-11-12).
- *  - /app/photos?receiving=<historyId>: walks through the products a
+ *  - /app/photos?receiving=<historyId>: the products a
  *    receiving created or restocked, photo-less ones first. Opened
  *    from "Add Photos" on the Receiving Saved screen and the history page.
- *  - /app/photos: every product with no photo yet, newest first; Start
- *    walks through them, or tap one to start there.
+ *  - /app/photos: every product with no photo yet, newest first.
+ * Both open on a list of product cards; tap one to photograph it.
  * Photos are the products' own images (see PhotoWalk).
  */
 
@@ -52,14 +52,13 @@ const FromReceiving = ({ historyId }: { historyId: string }) => {
 const Missing = () => {
   const [products, setProducts] = useState<WalkProduct[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [start, setStart] = useState<number | null>(null)
 
   useEffect(() => {
     (async () => {
       const all: (WalkProduct & { status?: string })[] = []
       for (let offset = 0; ; offset += 200) {
         const qs = new URLSearchParams({
-          fields: "id,title,handle,thumbnail,status,images.id,categories.name",
+          fields: "id,title,handle,thumbnail,status,images.id,images.url,categories.name",
           limit: "200", offset: String(offset), order: "-created_at",
         })
         const res = await fetch(`/admin/products?${qs}`, { credentials: "include" })
@@ -74,47 +73,16 @@ const Missing = () => {
 
   if (error) return <Text style={{ color: "#B91C1C" }}>{error}</Text>
   if (!products) return <Text>Loading…</Text>
-  if (start !== null) {
-    return <PhotoWalk products={products} start={start} title="Products with no photo" backHref="/app/photos" backLabel="All products with no photo" />
-  }
-
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex justify-between items-start gap-3 flex-wrap">
-        <div>
-          <Heading level="h1">Product Photos</Heading>
-          <Text className="text-ui-fg-subtle">
-            {products.length
-              ? `${products.length} product${products.length === 1 ? "" : "s"} with no photo, newest first.`
-              : "Every product has a photo."}
-          </Text>
-        </div>
-        {products.length > 0 && <Button size="large" onClick={() => setStart(0)}>Start taking photos</Button>}
-      </div>
-      <Text size="small" className="text-ui-fg-subtle">
-        To photograph one receiving, open it in Receiving History and tap Add Photos.
-      </Text>
-      <div className="flex flex-col">
-        {products.map((p, i) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => setStart(i)}
-            className="flex justify-between items-center gap-3 text-left hover:bg-ui-bg-base-hover"
-            style={{ padding: "10px 4px", borderTop: "1px solid var(--border-base, #e5e7eb)" }}
-          >
-            <div className="flex flex-col">
-              <Text weight="plus">{p.title}</Text>
-              <Text size="small" className="text-ui-fg-subtle">{p.categories?.map((c) => c.name).join(" · ")}</Text>
-            </div>
-            <div className="flex gap-2 items-center">
-              {(p as any).status === "draft" && <Badge size="2xsmall">Draft</Badge>}
-              <Text size="small" className="text-ui-fg-interactive">Take photo →</Text>
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
+    <PhotoWalk
+      products={products}
+      title="Product Photos"
+      intro={
+        <Text size="small" className="text-ui-fg-subtle">
+          Products with no photo, newest first. For one receiving, open it in Receiving History and tap Add Photos.
+        </Text>
+      }
+    />
   )
 }
 
