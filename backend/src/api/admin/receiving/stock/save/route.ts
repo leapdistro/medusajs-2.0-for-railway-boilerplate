@@ -235,7 +235,15 @@ async function save(req: MedusaRequest): Promise<{ status: number; body: any }> 
   if (results.length) {
     try {
       const byLine = new Map<string, any>()
-      for (const r of (existingRecord?.line_results ?? []) as any[]) byLine.set(lineKey(r.strainName, r.tier), r)
+      /* Already on a QuickBooks Bill: mark the earlier lines as on it,
+       * so this save's lines show as not in QuickBooks yet. */
+      const earlier = (existingRecord?.line_results ?? []) as any[]
+      const billId = existingRecord?.qbo_bill_id ? String(existingRecord.qbo_bill_id) : null
+      const stampEarlier = !!billId && !earlier.some((r) => r.qboBillId)
+      for (const r of earlier) {
+        const kept = stampEarlier && (r.action === "created" || r.action === "restocked") ? { ...r, qboBillId: billId } : r
+        byLine.set(lineKey(r.strainName, r.tier), kept)
+      }
       for (const r of results) byLine.set(lineKey(r.strainName, r.tier), r)
       const lineResults = Array.from(byLine.values())
       const record = {
@@ -283,6 +291,7 @@ async function save(req: MedusaRequest): Promise<{ status: number; body: any }> 
       results,
       skipped,
       historyId,
+      qboBillId: existingRecord?.qbo_bill_id ?? null,
       historyError,
       error: summary.failed > 0 ? results.find((r) => r.action === "failed")?.error : undefined,
     },

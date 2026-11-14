@@ -406,7 +406,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (attempted.length > 0) {
     try {
       const byLine = new Map<string, any>()
-      for (const r of (existingRecord?.line_results ?? []) as any[]) byLine.set(lineKey(r.strainName, r.tier), r)
+      /* Already on a QuickBooks Bill: the earlier lines are on it. Mark
+       * them (pushes before 2026-11-14 didn't), so the lines this save
+       * adds show as not in QuickBooks yet and can be added to it. */
+      const earlier = (existingRecord?.line_results ?? []) as any[]
+      const billId = existingRecord?.qbo_bill_id ? String(existingRecord.qbo_bill_id) : null
+      const stampEarlier = !!billId && !earlier.some((r) => r.qboBillId)
+      for (const r of earlier) {
+        const kept = stampEarlier && (r.action === "created" || r.action === "restocked") ? { ...r, qboBillId: billId } : r
+        byLine.set(lineKey(r.strainName, r.tier), kept)
+      }
       for (const r of attempted) byLine.set(lineKey(r.strainName, r.tier), r)
       const lineResults = Array.from(byLine.values())
 
@@ -478,6 +487,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     summary,
     results,
     historyId,
+    /* The invoice's Bill, when an earlier save already pushed one: this
+     * save's lines aren't on it until added (Add to Bill). */
+    qboBillId: existingRecord?.qbo_bill_id ?? null,
     historyError,                          // surface so the toast / DevTools sees it
     /* Convenience: a single error string when there's exactly one failure. */
     error: summary.failed === 1

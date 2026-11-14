@@ -10,6 +10,7 @@ import {
 import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../components/vendor-picker"
 import { ReceiveStock } from "../../components/receive-stock"
 import { ReceivedLabels } from "../../components/print-labels"
+import { QboBill } from "../../components/qbo-bill"
 
 /**
  * Receiving for every category (Phase 4c). One spreadsheet, built from
@@ -662,8 +663,6 @@ const ReviewView: React.FC<{
   const [preview, setPreview] = useState<{ key: string; results: PreviewResult[] } | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [saved, setSaved] = useState<{ historyId: string; created: number; restocked: number } | null>(null)
-  const [pushedBillId, setPushedBillId] = useState<string | null>(null)
-  const [pushingToQbo, setPushingToQbo] = useState(false)
   /* Rows with no cost save at $0 only when the operator says it's free
    * stock: a $0 cost blocks the QBO bill and Owner prices. */
   const [freeStockOk, setFreeStockOk] = useState(false)
@@ -983,25 +982,6 @@ const ReviewView: React.FC<{
     }
   }
 
-  const onPushToQbo = async () => {
-    if (!saved) return
-    setPushingToQbo(true)
-    try {
-      const res = await fetch("/admin/qbo/push-bill", {
-        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ historyId: saved.historyId }),
-      })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json?.error ?? `Push failed (${res.status})`)
-      setPushedBillId(json.billId)
-      toast.success("Pushed to QuickBooks", { description: `Bill ${json.billId} · ${json.lines} line(s)` })
-    } catch (e: any) {
-      toast.error("Push failed", { description: e?.message ?? "Network error" })
-    } finally {
-      setPushingToQbo(false)
-    }
-  }
-
   /* ---- The category's columns ---- */
   const variantsFor = (sub: string | null) =>
     profile.subcategories.find((s) => s.key === sub)?.variants ?? profile.variants
@@ -1165,11 +1145,7 @@ const ReviewView: React.FC<{
           {invoice.invoiceNumber} · {saved.created} created · {saved.restocked} restocked
         </Text>
         <div className="flex gap-2 mt-4 flex-wrap items-center">
-          {pushedBillId ? (
-            <Badge color="purple">✓ Pushed to QBO · Bill {pushedBillId}</Badge>
-          ) : (
-            <Button variant="primary" isLoading={pushingToQbo} onClick={onPushToQbo}>Push to QuickBooks</Button>
-          )}
+          <QboBill historyId={saved.historyId} />
           <Button asChild variant="secondary"><a href={`/app/photos?receiving=${saved.historyId}`}>Add Photos</a></Button>
           <Button asChild variant="secondary"><a href={`/app/receiving/history/${saved.historyId}`}>View in History</a></Button>
           <Button asChild variant="secondary"><a href="/app/products">Open Products</a></Button>

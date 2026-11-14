@@ -835,6 +835,41 @@ export async function createBill(
   return { id: String(bill.Id), docNumber: bill.DocNumber ?? null }
 }
 
+/**
+ * Add lines to an existing Bill (a receiving saved in two goes under one
+ * invoice). Reads the Bill for its current lines and SyncToken, then
+ * sends them back with the new ones after: a sparse update's Line list
+ * replaces the Bill's, so the existing lines must be in it, by Id.
+ */
+export async function appendBillLines(
+  qbo: QboService,
+  conn: QboConnectionRow,
+  billId: string,
+  lines: BillLine[],
+  privateNote?: string,
+): Promise<{ id: string; total: number; lines: number }> {
+  const fresh = await ensureFreshAccessToken(qbo, conn)
+  const current = (await qboFetch(fresh, `/bill/${encodeURIComponent(billId)}?minorversion=73`))?.Bill
+  if (!current?.Id) throw new Error(`Bill ${billId} wasn't found in QuickBooks`)
+  const kept = ((current.Line ?? []) as any[]).filter((l) => l.DetailType !== "SubTotalLineDetail")
+  const added = lines.map((l) => ({
+    DetailType: "ItemBasedExpenseLineDetail",
+    Amount: round2(l.qty * l.rate),
+    Description: l.description ?? "",
+    ItemBasedExpenseLineDetail: {
+      ItemRef: { value: l.itemId, name: l.itemName },
+      Qty: l.qty,
+      UnitPrice: l.rate,
+      BillableStatus: "NotBillable",
+    },
+  }))
+  const body: any = { Id: current.Id, SyncToken: current.SyncToken, sparse: true, Line: [...kept, ...added] }
+  if (privateNote) body.PrivateNote = privateNote.slice(0, 4000)
+  const updated = (await qboFetch(fresh, `/bill?minorversion=73`, { method: "POST", body: JSON.stringify(body) }))?.Bill
+  if (!updated?.Id) throw new Error(`Bill update returned no Id`)
+  return { id: String(updated.Id), total: Number(updated.TotalAmt) || 0, lines: (updated.Line ?? []).length }
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100
 }

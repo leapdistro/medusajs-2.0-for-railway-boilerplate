@@ -1,6 +1,7 @@
-import { Badge, Button, Container, Heading, Text, toast } from "@medusajs/ui"
+import { Badge, Button, Container, Heading, Text } from "@medusajs/ui"
 import { useEffect, useState } from "react"
 import { PrintLabelButton, usePrintable } from "../../../../components/print-labels"
+import { QboBill } from "../../../../components/qbo-bill"
 
 /**
  * Receiving history detail — full breakdown of one receiving record.
@@ -56,7 +57,6 @@ const ReceivingHistoryDetailPage = () => {
   const [record, setRecord] = useState<Record | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [pushing, setPushing] = useState(false)
   const printable = usePrintable(record?.line_results ?? [])
 
   const reload = () => {
@@ -72,29 +72,6 @@ const ReceivingHistoryDetailPage = () => {
   }
 
   useEffect(reload, [id])
-
-  const onPushToQbo = async () => {
-    if (!record) return
-    setPushing(true)
-    try {
-      const res = await fetch("/admin/qbo/push-bill", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ historyId: record.id }),
-      })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json?.error ?? `Push failed (${res.status})`)
-      toast.success("Pushed to QuickBooks", {
-        description: `Bill ${json.billId} · ${json.lines} line(s)`,
-      })
-      reload()
-    } catch (e: any) {
-      toast.error("Push failed", { description: e?.message ?? "Network error" })
-    } finally {
-      setPushing(false)
-    }
-  }
 
   if (loading) return <Container className="p-6"><Text>Loading…</Text></Container>
   if (error || !record) {
@@ -127,19 +104,11 @@ const ReceivingHistoryDetailPage = () => {
           {failed === 0
             ? <Badge color="green">{created} created · {restocked} restocked</Badge>
             : <Badge color="orange">{failed} failed</Badge>}
-          {record.qbo_bill_id ? (
-            <Badge color="purple" title={`Pushed ${record.qbo_pushed_at ?? ""}`}>
-              ✓ Pushed to QBO · Bill {record.qbo_bill_id}
-            </Badge>
-          ) : (
-            <Button variant="primary" size="small" onClick={onPushToQbo} isLoading={pushing}>
-              Push to QuickBooks
-            </Button>
-          )}
+          <QboBill historyId={record.id} size="small" onChange={reload} />
         </div>
       </div>
 
-      {!record.qbo_bill_id && record.qbo_push_error && (
+      {record.qbo_push_error && (
         <div style={{ border: "1.5px solid #B91C1C", padding: 16 }}>
           <Text size="small" weight="plus" style={{ color: "#B91C1C", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
             Last QBO push failed{record.qbo_push_error_at ? ` · ${new Date(record.qbo_push_error_at).toLocaleString()}` : ""}
