@@ -186,30 +186,37 @@ export async function applyOwnerPrices(
 
     const scoped = scopedCategoryOf(v.product, scope.categories)
     if (!scoped) { bumpSkip("out_of_scope"); continue }
-    /* Sizes this product's sub-category sells, with their stock
-     * multipliers. */
-    const sizeMultipliers: Record<string, number> = {}
-    for (const vd of scoped.subcategory.variants) sizeMultipliers[vd.sizeKey] = vd.multiplier
-    const validSizesSet = new Set(Object.keys(sizeMultipliers))
+    /* Receive stock products (resold brands) carry their own pack size
+     * on the variant: a case is 12 boxes on one product and 25 on the
+     * next, so the category's size table can't say. */
+    const ownUnits = Number(meta.pool_units)
+    let poolUnits = Number.isFinite(ownUnits) && ownUnits > 0 ? ownUnits : 0
+    if (!poolUnits) {
+      /* Sizes this product's sub-category sells, with their stock
+       * multipliers. */
+      const sizeMultipliers: Record<string, number> = {}
+      for (const vd of scoped.subcategory.variants) sizeMultipliers[vd.sizeKey] = vd.multiplier
+      const validSizesSet = new Set(Object.keys(sizeMultipliers))
 
-    let size: string | null = typeof meta.size_key === "string" ? meta.size_key : null
-    if (!size || !validSizesSet.has(size)) {
-      const skuSize = sizeFromSku(v.sku)
-      if (skuSize && validSizesSet.has(skuSize)) {
-        size = skuSize
-      } else {
-        const sizeOpt = ((v.options ?? []) as any[])
-          .find((o) => String(o?.option?.title ?? "").toLowerCase() === "size")
-        const candidate = sizeOpt?.value ?? v.title
-        const normalized = normalizeSizeFromTitle(candidate)
-        if (normalized && validSizesSet.has(normalized)) size = normalized
+      let size: string | null = typeof meta.size_key === "string" ? meta.size_key : null
+      if (!size || !validSizesSet.has(size)) {
+        const skuSize = sizeFromSku(v.sku)
+        if (skuSize && validSizesSet.has(skuSize)) {
+          size = skuSize
+        } else {
+          const sizeOpt = ((v.options ?? []) as any[])
+            .find((o) => String(o?.option?.title ?? "").toLowerCase() === "size")
+          const candidate = sizeOpt?.value ?? v.title
+          const normalized = normalizeSizeFromTitle(candidate)
+          if (normalized && validSizesSet.has(normalized)) size = normalized
+        }
       }
+
+      if (!size || !validSizesSet.has(size)) { bumpSkip("unresolved_size"); continue }
+
+      poolUnits = sizeMultipliers[size]
+      if (!poolUnits || poolUnits <= 0) { bumpSkip("no_pool_multiplier"); continue }
     }
-
-    if (!size || !validSizesSet.has(size)) { bumpSkip("unresolved_size"); continue }
-
-    const poolUnits = sizeMultipliers[size]
-    if (!poolUnits || poolUnits <= 0) { bumpSkip("no_pool_multiplier"); continue }
 
     const invItems = (v.inventory_items ?? []) as Array<{ inventory?: { metadata?: any } | null }>
     const invMeta = invItems[0]?.inventory?.metadata ?? null

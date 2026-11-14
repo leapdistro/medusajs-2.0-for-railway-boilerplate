@@ -166,6 +166,11 @@ export default defineMiddlewares({
       ],
     },
     {
+      matcher: "/admin/receiving/stock/extract",
+      method: "POST",
+      middlewares: [invoiceUpload.fields([{ name: "invoice", maxCount: 1 }])],
+    },
+    {
       matcher: "/admin/receiving/coa-upload",
       method: "POST",
       middlewares: [

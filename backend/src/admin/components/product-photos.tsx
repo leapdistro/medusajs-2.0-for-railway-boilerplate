@@ -30,6 +30,32 @@ export type WalkProduct = {
   thumbnail?: string | null
   images?: { id: string; url: string }[] | null
   categories?: { name: string }[] | null
+  variants?: Array<{
+    id: string
+    options?: Array<{ value?: string; option?: { title?: string } | null }> | null
+    images?: { id: string; url: string }[] | null
+  }> | null
+}
+
+/** One flavour / colour of a product: the variants sharing its option
+ *  values apart from Pack (box / case) and Size, which share photos. */
+type Look = { key: string; label: string; variantIds: string[]; images: { id: string; url: string }[] }
+
+const PACK_TITLES = new Set(["pack", "size"])
+function looksOf(p: WalkProduct): Look[] {
+  const out = new Map<string, Look>()
+  for (const v of p.variants ?? []) {
+    const values = (v.options ?? [])
+      .filter((o) => o?.value && !PACK_TITLES.has(String(o.option?.title ?? "").toLowerCase()))
+      .map((o) => String(o.value))
+    if (!values.length) continue
+    const key = values.join(" / ")
+    const look = out.get(key) ?? { key, label: key, variantIds: [], images: [] }
+    look.variantIds.push(v.id)
+    if (!look.images.length && v.images?.length) look.images = v.images
+    out.set(key, look)
+  }
+  return out.size > 1 ? [...out.values()] : []
 }
 
 type Photo = {
@@ -44,9 +70,11 @@ type Photo = {
   blob?: Blob
   /** The photo this one replaces; kept until the upload lands. */
   prev?: Photo
+  /** A flavour's photo already tied to its variants. */
+  linked?: boolean
 }
 
-export const PRODUCT_PHOTO_FIELDS = "id,title,handle,thumbnail,status,*images,categories.name"
+export const PRODUCT_PHOTO_FIELDS = "id,title,handle,thumbnail,status,*images,categories.name,variants.id,variants.options.value,variants.options.option.title,variants.images.id,variants.images.url"
 
 const hasPhoto = (p: WalkProduct) => !!(p.thumbnail || p.images?.length)
 
@@ -172,13 +200,25 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
    * serialised saves always see the latest list. */
   const photos = useRef<Record<string, Photo[]>>({})
   const chains = useRef<Record<string, Promise<void>>>({})
-  const listFor = (p: WalkProduct): Photo[] => {
-    if (!photos.current[p.id]) {
-      const imgs = p.images?.length ? p.images : p.thumbnail ? [{ id: "", url: p.thumbnail }] : []
-      photos.current[p.id] = imgs.map((im) => ({ key: newKey(), id: im.id || undefined, url: im.url, status: "saved" as const }))
+  /* A product with flavours / colours (owner, 2026-11-14) keeps one
+   * photo list for the whole product (photos not tied to a flavour) and
+   * one per flavour, under "<product id>#<flavour>". */
+  const listKey = (productId: string, look: string | null) => (look ? `${productId}#${look}` : productId)
+  const listFor = (p: WalkProduct, look: string | null = null): Photo[] => {
+    const k = listKey(p.id, look)
+    if (!photos.current[k]) {
+      const looks = looksOf(p)
+      const tied = new Set(looks.flatMap((l) => l.images.map((im) => im.id)))
+      const imgs = look
+        ? looks.find((l) => l.key === look)?.images ?? []
+        : (p.images?.length ? p.images.filter((im) => !tied.has(im.id)) : p.thumbnail && !tied.size ? [{ id: "", url: p.thumbnail }] : [])
+      photos.current[k] = imgs.map((im) => ({ key: newKey(), id: im.id || undefined, url: im.url, status: "saved" as const, linked: !!look }))
     }
-    return photos.current[p.id]
+    return photos.current[k]
   }
+  /** Every photo of a product: its own, then each flavour's. */
+  const allFor = (p: WalkProduct) => [listFor(p), ...looksOf(p).map((l) => listFor(p, l.key))]
+  const [look, setLook] = useState<string | null>(null)
 
   /* What the camera is shooting for: a new photo, or a replacement. */
   const [target, setTarget] = useState<{ replaceKey?: string } | null>(null)
@@ -189,7 +229,8 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
   const pickerInput = useRef<HTMLInputElement>(null)
 
   const product = index === null ? undefined : products[index]
-  const list = product ? listFor(product) : []
+  const productLooks = product ? looksOf(product) : []
+  const list = product ? listFor(product, look) : []
   const busy = Object.values(photos.current).some((l) => l.some((p) => p.status === "uploading"))
 
   useEffect(() => {
@@ -204,10 +245,15 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
    * response reach the next. */
   const commit = (productId: string) => {
     const run = async () => {
-      const current = photos.current[productId] ?? []
-      const images = current
+      const prod = products.find((p) => p.id === productId)
+      const looks = prod ? looksOf(prod) : []
+      const lists = [photos.current[productId] ?? [], ...looks.map((l) => photos.current[listKey(productId, l.key)] ?? [])]
+      const usable = (l: Photo[]) => l
         .map((p) => (p.url ? p : p.prev?.url ? p.prev : null))
         .filter((p): p is Photo => !!p)
+      const seen = new Set<string>()
+      const images = lists.flatMap(usable)
+        .filter((p) => !seen.has(p.url!) && !!seen.add(p.url!))
         .map((p) => (p.id ? { id: p.id, url: p.url! } : { url: p.url! }))
       const res = await fetch(`/admin/products/${productId}?fields=id,thumbnail,*images`, {
         method: "POST",
@@ -218,8 +264,26 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json?.message ?? `Save failed (${res.status})`)
       const saved: { id: string; url: string }[] = json?.product?.images ?? []
-      for (const p of photos.current[productId] ?? []) {
-        if (p.url && !p.id) p.id = saved.find((s) => s.url === p.url)?.id
+      for (const l of lists) {
+        for (const p of l) if (p.url && !p.id) p.id = saved.find((x) => x.url === p.url)?.id
+      }
+      /* A flavour's new photos go on its box and case. */
+      for (const lk of looks) {
+        const fresh = (photos.current[listKey(productId, lk.key)] ?? []).filter((p) => p.id && p.status !== "failed" && !p.linked)
+        if (!fresh.length) continue
+        for (const variantId of lk.variantIds) {
+          const r = await fetch(`/admin/products/${productId}/variants/${variantId}/images/batch`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ add: fresh.map((p) => p.id) }),
+          })
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}))
+            throw new Error(j?.message ?? `Linking the ${lk.label} photo failed (${r.status})`)
+          }
+        }
+        for (const p of fresh) p.linked = true
       }
     }
     const next = (chains.current[productId] ?? Promise.resolve()).then(run)
@@ -266,8 +330,8 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
 
   /* Adds photos to a product (or puts the first in place of
    * `replaceKey`) and starts their uploads. */
-  const place = (p: WalkProduct, blobs: Blob[], replaceKey?: string) => {
-    const l = listFor(p)
+  const place = (p: WalkProduct, blobs: Blob[], replaceKey?: string, into: string | null = null) => {
+    const l = listFor(p, into)
     blobs.forEach((blob, i) => {
       const photo: Photo = { key: newKey(), blob, preview: URL.createObjectURL(blob), status: "uploading" }
       const at = i === 0 && replaceKey ? l.findIndex((x) => x.key === replaceKey) : -1
@@ -285,7 +349,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
 
   const onSave = () => {
     if (!shot || !product) return
-    place(product, [shot.blob], target?.replaceKey)
+    place(product, [shot.blob], target?.replaceKey, look)
     setShot(null)
     setTarget(null)
     setJustSaved(true)
@@ -300,11 +364,11 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
     }
     return ok
   }
-  const addFiles = (p: WalkProduct, files: FileList | null | undefined, replaceKey?: string) => {
+  const addFiles = (p: WalkProduct, files: FileList | null | undefined, replaceKey?: string, into: string | null = null) => {
     const ok = imagesOf(files)
     if (!ok.length) return
-    place(p, replaceKey ? ok.slice(0, 1) : ok, replaceKey)
-    if (replaceKey && ok.length > 1) place(p, ok.slice(1))
+    place(p, replaceKey ? ok.slice(0, 1) : ok, replaceKey, into)
+    if (replaceKey && ok.length > 1) place(p, ok.slice(1), undefined, into)
     setJustSaved(true)
     rerender()
   }
@@ -348,7 +412,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
   /* A failed replacement can go back to the photo it replaced. */
   const discard = (key: string) => {
     if (!product) return
-    const l = listFor(product)
+    const l = listFor(product, look)
     const at = l.findIndex((p) => p.key === key)
     if (at < 0) return
     const p = l[at]
@@ -359,6 +423,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
 
   const show = (i: number | null) => {
     setIndex(i)
+    setLook(null)
     setJustSaved(false)
     setShot(null)
     setTarget(null)
@@ -380,7 +445,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
       <input ref={fileInput} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
       <input ref={pickerInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={onFile} />
       <input ref={filesInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden
-        onChange={(e) => { if (product) addFiles(product, e.target.files); e.target.value = "" }} />
+        onChange={(e) => { if (product) addFiles(product, e.target.files, undefined, look); e.target.value = "" }} />
     </>
   )
 
@@ -391,7 +456,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
 
   /* ── The list ── */
   if (!product) {
-    const done = products.filter((p) => listFor(p).some((x) => x.url || x.prev?.url)).length
+    const done = products.filter((p) => allFor(p).some((l) => l.some((x) => x.url || x.prev?.url))).length
     return (
       <div className="flex flex-col gap-4">
         {backHref && (
@@ -412,8 +477,11 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 }}>
           {products.map((p, i) => {
-            const l = listFor(p)
+            const lists = allFor(p)
+            const l = lists.flat()
             const main = l[0]
+            const looks = looksOf(p)
+            const bare = looks.filter((lk) => !listFor(p, lk.key).length)
             const uploading = l.filter((x) => x.status === "uploading").length
             const failed = l.filter((x) => x.status === "failed").length
             return (
@@ -443,6 +511,11 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
                 <div className="flex flex-col" style={{ padding: "8px 10px 10px" }}>
                   <Text size="small" weight="plus" style={{ lineHeight: 1.25 }}>{p.title}</Text>
                   {tierOf(p) && <Text size="xsmall" className="text-ui-fg-subtle">{tierOf(p)}</Text>}
+                  {bare.length > 0 && (
+                    <Text size="xsmall" style={{ color: "#B45309" }}>
+                      {bare.length === looks.length ? `No photo for any of its ${looks.length}` : `No photo: ${bare.map((b) => b.label).join(", ")}`}
+                    </Text>
+                  )}
                 </div>
               </button>
             )
@@ -454,7 +527,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
 
   /* ── One product ── */
   return (
-    <div className="flex flex-col gap-5" style={{ maxWidth: 720 }} {...dropProps("product", (f) => addFiles(product, f))}>
+    <div className="flex flex-col gap-5" style={{ maxWidth: 720 }} {...dropProps("product", (f) => addFiles(product, f, undefined, look))}>
       {inputs}
       <Button variant="transparent" size="small" className="self-start" onClick={close}>← Back to list</Button>
 
@@ -468,6 +541,25 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
           <a href={`/app/products/${product.id}`} className="txt-compact-small text-ui-fg-interactive">Open product</a>
         </div>
       </div>
+
+      {productLooks.length > 0 && (
+        /* One photo set per flavour / colour; "Whole product" holds the
+         * ones every flavour shows (the box shot). */
+        <div className="flex flex-col gap-1">
+          <Text size="small" className="text-ui-fg-subtle">Photos for</Text>
+          <div className="flex gap-2 flex-wrap">
+            {[{ key: null as string | null, label: "Whole product" }, ...productLooks.map((l) => ({ key: l.key as string | null, label: l.label }))].map((t) => {
+              const n = listFor(product, t.key).length
+              return (
+                <Button key={t.key ?? "all"} size="small" variant={look === t.key ? "primary" : "secondary"}
+                  onClick={() => { setLook(t.key); setShot(null); setTarget(null); setWebcam(false); setJustSaved(false) }}>
+                  {t.label} <span style={{ opacity: 0.7, marginLeft: 4 }}>{n || (t.key ? "· none" : "")}</span>
+                </Button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {shot ? (
         <div className="flex flex-col gap-3">
@@ -497,7 +589,7 @@ export const PhotoWalk = ({ products, title, intro, backHref, backLabel }: {
                     <button
                       type="button"
                       onClick={() => p.status !== "uploading" && openCamera(p.key)}
-                      {...dropProps(`tile-${p.key}`, (f) => addFiles(product, f, p.key))}
+                      {...dropProps(`tile-${p.key}`, (f) => addFiles(product, f, p.key, look))}
                       title={p.status === "uploading" ? "Uploading…" : "Replace this photo"}
                       style={{
                         ...dropRing(`tile-${p.key}`),

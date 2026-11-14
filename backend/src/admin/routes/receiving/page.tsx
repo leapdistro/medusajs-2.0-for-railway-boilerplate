@@ -8,6 +8,7 @@ import {
   formatRelativeTime, type CoaState, type DraftRow, type SaveRowResult,
 } from "../../components/receiving-parts"
 import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../components/vendor-picker"
+import { ReceiveStock } from "../../components/receive-stock"
 
 /**
  * Receiving for every category (Phase 4c). One spreadsheet, built from
@@ -420,7 +421,7 @@ const CategoryReceivingPage = () => {
 
   const changeCategory = (next: string) => {
     if (next === selectedKey) return
-    if (draft && !confirm("Switching category clears the current receiving. Save a draft first if you need it. Continue?")) return
+    if ((draft || profile?.fields.brand) && !confirm("Switching category clears the current receiving. Save a draft first if you need it. Continue?")) return
     setDraft(null)
     setSelectedKey(next)
   }
@@ -450,6 +451,9 @@ const CategoryReceivingPage = () => {
         <Text style={{ color: "#B91C1C" }}>Couldn't load {listError ? "categories" : "this category"}: {listError ?? profileError}. Reload the page.</Text>
       ) : !profile ? (
         <Text className="text-ui-fg-subtle">{list && list.length === 0 ? "No categories are set up yet." : "Loading…"}</Text>
+      ) : profile.fields.brand ? (
+        /* Brands we resell: sizes, flavours and prices per product. */
+        <ReceiveStock key={profile.key} profileKey={profile.key} />
       ) : draft ? (
         <ReviewView
           key={`${profile.key}:${draft.draftId ?? "new"}`}
@@ -1041,7 +1045,7 @@ const ReviewView: React.FC<{
       cell: (row, i) => <Input type="number" step="0.01" value={row.unitPrice} onChange={(e) => updateRow(i, { unitPrice: Number(e.target.value) || 0 })} />,
     },
     ...(flat ? [{
-      id: "sell", width: 100, header: "Sell price",
+      id: "sell", width: 100, header: `Sell price / ${unit.singular}`,
       cell: (row: Row, i: number) => <Input type="number" step="0.01" value={row.sellPrice || ""} onChange={(e) => updateRow(i, { sellPrice: Number(e.target.value) || 0 })} />,
     }] : []),
     {

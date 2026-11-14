@@ -104,7 +104,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const [{ data: products }, tree] = await Promise.all([query.graph({
     entity: "product",
     fields: [
-      "id", "title", "handle", "thumbnail", "status", "created_at",
+      "id", "title", "handle", "thumbnail", "status", "created_at", "description",
       /* Read for custom_fields only — stripped before the response. */
       "metadata",
       "images.*",
@@ -112,6 +112,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       "variants.id", "variants.title", "variants.sku", "variants.weight",
       "variants.metadata",
       "variants.barcode",
+      /* Photos of one flavour / colour (Receive stock, admin Product
+       * Photos); the product page shows them when it's picked. */
+      "variants.thumbnail", "variants.images.url",
       "variants.manage_inventory",
       "variants.options.*", "variants.options.option.title",
       "variants.price_set.prices.amount", "variants.price_set.prices.currency_code",

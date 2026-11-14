@@ -204,7 +204,7 @@ export type SaveContext = {
  * the collection with that title in any case, else a new one (Medusa
  * makes its handle from the title). Looked up once per name per batch.
  */
-async function brandCollectionId(container: any, ctx: SaveContext, name: string): Promise<string> {
+export async function brandCollectionId(container: any, ctx: { brandIds?: Map<string, Promise<string>> }, name: string): Promise<string> {
   const key = name.trim().toLowerCase()
   ctx.brandIds ??= new Map()
   let id = ctx.brandIds.get(key)
@@ -396,12 +396,12 @@ export async function checkRow(
       priceError = `Sell price required for ${ctx.profile.displayName} row (per ${ctx.profile.inputUnitLabel.singular}).`
     } else {
       sellPrices = {}
+      /* The typed price is per received unit (a box); each size costs
+       * its share of stock units, so a Case of 24 boxes is 24 × the box
+       * price. A single box-sized variant gets the typed price as is. */
+      const perStockUnit = sp / (ctx.profile.inputToPoolMultiplier || 1)
       for (const v of getVariantsForRow(ctx.profile, row.tier)) {
-        /* Single-variant categories (pre-rolls): all variants get the
-         * same operator-typed sell price. Multi-variant flat-pricing
-         * categories aren't supported yet — they'd need per-variant
-         * price columns in the review grid. */
-        sellPrices[v.sizeKey] = sp
+        sellPrices[v.sizeKey] = Math.round(perStockUnit * (Number(v.multiplier) || 1) * 100) / 100
       }
     }
   }
