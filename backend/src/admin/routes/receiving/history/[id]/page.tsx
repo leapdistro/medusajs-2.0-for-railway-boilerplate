@@ -1,5 +1,6 @@
 import { Badge, Button, Container, Heading, Text, toast } from "@medusajs/ui"
 import { useEffect, useState } from "react"
+import { PrintLabelButton, usePrintable } from "../../../../components/print-labels"
 
 /**
  * Receiving history detail — full breakdown of one receiving record.
@@ -17,6 +18,8 @@ type LineResult = {
   productId?: string
   productHandle?: string
   inventoryItemId?: string
+  tierLabel?: string
+  poolUnitLabel?: string
   qtyQps: number              // pool units (QPs for flower, boxes for pre-roll)
   landedPerQp: number         // landed cost per pool unit
   /** Map of variant size-key → sell price. For flower has qp/half/lb keys;
@@ -54,6 +57,7 @@ const ReceivingHistoryDetailPage = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pushing, setPushing] = useState(false)
+  const printable = usePrintable(record?.line_results ?? [])
 
   const reload = () => {
     if (!id) return
@@ -186,6 +190,7 @@ const ReceivingHistoryDetailPage = () => {
               <Th align="right">Line Cost</Th>
               <Th align="right">Sell Prices</Th>
               <Th>Product</Th>
+              {printable?.format && <Th>Labels</Th>}
             </tr>
           </thead>
           <tbody>
@@ -222,6 +227,13 @@ const ReceivingHistoryDetailPage = () => {
                         ? <Text size="small" style={{ color: "#B91C1C" }}>{l.error}</Text>
                         : "—"}
                   </Td>
+                  {printable?.format && (
+                    <Td>
+                      {l.productId && printable.printable[l.productId] && l.poolUnitLabel
+                        ? <PrintLabelButton productId={l.productId} unit={l.poolUnitLabel} formatLabel={printable.format.label} qty={l.qtyQps} />
+                        : null}
+                    </Td>
+                  )}
                 </tr>
               )
             })}

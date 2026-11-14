@@ -9,6 +9,7 @@ import {
 } from "../../components/receiving-parts"
 import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "../../components/vendor-picker"
 import { ReceiveStock } from "../../components/receive-stock"
+import { ReceivedLabels } from "../../components/print-labels"
 
 /**
  * Receiving for every category (Phase 4c). One spreadsheet, built from
@@ -1174,6 +1175,7 @@ const ReviewView: React.FC<{
           <Button asChild variant="secondary"><a href="/app/products">Open Products</a></Button>
           <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>
         </div>
+        <ReceivedLabels historyId={saved.historyId} />
       </div>
     )
   }

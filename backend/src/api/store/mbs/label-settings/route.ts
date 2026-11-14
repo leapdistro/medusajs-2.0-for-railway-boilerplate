@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
 import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
+import { checkLabelToken } from "../../../../lib/label-link"
 
 /**
  * GET /store/mbs/label-settings
@@ -18,6 +19,11 @@ import { MBS_SETTINGS_MODULE } from "../../../../modules/mbs-settings"
  * page. It's checked HERE as well as on the storefront route so the
  * numbers never leave the backend for a buyer who shouldn't print.
  *
+ * An admin print link (receiving → Print labels) skips the three gates:
+ * the storefront sends its token as `x-mbs-label-token` with `?handle=`
+ * and `?format=`, and the answer holds only that one format and its
+ * barcodes. See lib/label-link.ts.
+ *
  * Archived formats are filtered out — they exist so a retired weight
  * keeps its barcodes, not so buyers keep printing it.
  */
@@ -25,6 +31,24 @@ const FORMATS_KEY = "label_formats"
 const BARCODES_KEY = "label_barcodes"
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
+  const token = String(req.headers["x-mbs-label-token"] ?? "")
+  if (token) {
+    const handle = String(req.query.handle ?? "")
+    const formatId = String(req.query.format ?? "")
+    if (!checkLabelToken(token, handle, formatId)) {
+      return res.status(403).json({ ok: false, message: "This print link has expired. Make a new one from admin." })
+    }
+    const { formats, barcodes } = await loadLabelSettings(req)
+    const only: Record<string, Record<string, Record<string, string>>> = {}
+    for (const [branch, tiers] of Object.entries(barcodes ?? {})) {
+      for (const [tier, byFormat] of Object.entries((tiers ?? {}) as Record<string, Record<string, string>>)) {
+        const v = byFormat?.[formatId]
+        if (v != null) ((only[branch] ??= {})[tier] ??= {})[formatId] = v
+      }
+    }
+    return res.json({ ok: true, formats: formats.filter((f: any) => f.id === formatId), barcodes: only })
+  }
+
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
   if (!customerId) {
     return res.status(401).json({ ok: false, message: "Sign in required" })
@@ -49,6 +73,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     return res.status(403).json({ ok: false, message: "Label printing is not enabled for this account" })
   }
 
+  const { formats, barcodes } = await loadLabelSettings(req)
+  return res.json({ ok: true, formats, barcodes })
+}
+
+async function loadLabelSettings(req: MedusaRequest) {
   const settings: any = req.scope.resolve(MBS_SETTINGS_MODULE)
   const [formatsRaw, barcodesRaw] = await Promise.all([
     settings.getSetting(FORMATS_KEY).catch(() => null),
@@ -69,9 +98,5 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     .filter((f: any) => f.width_in > 0 && f.height_in > 0)
     .sort((a: any, b: any) => a.order - b.order)
 
-  return res.json({
-    ok: true,
-    formats,
-    barcodes: barcodesRaw ?? {},
-  })
+  return { formats, barcodes: (barcodesRaw ?? {}) as Record<string, any> }
 }
