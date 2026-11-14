@@ -863,7 +863,15 @@ export async function appendBillLines(
       BillableStatus: "NotBillable",
     },
   }))
-  const body: any = { Id: current.Id, SyncToken: current.SyncToken, sparse: true, Line: [...kept, ...added] }
+  /* A Bill update needs VendorRef even when sparse (QBO 2020 otherwise). */
+  const body: any = {
+    Id: current.Id,
+    SyncToken: current.SyncToken,
+    sparse: true,
+    VendorRef: current.VendorRef,
+    ...(current.APAccountRef ? { APAccountRef: current.APAccountRef } : {}),
+    Line: [...kept, ...added],
+  }
   if (privateNote) body.PrivateNote = privateNote.slice(0, 4000)
   const updated = (await qboFetch(fresh, `/bill?minorversion=73`, { method: "POST", body: JSON.stringify(body) }))?.Bill
   if (!updated?.Id) throw new Error(`Bill update returned no Id`)
