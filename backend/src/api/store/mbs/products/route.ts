@@ -2,6 +2,11 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules, QueryContext } from "@medusajs/framework/utils"
 import { loadCategoryTree, productPath } from "../../../../lib/category-tree"
 import { storeBrand } from "../../../../lib/brand"
+import { cachedCatalog, catalogBodyWithStock, catalogFingerprint } from "../../../../lib/catalog-cache"
+import { gzip } from "zlib"
+import { promisify } from "util"
+
+const gzipAsync = promisify(gzip)
 
 /**
  * Custom Store route that returns products with the linked `product_attributes`
@@ -33,6 +38,11 @@ import { storeBrand } from "../../../../lib/brand"
  * its values for the extra fields those categories define. A third-party
  * product carries `brand` (its Medusa collection, with display settings
  * and colour shades; see lib/brand.ts), null for our own products.
+ *
+ * The full list and the index view are served from lib/catalog-cache.ts
+ * (rebuilt only when catalog data changes, stock read fresh on every
+ * response); handle lookups always run the query. Responses are gzipped
+ * when the caller accepts it (the full catalog is ~1.8 MB of JSON).
  *
  * Customer-group pricing (Distro, Owner Stores) — when called with a
  * customer Bearer token, the route resolves the customer's group
@@ -89,6 +99,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const indexView = req.query.view === "index"
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
   const pricingContext: Record<string, any> = { currency_code: "usd" }
+  let groupIds: string[] = []
   if (customerId && !indexView) {
     try {
       const customerService: any = req.scope.resolve(Modules.CUSTOMER)
@@ -96,7 +107,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         { id: [customerId] },
         { take: 1, relations: ["groups"] },
       )
-      const groupIds = ((customer?.groups ?? []) as Array<{ id?: string }>)
+      groupIds = ((customer?.groups ?? []) as Array<{ id?: string }>)
         .map((g) => g?.id)
         .filter((id): id is string => Boolean(id))
       if (groupIds.length > 0) {
@@ -108,82 +119,110 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   }
 
-  const [{ data: products }, tree] = await Promise.all([query.graph(indexView ? {
-    entity: "product",
-    fields: [
-      "id", "title", "handle", "status", "created_at",
-      "variants.id", "variants.manage_inventory",
-      "variants.inventory_items.required_quantity",
-      "variants.inventory_items.inventory.location_levels.stocked_quantity",
-      "variants.inventory_items.inventory.location_levels.reserved_quantity",
-      "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
-      "categories.parent_category.name", "categories.parent_category.handle",
-      "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
-      "collection.handle", "collection.title", "collection.metadata",
-    ],
-    filters,
-  } : {
-    entity: "product",
-    fields: [
-      "id", "title", "handle", "thumbnail", "status", "created_at", "description",
-      /* Read for custom_fields only — stripped before the response. */
-      "metadata",
-      "images.*",
-      "options.*", "options.values.*",
-      "variants.id", "variants.title", "variants.sku", "variants.weight",
-      "variants.metadata",
-      "variants.barcode",
-      /* Photos of one flavour / colour (Receive stock, admin Product
-       * Photos); the product page shows them when it's picked. */
-      "variants.thumbnail", "variants.images.url",
-      "variants.manage_inventory",
-      "variants.options.*", "variants.options.option.title",
-      "variants.price_set.prices.amount", "variants.price_set.prices.currency_code",
-      /* calculated_price reflects the customer-group-scoped PriceList
-       * (Distro / Owner Stores) when a customer context is provided.
-       * For anonymous callers it falls back to the default price. */
-      "variants.calculated_price.calculated_amount",
-      "variants.calculated_price.original_amount",
-      "variants.calculated_price.currency_code",
-      /* Pull inventory data so the storefront can render
-       * per-variant "X available" labels without a second
-       * round-trip. For pool products (Flower QP/½/LB sharing
-       * one inventory item via required_quantity), each variant's
-       * available is floor(stock / required_quantity). */
-      "variants.inventory_items.required_quantity",
-      "variants.inventory_items.inventory.id",
-      "variants.inventory_items.inventory.location_levels.stocked_quantity",
-      "variants.inventory_items.inventory.location_levels.reserved_quantity",
-      "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
-      /* Parent + grandparent names let the storefront resolve the
-       * top-level category from the real tree. Subcategory names are
-       * not unique across branches — "CBD" exists under Flower AND
-       * under Pre-Rolls — so a name-only guess misfiles products. */
-      "categories.parent_category.name", "categories.parent_category.handle",
-      "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
-      "product_attributes.*",
-      /* Brand = the product's collection (lib/brand.ts). */
-      "collection.handle", "collection.title", "collection.metadata",
-    ],
-    filters,
-    context: {
-      variants: {
-        calculated_price: QueryContext(pricingContext),
+  const build = async (): Promise<any[]> => {
+    const [{ data: products }, tree] = await Promise.all([query.graph(indexView ? {
+      entity: "product",
+      fields: [
+        "id", "title", "handle", "status", "created_at",
+        "variants.id", "variants.manage_inventory",
+        "variants.inventory_items.required_quantity", "variants.inventory_items.inventory_item_id",
+        "variants.inventory_items.inventory.location_levels.stocked_quantity",
+        "variants.inventory_items.inventory.location_levels.reserved_quantity",
+        "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
+        "categories.parent_category.name", "categories.parent_category.handle",
+        "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
+        "collection.handle", "collection.title", "collection.metadata",
+      ],
+      filters,
+    } : {
+      entity: "product",
+      fields: [
+        "id", "title", "handle", "thumbnail", "status", "created_at", "description",
+        /* Read for custom_fields only — stripped before the response. */
+        "metadata",
+        "images.*",
+        "options.*", "options.values.*",
+        "variants.id", "variants.title", "variants.sku", "variants.weight",
+        "variants.metadata",
+        "variants.barcode",
+        /* Photos of one flavour / colour (Receive stock, admin Product
+         * Photos); the product page shows them when it's picked. */
+        "variants.thumbnail", "variants.images.url",
+        "variants.manage_inventory",
+        "variants.options.*", "variants.options.option.title",
+        "variants.price_set.prices.amount", "variants.price_set.prices.currency_code",
+        /* calculated_price reflects the customer-group-scoped PriceList
+         * (Distro / Owner Stores) when a customer context is provided.
+         * For anonymous callers it falls back to the default price. */
+        "variants.calculated_price.calculated_amount",
+        "variants.calculated_price.original_amount",
+        "variants.calculated_price.currency_code",
+        /* Pull inventory data so the storefront can render
+         * per-variant "X available" labels without a second
+         * round-trip. For pool products (Flower QP/½/LB sharing
+         * one inventory item via required_quantity), each variant's
+         * available is floor(stock / required_quantity). */
+        "variants.inventory_items.required_quantity", "variants.inventory_items.inventory_item_id",
+        "variants.inventory_items.inventory.id",
+        "variants.inventory_items.inventory.location_levels.stocked_quantity",
+        "variants.inventory_items.inventory.location_levels.reserved_quantity",
+        "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
+        /* Parent + grandparent names let the storefront resolve the
+         * top-level category from the real tree. Subcategory names are
+         * not unique across branches — "CBD" exists under Flower AND
+         * under Pre-Rolls — so a name-only guess misfiles products. */
+        "categories.parent_category.name", "categories.parent_category.handle",
+        "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
+        "product_attributes.*",
+        /* Brand = the product's collection (lib/brand.ts). */
+        "collection.handle", "collection.title", "collection.metadata",
+      ],
+      filters,
+      context: {
+        variants: {
+          calculated_price: QueryContext(pricingContext),
+        },
       },
-    },
-  }), loadCategoryTree(query)])
+    }), loadCategoryTree(query)])
 
-  for (const p of products as any[]) {
-    const top = (p.categories ?? []).map((c: any) => tree.rootOf(c.id)).find(Boolean) ?? null
-    p.top_category = top ? { id: top.id, handle: top.handle, name: top.name } : null
-    p.category_path = productPath(tree, (p.categories ?? []).map((c: any) => c.id))
-    /* Values of the category-defined product fields (admin "Category
-     * fields"); the rest of product metadata stays private. */
-    p.custom_fields = p.metadata?.custom_fields ?? {}
-    delete p.metadata
-    p.brand = storeBrand(p.collection)
-    delete p.collection
+    for (const p of products as any[]) {
+      const top = (p.categories ?? []).map((c: any) => tree.rootOf(c.id)).find(Boolean) ?? null
+      p.top_category = top ? { id: top.id, handle: top.handle, name: top.name } : null
+      p.category_path = productPath(tree, (p.categories ?? []).map((c: any) => c.id))
+      /* Values of the category-defined product fields (admin "Category
+       * fields"); the rest of product metadata stays private. */
+      p.custom_fields = p.metadata?.custom_fields ?? {}
+      delete p.metadata
+      p.brand = storeBrand(p.collection)
+      delete p.collection
+    }
+    return products as any[]
   }
 
-  res.json({ products, count: products.length })
+  let body: string | null = null
+  if (!handleParam && statusParam === "published") {
+    try {
+      const key = indexView ? "index" : `full:${[...groupIds].sort().join(",") || "default"}`
+      const products = await cachedCatalog(key, await catalogFingerprint(req.scope), build)
+      body = await catalogBodyWithStock(req.scope, products)
+    } catch (e: any) {
+      console.warn(`[catalog-cache] serving uncached: ${e?.message ?? e}`)
+    }
+  }
+  if (body === null) {
+    const products = await build()
+    body = JSON.stringify({ products, count: products.length })
+  }
+  await send(req, res, body)
+}
+
+async function send(req: MedusaRequest, res: MedusaResponse, body: string) {
+  res.setHeader("Content-Type", "application/json; charset=utf-8")
+  res.setHeader("Vary", "Accept-Encoding")
+  if (body.length > 1024 && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+    res.setHeader("Content-Encoding", "gzip")
+    res.status(200).send(await gzipAsync(body, { level: 4 }))
+    return
+  }
+  res.status(200).send(body)
 }
