@@ -17,6 +17,12 @@ import { storeBrand } from "../../../../lib/brand"
  *                       (used by /account/orders/[id] to determine
  *                       which line items still link to a live PDP).
  *   - status: string  → defaults to "published"; pass "all" to include drafts
+ *   - view=index      → the light catalog index: categories, path, brand
+ *                       and stock only (no prices, photos, options or
+ *                       attributes). The same for every buyer, so the
+ *                       storefront caches it and picks products from it
+ *                       (product page cross-sells), then fetches the few
+ *                       it shows by handle with the buyer's prices.
  *
  * Each product carries `top_category` { id, handle, name }: the
  * top-level category above its assignments, read from the full tree, so
@@ -80,9 +86,10 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
    * and the calculate_price evaluator walks that nested shape. The
    * dotted form is the rule ATTRIBUTE on the PriceList, not the
    * context shape. Took two ships of slice 4 to learn this. */
+  const indexView = req.query.view === "index"
   const customerId = (req as unknown as { auth_context?: { actor_id?: string } }).auth_context?.actor_id
   const pricingContext: Record<string, any> = { currency_code: "usd" }
-  if (customerId) {
+  if (customerId && !indexView) {
     try {
       const customerService: any = req.scope.resolve(Modules.CUSTOMER)
       const [customer] = await customerService.listCustomers(
@@ -101,7 +108,21 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     }
   }
 
-  const [{ data: products }, tree] = await Promise.all([query.graph({
+  const [{ data: products }, tree] = await Promise.all([query.graph(indexView ? {
+    entity: "product",
+    fields: [
+      "id", "title", "handle", "status", "created_at",
+      "variants.id", "variants.manage_inventory",
+      "variants.inventory_items.required_quantity",
+      "variants.inventory_items.inventory.location_levels.stocked_quantity",
+      "variants.inventory_items.inventory.location_levels.reserved_quantity",
+      "categories.id", "categories.name", "categories.handle", "categories.parent_category_id", "categories.metadata",
+      "categories.parent_category.name", "categories.parent_category.handle",
+      "categories.parent_category.parent_category.name", "categories.parent_category.parent_category.handle",
+      "collection.handle", "collection.title", "collection.metadata",
+    ],
+    filters,
+  } : {
     entity: "product",
     fields: [
       "id", "title", "handle", "thumbnail", "status", "created_at", "description",
