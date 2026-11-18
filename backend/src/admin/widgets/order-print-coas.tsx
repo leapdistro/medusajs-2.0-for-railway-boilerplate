@@ -5,7 +5,11 @@ import { Button, Container, Heading, Text } from "@medusajs/ui"
 type OrderLite = { id: string; display_id?: number | null }
 
 /**
- * Order detail widget — Print All COAs and Print Packing Slip buttons.
+ * Order detail widget — Print Invoice, Print Packing Slip and Print All
+ * COAs buttons.
+ *
+ * Invoice: /admin/orders/:id/invoice redirects to the buyer's own invoice
+ * PDF on the storefront with a 30-minute signed link (see that route).
  *
  * Packing slip: /admin/orders/:id/packing-slip, a print-ready page with
  * each item's size, category, tier and quantity (no prices). It opens
@@ -30,19 +34,22 @@ const OrderPrintCoasWidget = ({ data }: DetailWidgetProps<OrderLite>) => {
 
   const href = `/admin/orders/${orderId}/coas-bundle`
   const slipHref = `/admin/orders/${orderId}/packing-slip`
+  const invoiceHref = `/admin/orders/${orderId}/invoice`
   const label = displayId != null ? `Order #${displayId}` : "this order"
 
   return (
     <Container className="divide-y p-0">
-      <div className="px-6 py-4 flex items-center justify-between gap-4">
-        <div>
+      <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+        <div style={{ flex: "1 1 240px" }}>
           <Heading level="h2">Print</Heading>
           <Text size="small" className="text-ui-fg-subtle">
-            COAs: combined PDF of every unique product&rsquo;s lab report from {label} — Cmd-P / Ctrl-P to print.
-            Packing slip: items, size, category, tier and quantity, no prices.
+            Invoice, packing slip and lab reports for {label}.
           </Text>
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex flex-wrap gap-2">
+          <a href={invoiceHref} target="_blank" rel="noopener noreferrer">
+            <Button variant="secondary">Print Invoice</Button>
+          </a>
           <a href={slipHref} target="_blank" rel="noopener noreferrer">
             <Button variant="secondary">Print Packing Slip</Button>
           </a>
