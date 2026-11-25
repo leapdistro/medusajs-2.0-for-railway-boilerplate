@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { issueAccountLink } from "../../../../../lib/account-link"
 import { pushCustomerToQbo } from "../../../../../lib/customer-to-qbo"
 
 const APPROVED_GROUP_NAME = (process.env.APPROVED_GROUP_NAME || "approved").toLowerCase()
@@ -8,10 +9,9 @@ const APPROVED_GROUP_NAME = (process.env.APPROVED_GROUP_NAME || "approved").toLo
  * POST /admin/customers/:id/approve-and-welcome
  *
  * Admin-triggered: ensures the customer is in the "approved" customer group
- * (idempotent — if already there, just resends the welcome) and triggers
- * Medusa's reset-password flow with `context.isWelcome=true`. The
- * password-reset subscriber catches the resulting auth.password_reset event
- * and emails the customer the welcome / set-password link.
+ * (idempotent — if already there, just resends the welcome) and emails a
+ * set-password link (lib/account-link.ts: 7 days, single use; sending a
+ * new one cancels the older link).
  *
  * Stamps `customer.metadata.welcomed_at` so the admin widget can render a
  * "Last sent" timestamp + flip its label between "Approve & Send Welcome"
@@ -80,60 +80,26 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
   }
 
-  // Set a `pending_welcome=true` flag on the customer's metadata BEFORE
-  // calling reset. The password-reset subscriber will read this flag to
-  // know this is a welcome (vs a normal /auth/forgot reset) and clear it
-  // after sending. We use metadata as the channel because Medusa's
-  // reset-password endpoint doesn't accept arbitrary context fields.
+  // Issue the welcome (activation) link: 7 days, single use, replaces any
+  // older link. Stamps welcomed_at / application_status in the same write.
+  // Replaces Medusa's reset-password flow, whose token expires in 15 min.
   const welcomedAt = new Date().toISOString()
+  let link: Awaited<ReturnType<typeof issueAccountLink>>
   try {
-    await customerService.updateCustomers(customer.id, {
-      metadata: {
-        ...(customer.metadata ?? {}),
-        pending_welcome: true,
-        welcomed_at: welcomedAt,
-        application_status: "approved",
-      },
+    link = await issueAccountLink(req.scope, customer, "activation", {
+      welcomed_at: welcomedAt,
+      application_status: "approved",
     })
   } catch (e: any) {
-    logger.warn(`[approve-and-welcome] could not stamp pending_welcome metadata: ${e?.message}`)
-    return res.status(500).json({ ok: false, message: "Could not flag pending welcome", groupAttached })
+    logger.warn(`[approve-and-welcome] could not create welcome link for ${customer.email}: ${e?.message}`)
+    return res.status(500).json({ ok: false, message: `Could not create the welcome link: ${e?.message ?? "unknown error"}`, groupAttached })
   }
-
-  // Trigger Medusa's reset-password flow. Server-to-server call; needs the
-  // store publishable key. MEDUSA_PUBLISHABLE_API_KEY must be set on
-  // Railway (same value as the storefront's NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY).
-  const baseUrl = process.env.MEDUSA_BACKEND_URL || `http://localhost:${process.env.PORT || 9000}`
-  const publishableKey = process.env.MEDUSA_PUBLISHABLE_API_KEY
-  if (!publishableKey) {
+  if (!link.emailSent) {
     return res.status(500).json({
       ok: false,
-      message: "MEDUSA_PUBLISHABLE_API_KEY env var is not set on the backend. Add it on Railway (same value as storefront's NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY).",
+      message: `${groupAttached ? "Approved, but the" : "The"} welcome email didn't send: ${link.emailError ?? "unknown error"}`,
       groupAttached,
     })
-  }
-
-  try {
-    const resetRes = await fetch(`${baseUrl}/auth/customer/emailpass/reset-password`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-publishable-api-key": publishableKey,
-      },
-      body: JSON.stringify({ identifier: customer.email }),
-    })
-    if (!resetRes.ok) {
-      const body = await resetRes.text().catch(() => "")
-      logger.warn(`[approve-and-welcome] reset-password failed for ${customer.email} (${resetRes.status}): ${body.slice(0, 200)}`)
-      return res.status(500).json({
-        ok: false,
-        message: `Could not trigger welcome email: ${resetRes.status} ${body.slice(0, 100)}`,
-        groupAttached,
-      })
-    }
-  } catch (e: any) {
-    logger.warn(`[approve-and-welcome] reset-password threw for ${customer.email}: ${e?.message}`)
-    return res.status(500).json({ ok: false, message: `Could not trigger welcome email: ${e?.message}`, groupAttached })
   }
 
   /* QBO Customer push — non-blocking. If QBO isn't configured, the
@@ -152,6 +118,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     email: customer.email,
     groupAttached,
     welcomedAt,
+    linkExpiresAt: link.expiresAt,
     qbo: qboResult,
   })
 }

@@ -7,6 +7,8 @@ export const PASSWORD_RESET = 'password-reset'
 export interface PasswordResetProps {
   resetUrl: string
   isWelcome?: boolean
+  /** How long the link works ("7 days", "1 hour"), from lib/account-link.ts ttlLabel(). */
+  validFor?: string
   preview?: string
 }
 
@@ -18,8 +20,10 @@ export const isPasswordResetData = (data: any): data is PasswordResetProps =>
 export const PasswordResetEmail = ({
   resetUrl,
   isWelcome = false,
+  validFor,
   preview,
 }: PasswordResetProps) => {
+  const validLine = validFor ? ` The link works for ${validFor} and can be used once.` : ''
   const previewLine = preview ?? (isWelcome
     ? 'Welcome to Mind Body Spirit — set your password to start ordering.'
     : 'Reset your Mind Body Spirit password.'
@@ -34,8 +38,8 @@ export const PasswordResetEmail = ({
 
       <P>
         {isWelcome
-          ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing. The link is good for 24 hours.'
-          : 'Click the button below to set a new password for your Mind Body Spirit wholesale account. The link is good for 24 hours.'}
+          ? 'Your Mind Body Spirit wholesale account is approved. Set your password using the button below to start ordering at wholesale pricing.' + validLine
+          : 'Click the button below to set a new password for your Mind Body Spirit wholesale account.' + validLine}
       </P>
 
       <PrimaryButton href={resetUrl}>
@@ -82,8 +86,9 @@ export const PasswordResetEmail = ({
 }
 
 PasswordResetEmail.PreviewProps = {
-  resetUrl: 'https://hempmbs.com/auth/reset?token=abc123def456ghi789jkl0mno1pqr2stu3vwx4yz5&email=test%40example.com',
+  resetUrl: 'https://hempmbs.com/auth/reset?token=cus_01EXAMPLE0000000000000000.abc123def456ghi789jkl0mno1pqr2stu3vwx4yz5',
   isWelcome: true,
+  validFor: '7 days',
 } as PasswordResetProps
 
 export default PasswordResetEmail

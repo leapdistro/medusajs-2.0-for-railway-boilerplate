@@ -83,6 +83,8 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
       const json = await res.json()
       if (!res.ok || !json?.ok) {
         toast.error(json?.message ?? `Failed (${res.status})`)
+        // The group may have been attached before the email failed.
+        await refresh()
         return
       }
       toast.success(
@@ -163,6 +165,25 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
       })}`
     : "Never sent"
 
+  /* Set-password link status (lib/account-link.ts): the one live link
+   * (welcome 7 days / forgot password 1 hour) and when the buyer last
+   * used one. Answers "my link expired" without guessing. */
+  const fmt = (iso?: string) => iso
+    ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : ""
+  const liveLink = customer?.metadata?.account_link as { purpose?: string; sent_at?: string; expires_at?: string } | null | undefined
+  const usedLink = customer?.metadata?.account_link_used as { purpose?: string; used_at?: string } | null | undefined
+  const linkKind = (p?: string) => (p === "reset" ? "Password reset link" : "Welcome link")
+  let linkLine: { text: string; tone: "ok" | "warn" | "muted" } | null = null
+  if (liveLink?.expires_at) {
+    const expired = Date.parse(liveLink.expires_at) <= Date.now()
+    linkLine = expired
+      ? { text: `${linkKind(liveLink.purpose)} expired ${fmt(liveLink.expires_at)}, not used. Resend sends a new one.`, tone: "warn" }
+      : { text: `${linkKind(liveLink.purpose)} sent ${fmt(liveLink.sent_at)} · works until ${fmt(liveLink.expires_at)} · not used yet`, tone: "muted" }
+  } else if (usedLink?.used_at) {
+    linkLine = { text: `Password set ${fmt(usedLink.used_at)} (${linkKind(usedLink.purpose).toLowerCase()})`, tone: "ok" }
+  }
+
   const errorAtFormatted = qboPushErrorAt
     ? new Date(qboPushErrorAt).toLocaleString(undefined, {
         month: "short", day: "numeric", year: "numeric",
@@ -181,6 +202,19 @@ const CustomerApproveWelcomeWidget = ({ data }: DetailWidgetProps<CustomerLite>)
               : "Add the customer to the \"approved\" group and send their first welcome / password-setup email."}
           </Text>
           <Text size="small" className="text-ui-fg-muted mt-1">{lastSentLine}</Text>
+          {linkLine ? (
+            <Text
+              size="small"
+              className="mt-1"
+              style={{
+                color: linkLine.tone === "warn"
+                  ? "var(--ui-tag-orange-text)"
+                  : linkLine.tone === "ok" ? "var(--ui-tag-green-text)" : "var(--ui-fg-muted)",
+              }}
+            >
+              {linkLine.text}
+            </Text>
+          ) : null}
         </div>
         <Button
           variant={inApproved ? "secondary" : "primary"}
