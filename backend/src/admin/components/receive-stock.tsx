@@ -3,6 +3,7 @@ import { QboBill } from "./qbo-bill"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { DraftCard, type DraftRow } from "./receiving-parts"
 import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from "./vendor-picker"
+import { AnnounceReceivingButton } from "./announce-receiving"
 
 /**
  * Receive stock (owner, 2026-11-14, modelled on Lightspeed X-Series):
@@ -772,6 +773,7 @@ export const ReceiveStock = ({ profileKey }: { profileKey: string }) => {
         <div className="flex gap-2 flex-wrap">
           {result.historyId && <QboBill historyId={result.historyId} />}
           {result.historyId && productIds.size > 0 && <Button asChild><a href={`/app/photos?receiving=${result.historyId}`}>Add Photos</a></Button>}
+          {result.historyId && productIds.size > 0 && <AnnounceReceivingButton historyId={result.historyId} />}
           {result.historyId && <Button asChild variant="secondary"><a href={`/app/receiving/history/${result.historyId}`}>Receiving record</a></Button>}
           {!result.ok && <Button variant="secondary" onClick={() => setResult(null)}>Back to the lines</Button>}
           <Button variant="secondary" onClick={() => { setResult(null); setLines([]); setHeader(blankHeader()); setDraftId(null); idemKey.current = uid("rs"); loadCatalog() }}>Receive another</Button>

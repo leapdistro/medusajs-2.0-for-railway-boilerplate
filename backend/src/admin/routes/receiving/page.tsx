@@ -11,6 +11,7 @@ import { VendorPicker, supplierReady, useQboVendors, type SupplierFields } from 
 import { ReceiveStock } from "../../components/receive-stock"
 import { ReceivedLabels } from "../../components/print-labels"
 import { QboBill } from "../../components/qbo-bill"
+import { AnnounceReceivingButton } from "../../components/announce-receiving"
 
 /**
  * Receiving for every category (Phase 4c). One spreadsheet, built from
@@ -1147,6 +1148,7 @@ const ReviewView: React.FC<{
         <div className="flex gap-2 mt-4 flex-wrap items-center">
           <QboBill historyId={saved.historyId} />
           <Button asChild variant="secondary"><a href={`/app/photos?receiving=${saved.historyId}`}>Add Photos</a></Button>
+          <AnnounceReceivingButton historyId={saved.historyId} />
           <Button asChild variant="secondary"><a href={`/app/receiving/history/${saved.historyId}`}>View in History</a></Button>
           <Button asChild variant="secondary"><a href="/app/products">Open Products</a></Button>
           <Button variant="transparent" onClick={onRestart}>Start New Receiving</Button>

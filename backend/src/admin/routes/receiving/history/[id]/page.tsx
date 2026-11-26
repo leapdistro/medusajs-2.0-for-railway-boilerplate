@@ -2,6 +2,7 @@ import { Badge, Button, Container, Heading, Text } from "@medusajs/ui"
 import { useEffect, useState } from "react"
 import { PrintLabelButton, usePrintable } from "../../../../components/print-labels"
 import { QboBill } from "../../../../components/qbo-bill"
+import { AnnounceReceivingButton } from "../../../../components/announce-receiving"
 
 /**
  * Receiving history detail — full breakdown of one receiving record.
@@ -99,7 +100,10 @@ const ReceivingHistoryDetailPage = () => {
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           {created + restocked > 0 && (
-            <Button asChild variant="secondary" size="small"><a href={`/app/photos?receiving=${record.id}`}>Add Photos</a></Button>
+            <>
+              <Button asChild variant="secondary" size="small"><a href={`/app/photos?receiving=${record.id}`}>Add Photos</a></Button>
+              <AnnounceReceivingButton historyId={record.id} size="small" />
+            </>
           )}
           {failed === 0
             ? <Badge color="green">{created} created · {restocked} restocked</Badge>
