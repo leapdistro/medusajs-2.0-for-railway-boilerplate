@@ -26,11 +26,16 @@ export type ProductsBlock = {
   max?: number
 }
 export type SpacerBlock = { id: string; type: "spacer"; size: "s" | "m" | "l" }
+/** The home page's promise (FlowerPromise.tsx): an italic line, then
+ *  big ticked points on the strip colour. */
+export type PromiseBlock = { id: string; type: "promise"; intro: string; items: string[] }
 
-export type Block = HeadingBlock | TextBlock | ButtonBlock | ImageBlock | ProductsBlock | SpacerBlock
+export const DEFAULT_PROMISE = { intro: "products that increase:", items: ["Store Traffic", "Repeat Customers", "Shelf Appeal"] }
+
+export type Block = HeadingBlock | TextBlock | ButtonBlock | ImageBlock | ProductsBlock | SpacerBlock | PromiseBlock
 export type BlockType = Block["type"]
 
-export const BLOCK_TYPES: BlockType[] = ["heading", "text", "button", "image", "products", "spacer"]
+export const BLOCK_TYPES: BlockType[] = ["heading", "text", "button", "image", "products", "promise", "spacer"]
 export const MAX_BLOCKS = 40
 export const MAX_PRODUCTS_PER_BLOCK = 24
 
@@ -83,6 +88,11 @@ export function sanitizeBlock(raw: any): Block | null {
         showPrices: raw.showPrices !== false,
         ...(fill ? { fill, max } : {}),
       }
+    }
+    case "promise": {
+      const items = (Array.isArray(raw.items) ? raw.items : [])
+        .map((x: unknown) => str(x, 40).trim()).filter(Boolean).slice(0, 5) as string[]
+      return { ...base, type: "promise", intro: str(raw.intro, 80), items }
     }
     case "spacer":
       return { ...base, type: "spacer", size: raw.size === "s" || raw.size === "l" ? raw.size : "m" }

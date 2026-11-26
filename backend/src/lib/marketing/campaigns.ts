@@ -1,4 +1,4 @@
-import { EMPTY_AUDIENCE, sanitizeAudience, sanitizeBlocks, type Block } from "./blocks"
+import { DEFAULT_PROMISE, EMPTY_AUDIENCE, sanitizeAudience, sanitizeBlocks, type Block } from "./blocks"
 import { senderStatus } from "./sender"
 import { loadEmailProducts, type EmailProduct } from "./products"
 
@@ -11,6 +11,7 @@ export function starterBlocks(): Block[] {
     { id: uid(), type: "text", text: "Hi {{first_name}},\n\nFresh from our latest delivery and ready to ship next day." },
     { id: uid(), type: "products", title: "New this week", productIds: [], layout: "grid", showPrices: true },
     { id: uid(), type: "button", label: "Shop new arrivals", url: "/products" },
+    { id: uid(), type: "promise", ...DEFAULT_PROMISE, items: [...DEFAULT_PROMISE.items] },
   ]
 }
 
@@ -68,6 +69,7 @@ export function builtinReceivingTemplate() {
       { id: uid(), type: "products", title: "New arrivals", productIds: [], layout: "grid", showPrices: true, fill: "new", max: 8 },
       { id: uid(), type: "products", title: "Back in stock", productIds: [], layout: "grid", showPrices: true, fill: "restock", max: 4 },
       { id: uid(), type: "button", label: "Shop new arrivals", url: "/products?sort=new" },
+      { id: uid(), type: "promise", ...DEFAULT_PROMISE, items: [...DEFAULT_PROMISE.items] },
     ] as Block[],
   }
 }

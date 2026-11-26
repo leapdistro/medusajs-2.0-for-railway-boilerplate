@@ -39,9 +39,11 @@ const TIER_COLORS: Record<string, EmailProduct["colors"]> = {
 }
 const NEUTRAL: EmailProduct["colors"] = { swatch: "#414738", surface: "#ECEDDF", edge: "#B5AF99" }
 
-/* Photo hosts the storefront's image resizer accepts (storefront
- * src/lib/media-hosts.ts MEDIA_HOSTS). Photos there load as a 640px copy;
- * anything else loads as is. */
+/* Photo hosts the storefront's email image route accepts (storefront
+ * src/lib/media-hosts.ts MEDIA_HOSTS). Photos there load as a 640px
+ * square JPEG cropped like the site's product cards (storefront
+ * /api/email-img; email clients can't crop, so tall photos made cards of
+ * different heights); anything else loads as is. */
 const MEDIA_HOSTS = (process.env.MARKETING_IMAGE_HOSTS || "bucket-production-c5c0.up.railway.app")
   .split(",").map((s) => s.trim()).filter(Boolean)
 
@@ -52,7 +54,7 @@ export function emailImage(src: string | null | undefined, width = 640): string 
   try {
     const u = new URL(src)
     if (!MEDIA_HOSTS.includes(u.hostname)) return src
-    return `${storefrontBase()}/_next/image?url=${encodeURIComponent(src)}&w=${width}&q=80`
+    return `${storefrontBase()}/api/email-img?u=${encodeURIComponent(src)}&w=${width <= 320 ? 320 : 640}`
   } catch {
     return null
   }

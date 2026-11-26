@@ -10,7 +10,7 @@ import { PickedProducts, ProductPicker } from "./product-picker"
  */
 
 const LABEL: Record<Block["type"], string> = {
-  heading: "Heading", text: "Text", products: "Products", button: "Button", image: "Image", spacer: "Space",
+  heading: "Heading", text: "Text", products: "Products", button: "Button", image: "Image", promise: "Promise", spacer: "Space",
 }
 
 export function newBlock(type: Block["type"]): Block {
@@ -21,6 +21,7 @@ export function newBlock(type: Block["type"]): Block {
     case "button": return { id: uid(), type, label: "Shop now", url: "/products" }
     case "image": return { id: uid(), type, url: "", alt: "" }
     case "spacer": return { id: uid(), type, size: "m" }
+    case "promise": return { id: uid(), type, intro: "products that increase:", items: ["Store Traffic", "Repeat Customers", "Shelf Appeal"] }
   }
 }
 
@@ -143,6 +144,17 @@ function BlockForm({ block, onChange, templateMode }: { block: Block; onChange: 
           {picking ? (
             <ProductPicker selected={block.productIds} onClose={() => setPicking(false)} onDone={(productIds) => { onChange({ ...block, productIds }); setPicking(false) }} />
           ) : null}
+        </div>
+      )
+    case "promise":
+      return (
+        <div className="flex flex-col gap-3">
+          <Field label="Line above" hint="Small italic line, like the home page's.">
+            <Input value={block.intro} onChange={(e) => onChange({ ...block, intro: e.target.value })} placeholder="products that increase:" />
+          </Field>
+          <Field label="Points" hint="One per line, up to 5. Each gets a tick.">
+            <Textarea rows={3} value={block.items.join("\n")} onChange={(e) => onChange({ ...block, items: e.target.value.split("\n").slice(0, 5) })} />
+          </Field>
         </div>
       )
     case "spacer":

@@ -225,6 +225,30 @@ function Products({ block, products, campaignId, showPrices }: { block: Products
   )
 }
 
+/** The home page's promise section (storefront FlowerPromise.tsx /
+ *  .flower-promise): strip panel, italic Fraunces line, then each point
+ *  in heavy Fraunces led by the site's tick. */
+function PromiseBand({ intro, items }: { intro: string; items: string[] }) {
+  return (
+    <table role="presentation" cellPadding={0} cellSpacing={0} border={0} width="100%" style={{ margin: "6px 0 18px", backgroundColor: C.strip, borderRadius: "7px" }}>
+      <tbody>
+        <tr>
+          <td align="center" style={{ padding: "26px 16px 28px", textAlign: "center" }}>
+            {intro.trim() ? (
+              <Text style={{ margin: "0 0 10px", fontFamily: SERIF, fontStyle: "italic", fontWeight: 560, fontSize: "24px", lineHeight: "1.1", letterSpacing: "-0.03em", color: C.ink }}>{intro}</Text>
+            ) : null}
+            {items.map((it, i) => (
+              <Text key={i} style={{ margin: "2px 0 0", fontFamily: SERIF, fontWeight: 820, fontSize: "30px", lineHeight: "1.12", letterSpacing: "-0.05em", color: C.ink }}>
+                <span style={{ fontFamily: SANS, fontWeight: 750, fontSize: "21px", letterSpacing: "0", marginRight: "10px", verticalAlign: "2px" }}>✓</span>{it}
+              </Text>
+            ))}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  )
+}
+
 function BlockView({ b, input }: { b: Block; input: RenderInput }) {
   const cid = input.campaignId
   switch (b.type) {
@@ -241,6 +265,8 @@ function BlockView({ b, input }: { b: Block; input: RenderInput }) {
     }
     case "products":
       return <Products block={b} products={input.products} campaignId={cid} showPrices={input.showPrices !== false} />
+    case "promise":
+      return b.items.length ? <PromiseBand intro={b.intro} items={b.items} /> : null
     case "spacer":
       return <div style={{ height: b.size === "s" ? "8px" : b.size === "l" ? "40px" : "20px" }} />
   }

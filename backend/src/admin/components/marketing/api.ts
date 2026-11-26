@@ -7,6 +7,7 @@ export type Block =
   | { id: string; type: "image"; url: string; alt: string; link?: string }
   | { id: string; type: "products"; title?: string; productIds: string[]; layout: "grid" | "list"; showPrices: boolean; fill?: "new" | "restock"; max?: number }
   | { id: string; type: "spacer"; size: "s" | "m" | "l" }
+  | { id: string; type: "promise"; intro: string; items: string[] }
 
 export type Audience = {
   mode: "all" | "filter" | "pick"
