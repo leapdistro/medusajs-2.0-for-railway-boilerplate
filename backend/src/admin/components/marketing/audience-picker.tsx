@@ -36,10 +36,19 @@ export function AudiencePicker({ audience, onChange, customers, readOnly }: {
     return () => { cancelled = true; clearTimeout(t) }
   }, [JSON.stringify(audience)])
 
+  /* In Filter mode the list shows only who the filter matches (same rule
+   * as lib/marketing/audience.ts matchesAudience), so unticking is about
+   * the people actually in the audience. */
   const shown = useMemo(() => {
+    const inFilter = (c: MarketingCustomer) =>
+      audience.mode !== "filter" || (
+        (!audience.pricingModes.length || audience.pricingModes.includes(c.pricingMode)) &&
+        (!audience.states.length || audience.states.includes(c.state)) &&
+        (!audience.businessTypes.length || audience.businessTypes.includes(c.businessType))
+      )
     const s = q.trim().toLowerCase()
-    return s ? customers.filter((c) => `${c.company} ${c.name} ${c.email} ${c.state}`.toLowerCase().includes(s)) : customers
-  }, [customers, q])
+    return customers.filter((c) => inFilter(c) && (!s || `${c.company} ${c.name} ${c.email} ${c.state}`.toLowerCase().includes(s)))
+  }, [customers, q, audience.mode, audience.pricingModes.join(), audience.states.join(), audience.businessTypes.join()])
 
   const set = (patch: Partial<Audience>) => onChange({ ...audience, ...patch })
   const picking = audience.mode === "pick"
