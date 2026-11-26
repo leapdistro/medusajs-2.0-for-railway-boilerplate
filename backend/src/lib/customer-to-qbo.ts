@@ -85,10 +85,14 @@ export async function pushCustomerToQbo(
     /* Clear any stale error flag — we're fully synced. */
     if (meta.qbo_push_error) {
       try {
-        const cleared = { ...meta }
-        delete cleared.qbo_push_error
-        delete cleared.qbo_push_error_at
-        cleared.qbo_pushed_at = new Date().toISOString()
+        /* null, not delete: updateCustomers MERGES metadata, so a deleted
+         * key keeps its stored value (the error never cleared before). */
+        const cleared = {
+          ...meta,
+          qbo_push_error: null,
+          qbo_push_error_at: null,
+          qbo_pushed_at: new Date().toISOString(),
+        }
         await customerService.updateCustomers(customer.id, { metadata: cleared })
       } catch {
         /* Non-fatal — widget will show the stale error briefly. */
@@ -183,11 +187,12 @@ export async function pushCustomerToQbo(
       ...(licenseAttachmentId ? { qbo_license_attachment_id: licenseAttachmentId } : {}),
       ...(allAttachmentsDone  ? { qbo_attachments_pushed_at: new Date().toISOString() } : {}),
       qbo_pushed_at: new Date().toISOString(),
+      /* Clear any prior error — the push succeeded. null, not delete:
+       * updateCustomers MERGES metadata, so a deleted key keeps its stored
+       * value and the widget kept showing a fixed error. */
+      qbo_push_error: null,
+      qbo_push_error_at: null,
     }
-    /* Clear any prior error — the push succeeded. Use delete so the
-     * widget's `!!metadata.qbo_push_error` check evaluates false. */
-    delete nextMeta.qbo_push_error
-    delete nextMeta.qbo_push_error_at
     await customerService.updateCustomers(customer.id, { metadata: nextMeta })
 
     return { state: "synced", qboCustomerId, created }
