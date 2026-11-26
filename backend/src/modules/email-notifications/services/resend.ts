@@ -93,20 +93,30 @@ export class ResendNotificationService extends AbstractNotificationProviderServi
       scheduledAt: emailOptions.scheduledAt
     }
 
-    // Send the email via Resend
+    // Send the email via Resend. The SDK reports a rejected email (bad
+    // domain, invalid address, rate limit, suspended account) as
+    // `{ error }` and does NOT throw; only network failures throw. Both
+    // must fail the notification, or callers report "sent" for an email
+    // that never left (until 2026-11-25 every rejection was logged as
+    // "Successfully sent").
+    let result: Awaited<ReturnType<Resend['emails']['send']>>
     try {
-      await this.resend.emails.send(message)
-      this.logger_.log(
-        `Successfully sent "${notification.template}" email to ${notification.to} via Resend`
-      )
-      return {} // Return an empty object on success
-    } catch (error) {
-      const errorCode = error.code
-      const responseError = error.response?.body?.errors?.[0]
+      result = await this.resend.emails.send(message)
+    } catch (error: any) {
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        `Failed to send "${notification.template}" email to ${notification.to} via Resend: ${errorCode} - ${responseError?.message ?? 'unknown error'}`
+        `Failed to send "${notification.template}" email to ${notification.to} via Resend: ${error?.name ?? 'network error'} - ${error?.message ?? 'unknown error'}`
       )
     }
+    if (result?.error || !result?.data?.id) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        `Resend rejected "${notification.template}" email to ${notification.to}: ${result?.error?.name ?? 'error'} - ${result?.error?.message ?? 'no message id returned'}`
+      )
+    }
+    this.logger_.log(
+      `Sent "${notification.template}" email to ${notification.to} via Resend (${result.data.id})`
+    )
+    return { id: result.data.id }
   }
 }
