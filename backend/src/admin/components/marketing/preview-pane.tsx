@@ -15,6 +15,8 @@ export function PreviewPane({ campaignId, subject, preheader, blocks, customers 
   const [viewAs, setViewAs] = useState("")
   const [unavailable, setUnavailable] = useState<Array<{ id: string; title: string }>>([])
   const [busy, setBusy] = useState(false)
+  /* As rendered (templates fill receiving words with sample numbers). */
+  const [shown, setShown] = useState<{ subject: string; preheader: string } | null>(null)
   const seq = useRef(0)
 
   useEffect(() => {
@@ -22,11 +24,14 @@ export function PreviewPane({ campaignId, subject, preheader, blocks, customers 
     const t = setTimeout(async () => {
       setBusy(true)
       try {
-        const r = await api<{ html: string; unavailable: Array<{ id: string; title: string }> }>(
+        const r = await api<{ html: string; unavailable: Array<{ id: string; title: string }>; subject?: string; preheader?: string }>(
           `/admin/marketing/campaigns/${campaignId}/preview`,
           { body: { subject, preheader, blocks, viewAs: viewAs || undefined } },
         )
-        if (mine === seq.current) { setHtml(r.html); setUnavailable(r.unavailable) }
+        if (mine === seq.current) {
+          setHtml(r.html); setUnavailable(r.unavailable)
+          setShown(typeof r.subject === "string" ? { subject: r.subject, preheader: r.preheader ?? "" } : null)
+        }
       } catch {
         /* keep the last frame */
       } finally {
@@ -61,8 +66,8 @@ export function PreviewPane({ campaignId, subject, preheader, blocks, customers 
       </div>
 
       <div className="rounded-md border border-ui-border-base bg-ui-bg-subtle px-3 py-2">
-        <Text size="small" weight="plus" className="truncate">{subject || <span className="text-ui-fg-muted">No subject yet</span>}</Text>
-        <Text size="xsmall" className="text-ui-fg-subtle truncate">{preheader || "No preview line"}</Text>
+        <Text size="small" weight="plus" className="truncate">{(shown?.subject ?? subject) || <span className="text-ui-fg-muted">No subject yet</span>}</Text>
+        <Text size="xsmall" className="text-ui-fg-subtle truncate">{(shown?.preheader ?? preheader) || "No preview line"}</Text>
       </div>
 
       {unavailable.length ? (

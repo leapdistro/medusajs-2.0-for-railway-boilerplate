@@ -19,6 +19,11 @@ export type ProductsBlock = {
   productIds: string[]
   layout: "grid" | "list"
   showPrices: boolean
+  /** Templates only: filled from the receiving being announced
+   *  ("new" = products it created, "restock" = products it restocked),
+   *  up to `max`, picked by campaigns.ts pickFeatured. */
+  fill?: "new" | "restock"
+  max?: number
 }
 export type SpacerBlock = { id: string; type: "spacer"; size: "s" | "m" | "l" }
 
@@ -67,6 +72,8 @@ export function sanitizeBlock(raw: any): Block | null {
       const productIds = [...new Set(ids.filter((x: unknown) => typeof x === "string" && /^prod_[A-Za-z0-9]{6,64}$/.test(x as string)))]
         .slice(0, MAX_PRODUCTS_PER_BLOCK) as string[]
       const title = str(raw.title, 120)
+      const fill = raw.fill === "new" || raw.fill === "restock" ? raw.fill : undefined
+      const max = Math.min(MAX_PRODUCTS_PER_BLOCK, Math.max(1, Math.round(Number(raw.max) || 8)))
       return {
         ...base,
         type: "products",
@@ -74,6 +81,7 @@ export function sanitizeBlock(raw: any): Block | null {
         productIds,
         layout: raw.layout === "list" ? "list" : "grid",
         showPrices: raw.showPrices !== false,
+        ...(fill ? { fill, max } : {}),
       }
     }
     case "spacer":

@@ -8,7 +8,9 @@ import { model } from "@medusajs/framework/utils"
  * when sending starts.
  *
  * status: draft → scheduled → sending → sent, or cancelled (a scheduled
- * one called off) / failed (sending stopped with an error).
+ * one called off) / failed (sending stopped with an error). A saved
+ * template is status "template" (never sendable); template_role
+ * "receiving" marks the one "Announce this receiving" starts from.
  */
 export const MarketingCampaign = model.define("marketing_campaign", {
   id: model.id({ prefix: "mcam" }).primaryKey(),
@@ -29,6 +31,7 @@ export const MarketingCampaign = model.define("marketing_campaign", {
   source: model.json().nullable(),
   created_by: model.text().nullable(),
   last_test_at: model.text().nullable(),
+  template_role: model.text().nullable(),
   /* Send lock: the job that's sending holds it until this time. */
   locked_until: model.text().nullable(),
 })

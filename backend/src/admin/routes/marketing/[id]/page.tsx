@@ -1,4 +1,4 @@
-import { Badge, Button, Container, Heading, Input, Label, Text, toast } from "@medusajs/ui"
+import { Badge, Button, Container, Heading, Input, Label, Switch, Text, toast } from "@medusajs/ui"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, fmtDate, STATUS_LABEL, type AudienceInfo, type Campaign, type MarketingCustomer, type Sending } from "../../../components/marketing/api"
 import { AudiencePicker } from "../../../components/marketing/audience-picker"
@@ -31,6 +31,10 @@ const STEPS: Step[] = [
   { key: "subject", label: "Subject", hint: "How it looks in the inbox" },
   { key: "review", label: "Review & send", hint: "Check, test, send" },
 ]
+/* A template has the same first three steps and ends on its settings. */
+const TEMPLATE_STEPS: Step[] = [...STEPS.slice(0, 3), { key: "template", label: "Template", hint: "When it's used" }]
+
+const TOKEN_HELP = "Receiving words: {{products}} becomes \"23 new products\" (or \"9 products back in stock\"), {{new_count}} and {{restock_count}} the numbers. They fill in when a receiving's draft is made."
 
 const idFromPath = () => decodeURIComponent(window.location.pathname.split("/").filter(Boolean).pop() ?? "")
 const stepFromHash = () => {
@@ -75,7 +79,8 @@ const CampaignEditorPage = () => {
     api<{ customers: MarketingCustomer[] }>("/admin/marketing/customers").then((r) => setCustomers(r.customers)).catch(() => {})
   }, [])
 
-  const editable = c?.status === "draft"
+  const isTemplate = c?.status === "template"
+  const editable = c?.status === "draft" || isTemplate
 
   /* Autosave drafts. */
   useEffect(() => {
@@ -141,6 +146,23 @@ const CampaignEditorPage = () => {
   }
 
   const st = STATUS_LABEL[c.status] ?? STATUS_LABEL.draft
+  const steps = isTemplate ? TEMPLATE_STEPS : STEPS
+
+  const saveAsTemplate = async () => {
+    try {
+      const r = await api<{ campaign: Campaign }>("/admin/marketing/templates", { body: { fromCampaignId: c.id } })
+      toast.success("Saved as a template")
+      window.location.href = `/app/marketing/${r.campaign.id}`
+    } catch (e: any) { toast.error(e?.message ?? "Couldn't save the template") }
+  }
+
+  const setRole = async (on: boolean) => {
+    try {
+      await api(`/admin/marketing/campaigns/${c.id}`, { body: { template_role: on ? "receiving" : null } })
+      setC((prev) => (prev ? { ...prev, template_role: on ? "receiving" : null } : prev))
+      toast.success(on ? "Receiving drafts will use this template" : "Receiving drafts will use the built-in wording")
+    } catch (e: any) { toast.error(e?.message ?? "Couldn't change it") }
+  }
   const sendingReady = detail.sending.ready
   const src = c.source as any
 
@@ -155,7 +177,7 @@ const CampaignEditorPage = () => {
   const header = (
     <Container className="p-0">
       <div className="flex items-center gap-3 px-6 py-4 flex-wrap">
-        <a href="/app/marketing" className="text-ui-fg-subtle txt-compact-small">← Marketing</a>
+        <a href={isTemplate ? "/app/marketing#templates" : "/app/marketing"} className="text-ui-fg-subtle txt-compact-small">← {isTemplate ? "Templates" : "Marketing"}</a>
         <div style={{ flex: 1, minWidth: 240 }}>
           {editable
             ? <Input value={c.name} onChange={(e) => edit({ name: e.target.value })} aria-label="Campaign name" />
@@ -169,19 +191,20 @@ const CampaignEditorPage = () => {
         ) : null}
         {c.status === "scheduled" ? <Button variant="secondary" onClick={() => action("cancel", "Unscheduled, back to draft")}>Unschedule</Button> : null}
         {c.status === "sending" ? <Button variant="danger" onClick={() => window.confirm("Stop sending? Emails already sent can't be recalled.") && action("cancel", "Stopped")}>Stop</Button> : null}
+        {!isTemplate ? <Button variant="secondary" onClick={saveAsTemplate}>Save as template</Button> : null}
         <Button variant="secondary" onClick={() => action("duplicate", "Duplicated", (r) => { window.location.href = `/app/marketing/${r.campaign.id}` })}>Duplicate</Button>
         {editable || c.status === "cancelled" ? <Button variant="transparent" onClick={remove}>Delete</Button> : null}
       </div>
       {editable ? (
         <div className="px-6 pb-5">
-          <StepBar steps={STEPS} current={step} reached={reached} onPick={setStep} />
+          <StepBar steps={steps} current={step} reached={reached} onPick={setStep} />
         </div>
       ) : null}
-      {editable && src?.type === "receiving" && step === 0 ? (
+      {editable && src?.type === "receiving" ? (
         <div className="px-6 py-2 border-t border-ui-border-base">
           <Text size="small" className="text-ui-fg-subtle">
             From receiving <a className="underline" href={`/app/receiving/history/${src.id}`}>{src.invoice || src.id}</a>
-            {typeof src.newTotal === "number" ? `: featuring ${src.featuredNew} of ${src.newTotal} new product${src.newTotal === 1 ? "" : "s"}${src.restockTotal ? ` and ${src.featuredRestock} of ${src.restockTotal} restocked` : ""}, varied across tiers. "See all" links to the full list on the site. Swap any with Add products.` : "."}
+            {typeof src.newTotal === "number" ? `: featuring ${src.featuredNew} of ${src.newTotal} new product${src.newTotal === 1 ? "" : "s"}${src.restockTotal ? ` and ${src.featuredRestock} of ${src.restockTotal} restocked` : ""}, varied across tiers, from ${src.templateId ? "your receiving template" : "the built-in wording"}.${src.auto ? " Made automatically when the receiving was saved." : ""} Everything is filled in: check the preview and send, or change anything in the steps above.` : "."}
           </Text>
         </div>
       ) : null}
@@ -192,8 +215,8 @@ const CampaignEditorPage = () => {
     <Container className="flex items-center gap-3 px-6 py-4">
       {step > 0 ? <Button variant="secondary" onClick={() => setStep(step - 1)}>Back</Button> : null}
       <Text size="small" className="text-ui-fg-subtle" style={{ flex: 1, textAlign: "right" }}>{stepBlock[step] ?? ""}</Text>
-      {step < STEPS.length - 1 ? (
-        <Button onClick={() => setStep(step + 1)} disabled={!!stepBlock[step]}>Continue to {STEPS[step + 1].label}</Button>
+      {step < steps.length - 1 ? (
+        <Button onClick={() => setStep(step + 1)} disabled={!!stepBlock[step]}>Continue to {steps[step + 1].label}</Button>
       ) : null}
     </Container>
   ) : null
@@ -246,8 +269,9 @@ const CampaignEditorPage = () => {
             <div>
               <Heading level="h2">Content</Heading>
               <Text size="small" className="text-ui-fg-subtle">Pick words, products and pictures; the brand look is automatic.</Text>
+              {isTemplate ? <Text size="xsmall" className="text-ui-fg-muted mt-1">{TOKEN_HELP} The preview shows your newest products and sample numbers.</Text> : null}
             </div>
-            <BlockEditor blocks={c.blocks} onChange={(blocks) => edit({ blocks })} />
+            <BlockEditor blocks={c.blocks} onChange={(blocks) => edit({ blocks })} templateMode={isTemplate} />
           </Container>
           {preview}
         </div>
@@ -280,6 +304,7 @@ const CampaignEditorPage = () => {
               <Input value={c.preheader} onChange={(e) => edit({ preheader: e.target.value })} placeholder="Ready to ship tomorrow. Lab reports on every batch." />
               <Text size="xsmall" className="text-ui-fg-muted">Shown after the subject in most inboxes. Optional.</Text>
             </div>
+            {isTemplate ? <Text size="xsmall" className="text-ui-fg-muted">{TOKEN_HELP}</Text> : null}
           </Container>
           <Container className="px-6 py-5">
             <Text size="xsmall" weight="plus" className="text-ui-fg-muted mb-2">IN THE INBOX</Text>
@@ -311,7 +336,29 @@ const CampaignEditorPage = () => {
         </div>
       ) : null}
 
-      {step === 3 ? (
+      {step === 3 && isTemplate ? (
+        <Container className="px-6 py-5 flex flex-col gap-4" style={{ maxWidth: 720, width: "100%", margin: "0 auto" }}>
+          <div>
+            <Heading level="h2">Template</Heading>
+            <Text size="small" className="text-ui-fg-subtle">Templates are never sent. Campaigns start from them.</Text>
+          </div>
+          <div className="flex items-start gap-3 rounded-md border border-ui-border-base p-3">
+            <div style={{ flex: "0 0 auto", paddingTop: 2 }}><Switch checked={c.template_role === "receiving"} onCheckedChange={setRole} /></div>
+            <div>
+              <Text size="small" weight="plus">Use for receiving announcements</Text>
+              <Text size="small" className="text-ui-fg-subtle">
+                Every saved receiving gets a draft made from this template, with its products put into the blocks set to "Receiving's new" / "Receiving's restocked" and the receiving words filled in. The admin bell says when one is ready. Nothing is sent until you send it. Only one template can do this.
+              </Text>
+            </div>
+          </div>
+          <div className="rounded-md bg-ui-bg-subtle px-3 py-2">
+            <Text size="small">Also available under New campaign, as a starting point for any email.</Text>
+          </div>
+          <div><Button onClick={() => { window.location.href = "/app/marketing#templates" }} disabled={saveState !== "saved"}>Done</Button></div>
+        </Container>
+      ) : null}
+
+      {step === 3 && !isTemplate ? (
         <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(340px, 420px) minmax(0, 1fr)", alignItems: "start" }}>
           <Container className="px-6 py-5 flex flex-col gap-4">
             <div>

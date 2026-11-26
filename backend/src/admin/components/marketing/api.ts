@@ -5,7 +5,7 @@ export type Block =
   | { id: string; type: "text"; text: string }
   | { id: string; type: "button"; label: string; url: string }
   | { id: string; type: "image"; url: string; alt: string; link?: string }
-  | { id: string; type: "products"; title?: string; productIds: string[]; layout: "grid" | "list"; showPrices: boolean }
+  | { id: string; type: "products"; title?: string; productIds: string[]; layout: "grid" | "list"; showPrices: boolean; fill?: "new" | "restock"; max?: number }
   | { id: string; type: "spacer"; size: "s" | "m" | "l" }
 
 export type Audience = {
@@ -24,7 +24,7 @@ export type Campaign = {
   preheader: string
   blocks: Block[]
   audience: Audience
-  status: "draft" | "scheduled" | "sending" | "sent" | "cancelled" | "failed"
+  status: "draft" | "scheduled" | "sending" | "sent" | "cancelled" | "failed" | "template"
   scheduled_at: string | null
   started_at: string | null
   sent_at: string | null
@@ -34,6 +34,7 @@ export type Campaign = {
   last_error: string | null
   source: { type: string; id: string; invoice?: string | null } | null
   last_test_at: string | null
+  template_role: "receiving" | null
   created_at: string
   updated_at: string
 }
@@ -87,6 +88,7 @@ export const STATUS_LABEL: Record<Campaign["status"], { label: string; color: "g
   sent: { label: "Sent", color: "green" },
   cancelled: { label: "Stopped", color: "orange" },
   failed: { label: "Failed", color: "red" },
+  template: { label: "Template", color: "blue" },
 }
 
 export const fmtDate = (iso?: string | null) =>

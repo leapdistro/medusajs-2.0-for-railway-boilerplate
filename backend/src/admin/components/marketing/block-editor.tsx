@@ -49,7 +49,7 @@ function Segmented<T extends string>({ value, options, onChange }: { value: T; o
   )
 }
 
-function BlockForm({ block, onChange }: { block: Block; onChange: (b: Block) => void }) {
+function BlockForm({ block, onChange, templateMode }: { block: Block; onChange: (b: Block) => void; templateMode?: boolean }) {
   const [picking, setPicking] = useState(false)
   const [uploading, setUploading] = useState(false)
   switch (block.type) {
@@ -107,6 +107,23 @@ function BlockForm({ block, onChange }: { block: Block; onChange: (b: Block) => 
     case "products":
       return (
         <div className="flex flex-col gap-3">
+          {templateMode ? (
+            <div className="flex flex-col gap-2 rounded-md bg-ui-bg-subtle p-2">
+              <Text size="xsmall" weight="plus">Products in this block</Text>
+              <Segmented
+                value={block.fill ?? "pick"}
+                onChange={(v) => onChange(v === "pick" ? { ...block, fill: undefined, max: undefined } : { ...block, fill: v, max: block.max ?? (v === "new" ? 8 : 4) })}
+                options={[{ value: "new" as const, label: "Receiving's new" }, { value: "restock" as const, label: "Receiving's restocked" }, { value: "pick" as const, label: "I pick" }]}
+              />
+              {block.fill ? (
+                <div className="flex items-center gap-2">
+                  <Text size="small">Show up to</Text>
+                  <div style={{ width: 70 }}><Input type="number" min={1} max={24} value={String(block.max ?? 8)} onChange={(e) => onChange({ ...block, max: Math.min(24, Math.max(1, Number(e.target.value) || 1)) })} /></div>
+                  <Text size="small" className="text-ui-fg-subtle">picked across tiers, in stock, photos first</Text>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <Field label="Section title (optional)"><Input value={block.title ?? ""} onChange={(e) => onChange({ ...block, title: e.target.value })} placeholder="New arrivals" /></Field>
           <div className="flex items-center gap-4 flex-wrap">
             <Segmented value={block.layout} onChange={(v) => onChange({ ...block, layout: v })} options={[{ value: "grid", label: "Two across" }, { value: "list", label: "One per row" }]} />
@@ -115,8 +132,14 @@ function BlockForm({ block, onChange }: { block: Block; onChange: (b: Block) => 
               <Text size="small">Show each buyer's price</Text>
             </div>
           </div>
-          <PickedProducts ids={block.productIds} onChange={(productIds) => onChange({ ...block, productIds })} />
-          <div><Button size="small" variant="secondary" onClick={() => setPicking(true)}>Add products</Button></div>
+          {block.fill ? (
+            <Text size="small" className="text-ui-fg-subtle">Filled from each receiving when the announcement is made.</Text>
+          ) : (
+            <>
+              <PickedProducts ids={block.productIds} onChange={(productIds) => onChange({ ...block, productIds })} />
+              <div><Button size="small" variant="secondary" onClick={() => setPicking(true)}>Add products</Button></div>
+            </>
+          )}
           {picking ? (
             <ProductPicker selected={block.productIds} onClose={() => setPicking(false)} onDone={(productIds) => { onChange({ ...block, productIds }); setPicking(false) }} />
           ) : null}
@@ -127,7 +150,7 @@ function BlockForm({ block, onChange }: { block: Block; onChange: (b: Block) => 
   }
 }
 
-export function BlockEditor({ blocks, onChange, readOnly }: { blocks: Block[]; onChange: (b: Block[]) => void; readOnly?: boolean }) {
+export function BlockEditor({ blocks, onChange, readOnly, templateMode }: { blocks: Block[]; onChange: (b: Block[]) => void; readOnly?: boolean; templateMode?: boolean }) {
   const set = (i: number, b: Block) => onChange(blocks.map((x, j) => (j === i ? b : x)))
   const move = (i: number, d: number) => {
     const j = i + d
@@ -147,13 +170,13 @@ export function BlockEditor({ blocks, onChange, readOnly }: { blocks: Block[]; o
             <Button size="small" variant="transparent" onClick={() => move(i, 1)} disabled={i === blocks.length - 1}>↓</Button>
             <Button size="small" variant="transparent" onClick={() => onChange(blocks.filter((_, j) => j !== i))}>Delete</Button>
           </div>
-          <div className="p-3"><BlockForm block={b} onChange={(nb) => set(i, nb)} /></div>
+          <div className="p-3"><BlockForm block={b} onChange={(nb) => set(i, nb)} templateMode={templateMode} /></div>
         </div>
       ))}
       {!readOnly ? (
         <div className="flex flex-wrap gap-2 items-center">
           <Text size="small" className="text-ui-fg-subtle">Add:</Text>
-          {(Object.keys(LABEL) as Block["type"][]).map((t) => (
+          {(["heading", "text", "products", "button", "image"] as Block["type"][]).map((t) => (
             <Button key={t} size="small" variant="secondary" onClick={() => add(t, blocks.length)}>{LABEL[t]}</Button>
           ))}
         </div>

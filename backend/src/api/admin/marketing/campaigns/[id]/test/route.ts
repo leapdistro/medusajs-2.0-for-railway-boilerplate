@@ -19,6 +19,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const marketing: any = req.scope.resolve(MARKETING_MODULE)
   const c = await marketing.retrieveMarketingCampaign(req.params.id).catch(() => null)
   if (!c) return res.status(404).json({ message: "Campaign not found." })
+  if (c.status === "template") return res.status(400).json({ message: "Templates can't be sent. Start a campaign from it first." })
   const b = (req.body ?? {}) as Record<string, unknown>
   const to = (Array.isArray(b.to) ? b.to : [])
     .map((x) => String(x).trim().toLowerCase()).filter((x) => EMAIL.test(x))
