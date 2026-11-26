@@ -10,7 +10,7 @@ import { marketingSender, senderStatus } from "../../../../../../lib/marketing/s
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /**
- * POST /admin/marketing/campaigns/:id/test
+ * POST /admin/marketing/campaigns/:id/send-sample (the Send test button). Never put "test" anywhere in a backend path: medusa build drops every file whose path contains "test", "unit-tests" or "integration-tests" (substring match), so the route 404s in production
  * Body: { to: string[] (max 5), viewAs?: customer id }
  * Sends the saved campaign to the given addresses, subject prefixed
  * "[Test]", priced as `viewAs`. Customers never get it.

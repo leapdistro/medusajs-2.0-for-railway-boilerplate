@@ -53,6 +53,23 @@ export function AudiencePicker({ audience, onChange, customers, readOnly }: {
   const set = (patch: Partial<Audience>) => onChange({ ...audience, ...patch })
   const picking = audience.mode === "pick"
 
+  /* Select all / Deselect all act on the rows shown (so after a search,
+   * only the matches), never on unsubscribed or bounced customers. */
+  const tickable = shown.filter((c) => !c.suppressed).map((c) => c.id)
+  const isTicked = (id: string) => (picking ? audience.customerIds.includes(id) : !audience.exclude.includes(id))
+  const tickedCount = tickable.filter(isTicked).length
+  const tickAll = (on: boolean) => {
+    const ids = new Set(tickable)
+    if (picking) {
+      const rest = audience.customerIds.filter((x) => !ids.has(x))
+      set({ customerIds: on ? [...rest, ...tickable] : rest })
+    } else {
+      const rest = audience.exclude.filter((x) => !ids.has(x))
+      set({ exclude: on ? rest : [...rest, ...tickable] })
+    }
+  }
+  const linkBtn = "txt-compact-small text-ui-fg-interactive hover:underline disabled:text-ui-fg-disabled disabled:no-underline"
+
   return (
     <div className="flex flex-col gap-3" style={readOnly ? { pointerEvents: "none", opacity: 0.7 } : undefined}>
       <div className="flex gap-2 flex-wrap">
@@ -96,9 +113,20 @@ export function AudiencePicker({ audience, onChange, customers, readOnly }: {
           </Text>
           <div style={{ width: 200 }}><Input size="small" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} /></div>
         </div>
+        {tickable.length ? (
+          <div className="flex items-center gap-3 px-3 py-2 border-b border-ui-border-base bg-ui-bg-subtle">
+            <button type="button" className={linkBtn} disabled={tickedCount === tickable.length} onClick={() => tickAll(true)}>
+              {q.trim() ? "Select all matches" : "Select all"}
+            </button>
+            <button type="button" className={linkBtn} disabled={tickedCount === 0} onClick={() => tickAll(false)}>
+              {q.trim() ? "Deselect all matches" : "Deselect all"}
+            </button>
+            <Text size="xsmall" className="text-ui-fg-muted" style={{ marginLeft: "auto" }}>{tickedCount} of {tickable.length} ticked</Text>
+          </div>
+        ) : null}
         <div style={{ maxHeight: 220, overflowY: "auto" }}>
           {shown.map((c) => {
-            const included = picking ? audience.customerIds.includes(c.id) : !audience.exclude.includes(c.id)
+            const included = isTicked(c.id)
             return (
               <label key={c.id} className="flex items-center gap-2 px-3 py-1 border-b border-ui-border-base last:border-b-0 cursor-pointer">
                 <input

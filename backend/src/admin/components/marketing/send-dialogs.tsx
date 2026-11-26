@@ -16,7 +16,7 @@ export function TestDialog({ campaign, customers, onClose, onSent }: {
     setBusy(true)
     try {
       const list = to.split(/[,\s]+/).filter(Boolean)
-      await api(`/admin/marketing/campaigns/${campaign.id}/test`, { body: { to: list, viewAs: viewAs || undefined } })
+      await api(`/admin/marketing/campaigns/${campaign.id}/send-sample`, { body: { to: list, viewAs: viewAs || undefined } })
       toast.success(`Test sent to ${list.join(", ")}`)
       onSent()
       onClose()
